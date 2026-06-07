@@ -9,5 +9,9 @@ Package.resolved
 DerivedData/
 xcuserdata/
 
+# Node / web
+web/node_modules/
+web/dist/
+
 # macOS
 .DS_Store

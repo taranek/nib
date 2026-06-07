@@ -10,8 +10,23 @@ yet; red bars stand in for where real squiggles would go.
 
 ## Run
 
+The popover UI is a React app rendered in a `WKWebView`, so it runs as two
+processes during development:
+
 ```sh
+# 1. Panel UI (React) — terminal A
+cd web && npm install && npm run dev      # serves http://localhost:5173
+
+# 2. Native overlay agent — terminal B
 swift run loco
+```
+
+The Swift host loads the panel from `http://localhost:5173` by default. Point it
+elsewhere (e.g. a production build) with `LOCO_WEB_URL`:
+
+```sh
+cd web && npm run build
+LOCO_WEB_URL="file://$PWD/web/dist/index.html" swift run loco
 ```
 
 First launch triggers an Accessibility permission prompt:
