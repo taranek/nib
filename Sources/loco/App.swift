@@ -147,6 +147,26 @@ final class AppController: NSObject {
     // Cache so we only re-measure word geometry when the text/frame changes.
     private var lastSignature: String = ""
 
+    // PIDs we've already force-enabled accessibility on (Chromium/Electron
+    // build their AX tree lazily and only for an attached AT — we have to ask).
+    private var a11yEnabledPids = Set<pid_t>()
+
+    private static let browserBundleIDs: Set<String> = [
+        "com.google.Chrome",
+        "com.google.Chrome.canary",
+        "com.google.Chrome.beta",
+        "com.brave.Browser",
+        "com.microsoft.edgemac",
+        "company.thebrowser.Browser",   // Arc
+        "com.operasoftware.Opera",
+        "org.mozilla.firefox",
+        "com.apple.Safari",
+        // Electron apps benefit from the same switch:
+        "com.microsoft.VSCode",
+        "com.tinyspeck.slackmacgap",
+        "notion.id",
+    ]
+
     func start() {
         if !ensureAccessibilityPermission() {
             // Permission dialog has been shown; the binary now appears in
@@ -186,6 +206,9 @@ final class AppController: NSObject {
             return
         }
 
+        // Chromium/Electron won't expose web text until we flip on their AX tree.
+        enableBrowserAccessibilityIfNeeded(for: element)
+
         let role = AX.string(element, kAXRoleAttribute) ?? "?"
         let value = AX.string(element, kAXValueAttribute) ?? ""
         guard let axFrame = AX.frame(element) else {
@@ -205,6 +228,25 @@ final class AppController: NSObject {
 
         let preview = value.prefix(48).replacingOccurrences(of: "\n", with: "⏎")
         print("focus[\(role)] words:\(underlines.count) value:\"\(preview)\"")
+    }
+
+    /// Force a Chromium/Electron app to build and expose its accessibility tree.
+    /// Setting `AXManualAccessibility` (and the legacy `AXEnhancedUserInterface`)
+    /// on the app element is the documented switch ATs use. Done once per PID.
+    private func enableBrowserAccessibilityIfNeeded(for element: AXUIElement) {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              !a11yEnabledPids.contains(pid),
+              let app = NSRunningApplication(processIdentifier: pid),
+              let bundleID = app.bundleIdentifier,
+              Self.browserBundleIDs.contains(bundleID)
+        else { return }
+
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        a11yEnabledPids.insert(pid)
+        print("🌐 enabled AX tree for \(bundleID) (pid \(pid)) — refocus the field")
     }
 
     private func clearIfNeeded() {
