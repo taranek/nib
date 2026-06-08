@@ -1,6 +1,7 @@
 import Cocoa
 import ApplicationServices
 import WebKit
+import CursorBounds
 
 // MARK: - Entry point
 
@@ -100,6 +101,36 @@ enum AX {
         return rect.isEmpty ? nil : rect
     }
 
+    /// The caret's visual line number (AXInsertionPointLineNumber).
+    static func insertionPointLine(_ element: AXUIElement) -> Int? {
+        (copy(element, "AXInsertionPointLineNumber") as? NSNumber)?.intValue
+    }
+
+    /// Marker range for a visual line number (AXTextMarkerRangeForLine).
+    static func textMarkerRange(forLine line: Int, in element: AXUIElement) -> CFTypeRef? {
+        let number = line as CFNumber
+        var result: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                element, "AXTextMarkerRangeForLine" as CFString, number, &result) == .success,
+              let result else { return nil }
+        return result
+    }
+
+    /// The current selection as a text-marker range (AXSelectedTextMarkerRange).
+    static func selectedTextMarkerRange(_ element: AXUIElement) -> CFTypeRef? {
+        copy(element, "AXSelectedTextMarkerRange")
+    }
+
+    /// Bounds of the element's entire text content (AXTextMarkerRangeForUIElement
+    /// → AXBoundsForTextMarkerRange). Used to clamp indicators to real content.
+    static func contentRect(_ element: AXUIElement) -> CGRect? {
+        var result: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                element, "AXTextMarkerRangeForUIElement" as CFString, element, &result) == .success,
+              let result else { return nil }
+        return bounds(forMarkerRange: result, in: element)
+    }
+
     /// The current selection/caret as a character range.
     static func selectedRange(_ element: AXUIElement) -> CFRange? {
         guard let value = copy(element, kAXSelectedTextRangeAttribute),
@@ -155,6 +186,32 @@ enum AX {
         let err = AXUIElementCopyParameterizedAttributeValue(
             element, "AXTextMarkerRangeForUnorderedTextMarkers" as CFString, pair, &result)
         return err == .success ? result : nil
+    }
+
+    /// Attributed text for a range (AXAttributedStringForRange) — used to read
+    /// the font for our own layout when no positional geometry is exposed.
+    static func attributedString(forRange range: CFRange, in element: AXUIElement) -> NSAttributedString? {
+        var mutableRange = range
+        guard let axRange = AXValueCreate(.cfRange, &mutableRange) else { return nil }
+        var result: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                element, "AXAttributedStringForRange" as CFString, axRange, &result) == .success,
+              let result else { return nil }
+        return result as? NSAttributedString
+    }
+
+    /// The document's start text marker (AXStartTextMarker).
+    static func startTextMarker(_ element: AXUIElement) -> CFTypeRef? {
+        copy(element, "AXStartTextMarker")
+    }
+
+    /// The next text marker after `marker` (AXNextTextMarkerForTextMarker).
+    static func nextMarker(after marker: CFTypeRef, in element: AXUIElement) -> CFTypeRef? {
+        var result: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                element, "AXNextTextMarkerForTextMarker" as CFString, marker, &result) == .success,
+              let result else { return nil }
+        return result
     }
 
     /// The marker range spanning the visual line that contains `marker`
@@ -225,6 +282,86 @@ enum Linter {
     private static func matchCase(_ replacement: String, like original: String) -> String {
         guard let first = original.first, first.isUppercase else { return replacement }
         return replacement.prefix(1).uppercased() + replacement.dropFirst()
+    }
+}
+
+// MARK: - Browser JS bridge (exact caret from the real page)
+//
+// Runs JavaScript in the browser's active tab via AppleScript and reads the real
+// DOM caret rect (getSelection().getClientRects()), relative to the focused
+// element — so we map it onto the AX field frame regardless of scroll. Requires
+// the browser's "Allow JavaScript from Apple Events" (View → Developer) and
+// Automation permission. No extension needed.
+
+/// Result of the in-page caret query: the caret rect (relative to the focused
+/// element) and whether the caret's line has no text.
+struct CaretInfo {
+    let rect: CGRect?
+    let lineEmpty: Bool
+}
+
+final class BrowserJSBridge {
+    static let appNames: [String: String] = [
+        "com.google.Chrome": "Google Chrome",
+        "com.google.Chrome.canary": "Google Chrome Canary",
+        "com.google.Chrome.beta": "Google Chrome Beta",
+        "com.brave.Browser": "Brave Browser",
+        "com.brave.Browser.beta": "Brave Browser Beta",
+        "com.microsoft.edgemac": "Microsoft Edge",
+        "com.vivaldi.Vivaldi": "Vivaldi",
+    ]
+
+    // Reads the real DOM caret rect (relative to the focused element) AND whether
+    // the caret's block line is empty. No double-quotes/backslashes so it embeds
+    // cleanly in the AppleScript string.
+    private static let js = "(function(){try{var s=window.getSelection();if(!s||!s.rangeCount){return '';}var r=s.getRangeAt(0);var n=r.startContainer;var blk=(n.nodeType===3)?n.parentNode:n;while(blk&&blk!==document.body){var d=window.getComputedStyle(blk).display;if(d==='block'||d==='list-item'){break;}blk=blk.parentNode;}var empty=blk?((blk.innerText||'').trim().length===0):false;var rect=null;var rs=r.getClientRects();if(rs.length){rect=rs[0];}if(!rect){var o=r.startOffset;var r2=document.createRange();if(n.nodeType===3&&o>0){r2.setStart(n,o-1);r2.setEnd(n,o);var q=r2.getClientRects();if(q.length){rect=q[q.length-1];}}if(!rect&&n.nodeType===3&&n.length>o){r2.setStart(n,o);r2.setEnd(n,o+1);var q2=r2.getClientRects();if(q2.length){rect=q2[0];}}}var el=document.activeElement;var e=el?el.getBoundingClientRect():{left:0,top:0};var out={empty:empty};if(rect){out.x=Math.round(rect.left-e.left);out.y=Math.round(rect.top-e.top);out.h=Math.round(rect.height)||18;}return JSON.stringify(out);}catch(x){return '';}})();"
+
+    private var scripts: [String: NSAppleScript] = [:]   // compiled once per app
+    private var warned = false
+
+    /// Caret info from the active tab for a browser app name. Synchronous — call
+    /// on the main thread. Reuses a compiled NSAppleScript (no spawn/recompile).
+    func caretInfo(appName: String) -> CaretInfo? {
+        let script: NSAppleScript
+        if let cached = scripts[appName] {
+            script = cached
+        } else {
+            let source = "tell application \"\(appName)\"\nexecute active tab of front window javascript \"\(Self.js)\"\nend tell"
+            guard let compiled = NSAppleScript(source: source) else { return nil }
+            scripts[appName] = compiled
+            script = compiled
+        }
+
+        var error: NSDictionary?
+        let descriptor = script.executeAndReturnError(&error)
+        if let error {
+            warnOnce(error)
+            return nil
+        }
+        guard let text = descriptor.stringValue, !text.isEmpty,
+              let data = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        let lineEmpty = (obj["empty"] as? NSNumber)?.boolValue ?? false
+        var rect: CGRect?
+        if let x = (obj["x"] as? NSNumber)?.doubleValue,
+           let y = (obj["y"] as? NSNumber)?.doubleValue,
+           let h = (obj["h"] as? NSNumber)?.doubleValue {
+            rect = CGRect(x: x, y: y, width: 2, height: h)
+        }
+        return CaretInfo(rect: rect, lineEmpty: lineEmpty)
+    }
+
+    private func warnOnce(_ error: NSDictionary) {
+        guard !warned else { return }
+        warned = true
+        print("""
+        ⚠️ Browser JS caret unavailable. To enable exact in-browser tracking:
+           1. In Brave/Chrome: View → Developer → Allow JavaScript from Apple Events
+           2. Grant Automation permission for loco to control the browser when prompted
+           (\(error[NSAppleScript.errorMessage] ?? error))
+        """)
     }
 }
 
@@ -329,12 +466,13 @@ final class GutterView: HoverView {
     static let size = NSSize(width: 14, height: 22)
     private static let pillWidth: CGFloat = 5
 
-    var count: Int = 0 { didSet { needsDisplay = true } }   // kept for the panel
+    var count: Int = 0 { didSet { needsDisplay = true } }
 
     override func draw(_ dirtyRect: NSRect) {
         let pill = NSRect(x: bounds.maxX - Self.pillWidth - 2, y: 2,
                           width: Self.pillWidth, height: bounds.height - 4)
-        NSColor.systemRed.setFill()
+        let color = count > 0 ? NSColor.systemRed : NSColor.systemGray
+        color.setFill()
         NSBezierPath(roundedRect: pill, xRadius: Self.pillWidth / 2, yRadius: Self.pillWidth / 2).fill()
     }
 }
@@ -480,6 +618,7 @@ final class AppController: NSObject {
     private var view: OverlayView!
     private var gutterPanel: GutterPanel!
     private var popoverPanel: PopoverPanel!
+    private let browserJS = BrowserJSBridge()
     private var timer: Timer?
 
     // The field + issues the UI currently targets, so Fix can write back.
@@ -546,9 +685,37 @@ final class AppController: NSObject {
         print("   Red squiggle marks it; hover the badge to open the React panel and Fix.")
         print("   Panel UI from: \(Self.webURL().absoluteString)\n")
 
-        timer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+    }
+
+    private var dumpedCaps = Set<String>()
+
+    /// One-time dump of a field's AX capabilities + probe of each geometry API,
+    /// so we can see which one actually returns a real rect on this field.
+    private func dumpCapabilities(_ element: AXUIElement, role: String, value: String) {
+        guard !value.isEmpty else { return }
+        let attrs = AX.attributeNames(element).sorted()
+        let params = AX.parameterizedAttributeNames(element).sorted()
+        let key = role + "|" + params.joined(separator: ",")
+        guard !dumpedCaps.contains(key) else { return }
+        dumpedCaps.insert(key)
+
+        // Probe range [0,3] with each geometry API.
+        let probe = CFRange(location: 0, length: min(3, (value as NSString).length))
+        let boundsForRange = AX.bounds(of: probe, in: element)
+        var markerBounds: CGRect?
+        if let s = AX.textMarker(forIndex: 0, in: element),
+           let e = AX.textMarker(forIndex: probe.length, in: element),
+           let mr = AX.markerRange(from: s, to: e, in: element) {
+            markerBounds = AX.bounds(forMarkerRange: mr, in: element)
+        }
+
+        print("🔎 \(role)")
+        print("   attrs:  \(attrs)")
+        print("   params: \(params)")
+        print("   probe BoundsForRange=\(boundsForRange.map(NSStringFromRect) ?? "nil") markerBounds=\(markerBounds.map(NSStringFromRect) ?? "nil")")
     }
 
     private func ensureAccessibilityPermission() -> Bool {
@@ -591,48 +758,94 @@ final class AppController: NSObject {
         var firstIssueRect: CGRect?
 
         for issue in issues {
-            guard let rect = screenRect(for: issue.range, in: element) else { continue }
+            guard let rect = screenRect(for: issue.range, in: element),
+                  isSaneRect(rect, in: fieldBox) else { continue }
             underlines.append(Underline(rect: rect, color: issue.color))
             if firstIssueRect == nil { firstIssueRect = rect }
         }
 
         view.update(underlines: underlines, fieldBox: fieldBox)
 
-        if issues.isEmpty {
+        // Only show the pill for editable text fields.
+        let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+        guard textRoles.contains(role) else {
             dismissUI()
-        } else {
-            activeElement = element
-            activeIssues = issues
-
-            // Decide the line to mark, best geometry first:
-            //   1. caret line / selection span (native fields, textareas)
-            //   2. the first issue's line (when caret isn't exposed but ranges are)
-            //   3. the field's top line (nothing resolves)
-            // The pill always sits in the left margin; only its Y/height vary.
-            let caretRect = caretLineRect(element: element, selection: selection)
-                .flatMap { isInsideField($0, fieldBox) ? $0 : nil }
-            let anchorRect = caretRect ?? firstIssueRect ?? topLineFallback(fieldBox)
-
-            let chipW = GutterView.size.width
-            let gx = fieldBox.minX - chipW - 4         // left margin
-            let gh = max(anchorRect.height, 16)
-            let gutterFrame = NSRect(x: gx, y: anchorRect.minY, width: chipW, height: gh)
-            gutterPanel.gutter.count = issues.count
-            gutterPanel.setFrame(gutterFrame, display: true)
-            gutterPanel.orderFrontRegardless()
-
-            // Drop the popover from the field's left, just below the marked line.
-            popoverAnchor = NSPoint(x: fieldBox.minX, y: anchorRect.minY - 4)
-
-            // If the popover is already open (user mid-interaction), refresh it.
-            if popoverPanel.isVisible { showPopover() }
+            return
         }
 
-        let geom = firstIssueRect == nil ? "none" : "ok"
-        let caretOK = caretLineRect(element: element, selection: selection)
-            .map { isInsideField($0, fieldBox) } == true
-        let track = issues.isEmpty ? "-" : (caretOK ? "caret" : (firstIssueRect != nil ? "issue" : "fallback"))
-        print("focus[\(role)] issues:\(issues.count) drawn:\(underlines.count) geom:\(geom) track:\(track)")
+        // Resolve the caret. In browsers, run JS in the real page for the exact
+        // DOM caret + line emptiness (handles contenteditable + scroll).
+        var caret: CGRect?
+        if let appName = browserAppName(for: element), let info = browserJS.caretInfo(appName: appName) {
+            if info.lineEmpty { hidePill(); return }   // nothing to flag on a blank line
+            if let local = info.rect {
+                let rect = CGRect(x: fieldBox.minX + local.minX,
+                                  y: fieldBox.maxY - local.minY - local.height,
+                                  width: local.width, height: local.height)
+                if isInsideField(rect, fieldBox) { caret = rect }
+            }
+        } else {
+            // Non-browser / JS unavailable: use AX, and the value-based empty check.
+            if let caretIndex = selection?.location, isCurrentLineEmpty(value: value, caret: caretIndex) {
+                hidePill(); return
+            }
+            caret = resolveCaret(for: element, fieldBox: fieldBox)
+        }
+
+        activeElement = element
+        activeIssues = issues
+        gutterPanel.gutter.count = issues.count   // colour updates immediately
+        placeGutter(lineRect: caret ?? firstLineRect(fieldBox), fieldBox: fieldBox)
+    }
+
+    private func hidePill() {
+        gutterPanel.orderOut(nil)
+        popoverPanel.orderOut(nil)
+    }
+
+    /// Browser app name (for AppleScript) if the focused element belongs to one.
+    private func browserAppName(for element: AXUIElement) -> String? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              let app = NSRunningApplication(processIdentifier: pid),
+              let bundleID = app.bundleIdentifier else { return nil }
+        return BrowserJSBridge.appNames[bundleID]
+    }
+
+    /// Caret rect via the CursorBounds package (text-caret source only, so it
+    /// returns nil rather than falling back to the field frame).
+    private func resolveCaret(for element: AXUIElement, fieldBox: CGRect) -> CGRect? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        guard let result = try? CursorBounds().cursorPosition(
+            forPID: pid, correctionMode: .none, corner: .topLeft, sourcePriority: [.textCaret]
+        ) else { return nil }
+        let rect = toCocoa(result.bounds)
+        return isInsideField(rect, fieldBox) ? rect : nil
+    }
+
+    /// Position the pill in the field's left margin at the given line rect.
+    private func placeGutter(lineRect: CGRect, fieldBox: CGRect) {
+        let chip = GutterView.size
+        let gx = fieldBox.minX - chip.width - 4
+        let gy = lineRect.midY - chip.height / 2
+        gutterPanel.setFrame(NSRect(x: gx, y: gy, width: chip.width, height: chip.height), display: true)
+        gutterPanel.orderFrontRegardless()
+        popoverAnchor = NSPoint(x: fieldBox.minX, y: gy)
+        if popoverPanel.isVisible { showPopover() }
+    }
+
+    /// Fallback line rect (first line) when no caret geometry is available.
+    private func firstLineRect(_ fieldBox: CGRect) -> CGRect {
+        let centerY = fieldBox.maxY - min(16, fieldBox.height / 2)
+        return CGRect(x: fieldBox.minX, y: centerY - 8, width: 0, height: 16)
+    }
+
+    /// The field's font as a CSS `font` shorthand for the web measurer.
+    private func cssFont(_ element: AXUIElement) -> String {
+        let font = caretFont(element)
+        let family = font.familyName ?? "sans-serif"
+        return "\(font.pointSize)px \"\(family)\""
     }
 
     // MARK: Hover → popover
@@ -746,33 +959,62 @@ final class AppController: NSObject {
         dismissUI()
     }
 
-    /// Rect of the focused line, or the whole selection if text is selected.
-    private func caretLineRect(element: AXUIElement, selection: CFRange?) -> CGRect? {
+    /// A sane rect for the caret's line (or the selection span), or nil when
+    /// there's no usable geometry. Rejects the whole-field rect Chromium returns
+    /// for a bare caret so the pill doesn't blow up to the field height.
+    private func caretRect(element: AXUIElement, selection: CFRange?, fieldBox: CGRect) -> CGRect? {
         guard let sel = selection else { return nil }
+        let maxLineHeight: CGFloat = 80   // a single line won't exceed this
 
-        // A real selection → bounding rect spanning it (across lines).
-        if sel.length > 0 {
-            return screenRect(for: NSRange(location: sel.location, length: sel.length), in: element)
-        }
-
-        // Just a caret → resolve the current line's range, then its bounds.
-        if let line = AX.lineNumber(forCharIndex: sel.location, in: element),
-           let lineRange = AX.range(forLine: line, in: element),
-           let rect = screenRect(for: NSRange(location: lineRange.location,
-                                              length: max(lineRange.length, 1)), in: element) {
+        // 1. Caret/selection glyph bounds via AXBoundsForRange (native, search,
+        //    real <textarea>). For a caret, probe the adjacent character.
+        let probe = sel.length > 0
+            ? NSRange(location: sel.location, length: sel.length)
+            : NSRange(location: max(sel.location - 1, 0), length: 1)
+        if let rect = screenRect(for: probe, in: element),
+           isInsideField(rect, fieldBox),
+           sel.length > 0 || rect.height <= maxLineHeight {
             return rect
         }
 
-        // contenteditable line API: caret marker → its line's marker range → bounds.
-        if let marker = AX.textMarker(forIndex: sel.location, in: element),
-           let lineMarkerRange = AX.lineMarkerRange(for: marker, in: element),
-           let rect = AX.bounds(forMarkerRange: lineMarkerRange, in: element) {
-            return toCocoa(rect)
+        // 2. Selection marker range (Chromium). Accept a multi-line selection,
+        //    but reject a whole-field rect for a bare caret.
+        if let markerRange = AX.selectedTextMarkerRange(element),
+           let raw = AX.bounds(forMarkerRange: markerRange, in: element) {
+            let rect = toCocoa(raw)
+            if isInsideField(rect, fieldBox), sel.length > 0 || rect.height <= maxLineHeight {
+                return rect
+            }
         }
 
-        // Last resort: the caret glyph's own rect (correct line y, thin height).
-        return screenRect(for: NSRange(location: sel.location, length: 1), in: element)
-            ?? screenRect(for: NSRange(location: max(sel.location - 1, 0), length: 1), in: element)
+        // 3. No positional geometry (contenteditable): handled async via the web
+        //    measurer in tick(). Nothing sync to return here.
+        return nil
+    }
+
+    /// The field's text font (AXAttributedStringForRange), or a sensible default.
+    private func caretFont(_ element: AXUIElement) -> NSFont {
+        if let attr = AX.attributedString(forRange: CFRange(location: 0, length: 1), in: element),
+           attr.length > 0,
+           let font = attr.attribute(.font, at: 0, effectiveRange: nil) as? NSFont {
+            return font
+        }
+        return NSFont.systemFont(ofSize: 14)
+    }
+
+    /// Whether the line containing the caret has no (non-whitespace) text.
+    private func isCurrentLineEmpty(value: String, caret: Int) -> Bool {
+        let ns = value as NSString
+        let length = ns.length
+        let position = max(0, min(caret, length))
+
+        var start = position
+        while start > 0, ns.character(at: start - 1) != 10 { start -= 1 }   // 10 == "\n"
+        var end = position
+        while end < length, ns.character(at: end) != 10 { end += 1 }
+
+        let line = ns.substring(with: NSRange(location: start, length: end - start))
+        return line.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     /// When line geometry is unavailable, fall back to the field's top line.
@@ -791,20 +1033,19 @@ final class AppController: NSObject {
             && rect.minX <= field.maxX
     }
 
-    /// Resolve one character range to a screen rect (view coords). Tries
-    /// AXBoundsForRange first (native controls, web textareas), then the text
-    /// marker path (contenteditable).
+    /// A rect safe to draw a squiggle for: inside the field and not absurdly
+    /// large (some fields return document- or screen-sized rects).
+    private func isSaneRect(_ rect: CGRect, in field: CGRect) -> Bool {
+        isInsideField(rect, field)
+            && rect.width > 0 && rect.width <= field.width + 8
+            && rect.height <= 120
+    }
+
+    /// Resolve one character range to a screen rect (view coords) via
+    /// AXBoundsForRange. Works on native controls and real <textarea>s; returns
+    /// nil on fields that don't implement it (most Chromium contenteditable).
     private func screenRect(for ns: NSRange, in element: AXUIElement) -> CGRect? {
-        if let r = AX.bounds(of: CFRange(location: ns.location, length: ns.length), in: element) {
-            return toCocoa(r)
-        }
-        if let start = AX.textMarker(forIndex: ns.location, in: element),
-           let end = AX.textMarker(forIndex: ns.location + ns.length, in: element),
-           let mr = AX.markerRange(from: start, to: end, in: element),
-           let r = AX.bounds(forMarkerRange: mr, in: element) {
-            return toCocoa(r)
-        }
-        return nil
+        AX.bounds(of: CFRange(location: ns.location, length: ns.length), in: element).map(toCocoa)
     }
 
     /// AX gives global coords with a top-left origin; AppKit views use
