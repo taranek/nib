@@ -47,20 +47,6 @@ enum AX {
         copy(element, attribute) as? String
     }
 
-    /// Names of every plain attribute this element exposes.
-    static func attributeNames(_ element: AXUIElement) -> [String] {
-        var names: CFArray?
-        guard AXUIElementCopyAttributeNames(element, &names) == .success else { return [] }
-        return (names as? [String]) ?? []
-    }
-
-    /// Names of every parameterized attribute (AXBoundsForRange, marker APIs…).
-    static func parameterizedAttributeNames(_ element: AXUIElement) -> [String] {
-        var names: CFArray?
-        guard AXUIElementCopyParameterizedAttributeNames(element, &names) == .success else { return [] }
-        return (names as? [String]) ?? []
-    }
-
     /// On-screen frame of an element, in global (top-left origin) display coords.
     static func frame(_ element: AXUIElement) -> CGRect? {
         guard
@@ -101,36 +87,6 @@ enum AX {
         return rect.isEmpty ? nil : rect
     }
 
-    /// The caret's visual line number (AXInsertionPointLineNumber).
-    static func insertionPointLine(_ element: AXUIElement) -> Int? {
-        (copy(element, "AXInsertionPointLineNumber") as? NSNumber)?.intValue
-    }
-
-    /// Marker range for a visual line number (AXTextMarkerRangeForLine).
-    static func textMarkerRange(forLine line: Int, in element: AXUIElement) -> CFTypeRef? {
-        let number = line as CFNumber
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXTextMarkerRangeForLine" as CFString, number, &result) == .success,
-              let result else { return nil }
-        return result
-    }
-
-    /// The current selection as a text-marker range (AXSelectedTextMarkerRange).
-    static func selectedTextMarkerRange(_ element: AXUIElement) -> CFTypeRef? {
-        copy(element, "AXSelectedTextMarkerRange")
-    }
-
-    /// Bounds of the element's entire text content (AXTextMarkerRangeForUIElement
-    /// → AXBoundsForTextMarkerRange). Used to clamp indicators to real content.
-    static func contentRect(_ element: AXUIElement) -> CGRect? {
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXTextMarkerRangeForUIElement" as CFString, element, &result) == .success,
-              let result else { return nil }
-        return bounds(forMarkerRange: result, in: element)
-    }
-
     /// The current selection/caret as a character range.
     static func selectedRange(_ element: AXUIElement) -> CFRange? {
         guard let value = copy(element, kAXSelectedTextRangeAttribute),
@@ -138,104 +94,6 @@ enum AX {
         var range = CFRange()
         AXValueGetValue(value as! AXValue, .cfRange, &range)
         return range
-    }
-
-    /// The visual line number containing a character index (AXLineForIndex).
-    static func lineNumber(forCharIndex index: Int, in element: AXUIElement) -> Int? {
-        let number = index as CFNumber
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXLineForIndex" as CFString, number, &result) == .success,
-              let result else { return nil }
-        return (result as? NSNumber)?.intValue
-    }
-
-    /// The character range of a visual line (AXRangeForLine).
-    static func range(forLine line: Int, in element: AXUIElement) -> CFRange? {
-        let number = line as CFNumber
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXRangeForLine" as CFString, number, &result) == .success,
-              let result, CFGetTypeID(result) == AXValueGetTypeID() else { return nil }
-        var range = CFRange()
-        AXValueGetValue(result as! AXValue, .cfRange, &range)
-        return range
-    }
-
-    // MARK: Text markers (Chromium/WebKit contenteditable fallback)
-    //
-    // These attributes are NOT in the public SDK; they're the same private
-    // API VoiceOver uses for web content. AXTextMarker / AXTextMarkerRange are
-    // opaque CF types we just pass back as CFTypeRef. Used when AXBoundsForRange
-    // is unimplemented (rich contenteditable editors: Gmail, Linear, Notion…).
-
-    /// An opaque text marker addressing character `index` from the element start.
-    static func textMarker(forIndex index: Int, in element: AXUIElement) -> CFTypeRef? {
-        let number = index as CFNumber
-        var result: CFTypeRef?
-        let err = AXUIElementCopyParameterizedAttributeValue(
-            element, "AXTextMarkerForIndex" as CFString, number, &result)
-        return err == .success ? result : nil
-    }
-
-    /// A marker range spanning two markers (order-independent).
-    static func markerRange(from start: CFTypeRef, to end: CFTypeRef,
-                            in element: AXUIElement) -> CFTypeRef? {
-        let pair = [start, end] as CFArray
-        var result: CFTypeRef?
-        let err = AXUIElementCopyParameterizedAttributeValue(
-            element, "AXTextMarkerRangeForUnorderedTextMarkers" as CFString, pair, &result)
-        return err == .success ? result : nil
-    }
-
-    /// Attributed text for a range (AXAttributedStringForRange) — used to read
-    /// the font for our own layout when no positional geometry is exposed.
-    static func attributedString(forRange range: CFRange, in element: AXUIElement) -> NSAttributedString? {
-        var mutableRange = range
-        guard let axRange = AXValueCreate(.cfRange, &mutableRange) else { return nil }
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXAttributedStringForRange" as CFString, axRange, &result) == .success,
-              let result else { return nil }
-        return result as? NSAttributedString
-    }
-
-    /// The document's start text marker (AXStartTextMarker).
-    static func startTextMarker(_ element: AXUIElement) -> CFTypeRef? {
-        copy(element, "AXStartTextMarker")
-    }
-
-    /// The next text marker after `marker` (AXNextTextMarkerForTextMarker).
-    static func nextMarker(after marker: CFTypeRef, in element: AXUIElement) -> CFTypeRef? {
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXNextTextMarkerForTextMarker" as CFString, marker, &result) == .success,
-              let result else { return nil }
-        return result
-    }
-
-    /// The marker range spanning the visual line that contains `marker`
-    /// (AXLineTextMarkerRangeForTextMarker) — the contenteditable line API.
-    static func lineMarkerRange(for marker: CFTypeRef, in element: AXUIElement) -> CFTypeRef? {
-        var result: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-                element, "AXLineTextMarkerRangeForTextMarker" as CFString, marker, &result) == .success,
-              let result else { return nil }
-        return result
-    }
-
-    /// Screen bounds for a marker range — the contenteditable equivalent of
-    /// AXBoundsForRange.
-    static func bounds(forMarkerRange range: CFTypeRef, in element: AXUIElement) -> CGRect? {
-        var result: CFTypeRef?
-        let err = AXUIElementCopyParameterizedAttributeValue(
-            element, "AXBoundsForTextMarkerRange" as CFString, range, &result)
-        guard err == .success, let result,
-              CFGetTypeID(result) == AXValueGetTypeID() else { return nil }
-
-        var rect = CGRect.zero
-        AXValueGetValue(result as! AXValue, .cgRect, &rect)
-        return rect.isEmpty ? nil : rect
     }
 }
 
@@ -690,34 +548,6 @@ final class AppController: NSObject {
         }
     }
 
-    private var dumpedCaps = Set<String>()
-
-    /// One-time dump of a field's AX capabilities + probe of each geometry API,
-    /// so we can see which one actually returns a real rect on this field.
-    private func dumpCapabilities(_ element: AXUIElement, role: String, value: String) {
-        guard !value.isEmpty else { return }
-        let attrs = AX.attributeNames(element).sorted()
-        let params = AX.parameterizedAttributeNames(element).sorted()
-        let key = role + "|" + params.joined(separator: ",")
-        guard !dumpedCaps.contains(key) else { return }
-        dumpedCaps.insert(key)
-
-        // Probe range [0,3] with each geometry API.
-        let probe = CFRange(location: 0, length: min(3, (value as NSString).length))
-        let boundsForRange = AX.bounds(of: probe, in: element)
-        var markerBounds: CGRect?
-        if let s = AX.textMarker(forIndex: 0, in: element),
-           let e = AX.textMarker(forIndex: probe.length, in: element),
-           let mr = AX.markerRange(from: s, to: e, in: element) {
-            markerBounds = AX.bounds(forMarkerRange: mr, in: element)
-        }
-
-        print("🔎 \(role)")
-        print("   attrs:  \(attrs)")
-        print("   params: \(params)")
-        print("   probe BoundsForRange=\(boundsForRange.map(NSStringFromRect) ?? "nil") markerBounds=\(markerBounds.map(NSStringFromRect) ?? "nil")")
-    }
-
     private func ensureAccessibilityPermission() -> Bool {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
@@ -841,13 +671,6 @@ final class AppController: NSObject {
         return CGRect(x: fieldBox.minX, y: centerY - 8, width: 0, height: 16)
     }
 
-    /// The field's font as a CSS `font` shorthand for the web measurer.
-    private func cssFont(_ element: AXUIElement) -> String {
-        let font = caretFont(element)
-        let family = font.familyName ?? "sans-serif"
-        return "\(font.pointSize)px \"\(family)\""
-    }
-
     // MARK: Hover → popover
 
     private func showPopover() {
@@ -959,49 +782,6 @@ final class AppController: NSObject {
         dismissUI()
     }
 
-    /// A sane rect for the caret's line (or the selection span), or nil when
-    /// there's no usable geometry. Rejects the whole-field rect Chromium returns
-    /// for a bare caret so the pill doesn't blow up to the field height.
-    private func caretRect(element: AXUIElement, selection: CFRange?, fieldBox: CGRect) -> CGRect? {
-        guard let sel = selection else { return nil }
-        let maxLineHeight: CGFloat = 80   // a single line won't exceed this
-
-        // 1. Caret/selection glyph bounds via AXBoundsForRange (native, search,
-        //    real <textarea>). For a caret, probe the adjacent character.
-        let probe = sel.length > 0
-            ? NSRange(location: sel.location, length: sel.length)
-            : NSRange(location: max(sel.location - 1, 0), length: 1)
-        if let rect = screenRect(for: probe, in: element),
-           isInsideField(rect, fieldBox),
-           sel.length > 0 || rect.height <= maxLineHeight {
-            return rect
-        }
-
-        // 2. Selection marker range (Chromium). Accept a multi-line selection,
-        //    but reject a whole-field rect for a bare caret.
-        if let markerRange = AX.selectedTextMarkerRange(element),
-           let raw = AX.bounds(forMarkerRange: markerRange, in: element) {
-            let rect = toCocoa(raw)
-            if isInsideField(rect, fieldBox), sel.length > 0 || rect.height <= maxLineHeight {
-                return rect
-            }
-        }
-
-        // 3. No positional geometry (contenteditable): handled async via the web
-        //    measurer in tick(). Nothing sync to return here.
-        return nil
-    }
-
-    /// The field's text font (AXAttributedStringForRange), or a sensible default.
-    private func caretFont(_ element: AXUIElement) -> NSFont {
-        if let attr = AX.attributedString(forRange: CFRange(location: 0, length: 1), in: element),
-           attr.length > 0,
-           let font = attr.attribute(.font, at: 0, effectiveRange: nil) as? NSFont {
-            return font
-        }
-        return NSFont.systemFont(ofSize: 14)
-    }
-
     /// Whether the line containing the caret has no (non-whitespace) text.
     private func isCurrentLineEmpty(value: String, caret: Int) -> Bool {
         let ns = value as NSString
@@ -1015,11 +795,6 @@ final class AppController: NSObject {
 
         let line = ns.substring(with: NSRange(location: start, length: end - start))
         return line.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
-    /// When line geometry is unavailable, fall back to the field's top line.
-    private func topLineFallback(_ fieldBox: CGRect) -> CGRect {
-        CGRect(x: fieldBox.minX, y: fieldBox.maxY - 22, width: fieldBox.width, height: 22)
     }
 
     /// A resolved line/selection rect is trustworthy only if it sits within the
