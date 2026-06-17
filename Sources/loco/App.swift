@@ -374,6 +374,11 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         let userContent = WKUserContentController()
         userContent.add(self, name: "loco")
         config.userContentController = userContent
+        if url.isFileURL {
+            // Module scripts + assets under file:// are otherwise blocked by CORS.
+            config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+            config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
+        }
 
         let web = HoverWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 150),
                                configuration: config)
@@ -382,7 +387,11 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         web.setValue(false, forKey: "drawsBackground")   // transparent webview
         web.onEnter = { [weak self] in self?.onEnter?() }
         web.onExit = { [weak self] in self?.onExit?() }
-        web.load(URLRequest(url: url))
+        if url.isFileURL {
+            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            web.load(URLRequest(url: url))
+        }
 
         webView = web
         contentView = web
@@ -431,6 +440,7 @@ final class AppController: NSObject {
     private var view: OverlayView!
     private var popoverPanel: PopoverPanel!
     private let browser = BrowserBridge()
+    private static let debug = ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil
     private var timer: Timer?
     private var mouseMonitor: Any?
 
@@ -656,6 +666,10 @@ final class AppController: NSObject {
 
         words = words.filter { !dismissed.contains($0.id) }
 
+        if Self.debug {
+            print("🔎 role=\(role) app=\(appName ?? "-") words=\(words.count) field=\(NSStringFromRect(fieldBox))")
+        }
+
         activeElement = element
         flagged = words
         view.update(highlights: words.map { Highlight(rect: $0.rect, color: .systemRed) })
@@ -712,12 +726,19 @@ final class AppController: NSObject {
         popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
     }
 
-    /// Where the React card UI is served from. Override with LOCO_WEB_URL
-    /// (e.g. a built dist file:// URL) for a production-style run.
+    /// Where the React card UI comes from. Resolution order:
+    ///   1. LOCO_WEB_URL (e.g. http://localhost:5173 for live web dev)
+    ///   2. the built web/dist (works with no dev server — the default)
+    ///   3. localhost:5173 as a last resort
     private static func webURL() -> URL {
         if let raw = ProcessInfo.processInfo.environment["LOCO_WEB_URL"],
            let url = URL(string: raw) {
             return url
+        }
+        let dist = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("web/dist/index.html")
+        if FileManager.default.fileExists(atPath: dist.path) {
+            return dist
         }
         return URL(string: "http://localhost:5173")!
     }
