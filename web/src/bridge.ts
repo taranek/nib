@@ -20,6 +20,10 @@ export interface Suggestion {
 export interface SettingsState {
   enabled: boolean;
   accessibilityTrusted: boolean;
+  /** Local LLM status, e.g. "Loading model…", "Ready", "Error: …". */
+  llmStatus: string;
+  /** The loaded GGUF model's filename. */
+  model: string;
 }
 
 type OutboundMessage =

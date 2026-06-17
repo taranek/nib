@@ -7,7 +7,11 @@ export function Settings() {
   const [state, setState] = useState<SettingsState>({
     enabled: true,
     accessibilityTrusted: inWebView ? false : true,
+    llmStatus: inWebView ? "Loading model…" : "Ready",
+    model: "gemma-4-E2B-it-Q4_K_M.gguf",
   });
+
+  const llmReady = state.llmStatus.toLowerCase() === "ready";
 
   useEffect(() => {
     onSetSettings(setState);
@@ -35,6 +39,14 @@ export function Settings() {
           <span className="toggle__track" />
           <span className="toggle__label">Enable suggestions</span>
         </label>
+      </section>
+
+      <section className="settings__section">
+        <div className="status">
+          <span className={"status__dot " + (llmReady ? "is-ok" : "is-warn")} />
+          <span>Local AI: {state.llmStatus}</span>
+        </div>
+        <div className="settings__meta">{state.model}</div>
       </section>
 
       <section className="settings__section">
