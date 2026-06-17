@@ -1,7 +1,10 @@
-// The contract between the React card and the Swift host (WKWebView).
+// The contract between the React UI and the Swift host (WKWebView).
 //
-//  Swift → JS : window.loco.setSuggestion(s)   (called via evaluateJavaScript)
+//  Swift → JS : window.loco.setSuggestion(s) / window.loco.setSettings(state)
 //  JS → Swift : window.webkit.messageHandlers.loco.postMessage({...})
+//
+// The same bundle drives two surfaces, picked by URL hash: the per-word card
+// (default) and the settings window (#settings).
 
 export interface Suggestion {
   /** Category label shown above the suggestion (e.g. "Correctness"). */
@@ -14,11 +17,19 @@ export interface Suggestion {
   word: string;
 }
 
+export interface SettingsState {
+  enabled: boolean;
+  accessibilityTrusted: boolean;
+}
+
 type OutboundMessage =
   | { type: "ready" }
   | { type: "apply" }
   | { type: "dismiss" }
-  | { type: "resize"; width: number; height: number };
+  | { type: "resize"; width: number; height: number }
+  | { type: "setEnabled"; value: boolean }
+  | { type: "openAccessibility" }
+  | { type: "quit" };
 
 interface WebkitBridge {
   messageHandlers?: {
@@ -26,10 +37,15 @@ interface WebkitBridge {
   };
 }
 
+interface LocoInbound {
+  setSuggestion?: (s: Suggestion) => void;
+  setSettings?: (state: SettingsState) => void;
+}
+
 declare global {
   interface Window {
     webkit?: WebkitBridge;
-    loco?: { setSuggestion: (s: Suggestion) => void };
+    loco?: LocoInbound;
   }
 }
 
@@ -40,5 +56,10 @@ export function send(msg: OutboundMessage): void {
 
 /** Register the inbound entry point Swift calls to push a suggestion. */
 export function onSetSuggestion(handler: (s: Suggestion) => void): void {
-  window.loco = { setSuggestion: handler };
+  window.loco = { ...window.loco, setSuggestion: handler };
+}
+
+/** Register the inbound entry point Swift calls to push settings state. */
+export function onSetSettings(handler: (state: SettingsState) => void): void {
+  window.loco = { ...window.loco, setSettings: handler };
 }

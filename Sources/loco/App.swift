@@ -432,6 +432,69 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
     }
 }
 
+/// A transient popover anchored to the menu bar icon, hosting the web UI in
+/// settings mode. Actions flow back over the same `loco` message bridge.
+@MainActor
+final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    private let popover = NSPopover()
+    private(set) var webView: WKWebView!
+    var onMessage: (([String: Any]) -> Void)?
+
+    private static let size = NSSize(width: 300, height: 320)
+
+    init(url: URL) {
+        super.init()
+
+        let config = WKWebViewConfiguration()
+        let userContent = WKUserContentController()
+        userContent.add(self, name: "loco")
+        config.userContentController = userContent
+        if url.isFileURL {
+            config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+            config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
+        }
+
+        let web = WKWebView(frame: NSRect(origin: .zero, size: Self.size), configuration: config)
+        web.navigationDelegate = self
+        web.setValue(false, forKey: "drawsBackground")   // show the popover's material
+        if url.isFileURL {
+            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            web.load(URLRequest(url: url))
+        }
+        webView = web
+
+        let vc = NSViewController()
+        vc.view = web
+        popover.contentViewController = vc
+        popover.contentSize = Self.size
+        popover.behavior = .transient   // closes when you click away
+        popover.animates = true
+    }
+
+    var isShown: Bool { popover.isShown }
+
+    func show(relativeTo button: NSStatusBarButton) {
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    func close() { popover.close() }
+
+    /// Push state into the settings UI.
+    func setState(enabled: Bool, accessibilityTrusted: Bool) {
+        let payload: [String: Any] = ["enabled": enabled,
+                                      "accessibilityTrusted": accessibilityTrusted]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.loco && window.loco.setSettings && window.loco.setSettings(\(json))")
+    }
+
+    func userContentController(_ controller: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        if let body = message.body as? [String: Any] { onMessage?(body) }
+    }
+}
+
 // MARK: - Controller
 
 @MainActor
@@ -444,9 +507,9 @@ final class AppController: NSObject {
     private var timer: Timer?
     private var mouseMonitor: Any?
 
-    // Menu bar presence + the settings window it opens.
+    // Menu bar presence + the settings popover it opens.
     private var statusItem: NSStatusItem?
-    private var settingsWindow: NSWindow?
+    private var settingsPopover: SettingsPopover?
     private var enabled = true
 
     // The field + flagged words the UI currently targets.
@@ -466,6 +529,7 @@ final class AppController: NSObject {
     // Cache so we only re-evaluate when text/frame/selection changes.
     private var lastSignature: String = ""
     private var lastValueHash: Int = 0
+    private var lastHighlightsKey: String = ""   // skip redundant overlay redraws
 
     // PIDs we've already force-enabled accessibility on (Chromium/Electron
     // build their AX tree lazily and only for an attached AT — we have to ask).
@@ -602,6 +666,17 @@ final class AppController: NSObject {
     /// One pass: find focus, detect flagged words + geometry, redraw highlights.
     private func tick() {
         guard enabled else { return }
+
+        // Skip detection while the settings popover is open or loco itself is
+        // frontmost — there's nothing to correct in our own UI, and not redrawing
+        // the full-screen overlay keeps the settings popover smooth.
+        if settingsPopover?.isShown == true
+            || NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == ProcessInfo.processInfo.processIdentifier {
+            clearIfNeeded()
+            return
+        }
+
         guard let element = AX.focusedElement() else {
             clearIfNeeded()
             return
@@ -680,7 +755,14 @@ final class AppController: NSObject {
 
         activeElement = element
         flagged = words
-        view.update(highlights: words.map { Highlight(rect: $0.rect, color: .systemRed) })
+        let highlights = words.map { Highlight(rect: $0.rect, color: .systemRed) }
+        let key = highlights
+            .map { "\(Int($0.rect.minX)),\(Int($0.rect.minY)),\(Int($0.rect.width))" }
+            .joined(separator: ";")
+        if key != lastHighlightsKey {
+            lastHighlightsKey = key
+            view.update(highlights: highlights)
+        }
 
         // If the open card's word is gone (fixed/edited away), close it.
         if let aw = activeWord, !words.contains(where: { $0.id == aw.id }) {
@@ -851,95 +933,56 @@ final class AppController: NSObject {
     }
 
     @objc private func openSettings() {
-        if settingsWindow == nil { settingsWindow = makeSettingsWindow() }
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.center()
-        settingsWindow?.makeKeyAndOrderFront(nil)
-    }
-
-    private func makeSettingsWindow() -> NSWindow {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 250),
-            styleMask: [.titled, .closable],
-            backing: .buffered, defer: false)
-        window.title = "loco settings"
-        window.isReleasedWhenClosed = false
-        window.level = .floating   // above the browser so it's reachable
-
-        let title = label("loco", size: 20, weight: .bold)
-        let subtitle = label("Writing suggestions, rendered over any app.", size: 12, weight: .regular)
-        subtitle.textColor = .secondaryLabelColor
-
-        let enableToggle = NSButton(checkboxWithTitle: "Enable suggestions",
-                                    target: self, action: #selector(toggleEnabled(_:)))
-        enableToggle.state = enabled ? .on : .off
-
-        let trusted = AXIsProcessTrusted()
-        let axStatus = label(trusted ? "✓ Accessibility access granted"
-                                     : "⚠︎ Accessibility access required",
-                             size: 12, weight: .regular)
-        axStatus.textColor = trusted ? .systemGreen : .systemOrange
-        let axButton = NSButton(title: "Open Accessibility Settings…",
-                                target: self, action: #selector(openAccessibilitySettings))
-        axButton.bezelStyle = .rounded
-
-        let quit = NSButton(title: "Quit loco", target: self, action: #selector(quit))
-        quit.bezelStyle = .rounded
-        quit.keyEquivalent = "q"
-
-        let stack = NSStackView(views: [title, subtitle, separator(),
-                                        enableToggle, separator(),
-                                        axStatus, axButton, separator(), quit])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 22, bottom: 20, right: 22)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-        ])
-        window.contentView = content
-        return window
-    }
-
-    private func label(_ text: String, size: CGFloat, weight: NSFont.Weight) -> NSTextField {
-        let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: size, weight: weight)
-        return field
-    }
-
-    private func separator() -> NSBox {
-        let box = NSBox()
-        box.boxType = .separator
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.widthAnchor.constraint(equalToConstant: 336).isActive = true
-        return box
-    }
-
-    @objc private func toggleEnabled(_ sender: NSButton) {
-        enabled = sender.state == .on
-        if enabled {
-            lastSignature = ""
-            tick()
-        } else {
-            clearOverlay()
+        guard let button = statusItem?.button else { return }
+        if settingsPopover == nil {
+            let popover = SettingsPopover(url: Self.settingsURL())
+            popover.onMessage = { [weak self] body in self?.handleSettingsMessage(body) }
+            settingsPopover = popover
         }
-    }
-
-    @objc private func openAccessibilitySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+        // Toggle: clicking the icon again closes it.
+        if settingsPopover?.isShown == true {
+            settingsPopover?.close()
+            return
         }
+        settingsPopover?.show(relativeTo: button)
+        pushSettingsState()
     }
 
-    @objc private func quit() {
-        NSApp.terminate(nil)
+    /// The web UI in settings mode (same bundle, `#settings` hash).
+    private static func settingsURL() -> URL {
+        let base = webURL()
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        comps?.fragment = "settings"
+        return comps?.url ?? base
+    }
+
+    /// Push current state (enabled + accessibility) into the settings web UI.
+    private func pushSettingsState() {
+        settingsPopover?.setState(enabled: enabled, accessibilityTrusted: AXIsProcessTrusted())
+    }
+
+    private func handleSettingsMessage(_ body: [String: Any]) {
+        guard let type = body["type"] as? String else { return }
+        switch type {
+        case "ready":
+            pushSettingsState()
+        case "setEnabled":
+            enabled = (body["value"] as? NSNumber)?.boolValue ?? true
+            if enabled {
+                lastSignature = ""
+                tick()
+            } else {
+                clearOverlay()
+            }
+        case "openAccessibility":
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+        case "quit":
+            NSApp.terminate(nil)
+        default:
+            break
+        }
     }
 
     private func clearIfNeeded() {
@@ -950,6 +993,7 @@ final class AppController: NSObject {
     /// Tear down all on-screen UI and reset detection state.
     private func clearOverlay() {
         lastSignature = ""
+        lastHighlightsKey = ""
         flagged = []
         view.update(highlights: [])
         popoverPanel.orderOut(nil)
