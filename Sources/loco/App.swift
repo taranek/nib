@@ -444,6 +444,11 @@ final class AppController: NSObject {
     private var timer: Timer?
     private var mouseMonitor: Any?
 
+    // Menu bar presence + the settings window it opens.
+    private var statusItem: NSStatusItem?
+    private var settingsWindow: NSWindow?
+    private var enabled = true
+
     // The field + flagged words the UI currently targets.
     private var activeElement: AXUIElement?
     private var activeBrowserAppName: String?
@@ -502,6 +507,8 @@ final class AppController: NSObject {
         popoverPanel.onEnter = { [weak self] in self?.cancelHidePopover() }
         popoverPanel.onExit = { [weak self] in self?.scheduleHidePopover() }
         popoverPanel.onMessage = { [weak self] body in self?.handleWebMessage(body) }
+
+        setupStatusItem()
 
         print("✅ loco running. Type a misspelling (e.g. \"teh\", \"recieve\", \"definately\").")
         print("   The word gets highlighted; hover it to open the card and apply the fix.")
@@ -594,6 +601,7 @@ final class AppController: NSObject {
 
     /// One pass: find focus, detect flagged words + geometry, redraw highlights.
     private func tick() {
+        guard enabled else { return }
         guard let element = AX.focusedElement() else {
             clearIfNeeded()
             return
@@ -823,8 +831,124 @@ final class AppController: NSObject {
         print("🌐 enabled AX tree for \(bundleID) (pid \(pid)) — refocus the field")
     }
 
+    // MARK: - Menu bar + settings
+
+    /// Put a small icon in the menu bar; clicking it opens the settings window.
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            if let image = NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "loco") {
+                image.isTemplate = true
+                button.image = image
+            } else {
+                button.title = "loco"
+            }
+            button.toolTip = "loco — writing suggestions"
+            button.target = self
+            button.action = #selector(openSettings)
+        }
+        statusItem = item
+    }
+
+    @objc private func openSettings() {
+        if settingsWindow == nil { settingsWindow = makeSettingsWindow() }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.center()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeSettingsWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 250),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false)
+        window.title = "loco settings"
+        window.isReleasedWhenClosed = false
+        window.level = .floating   // above the browser so it's reachable
+
+        let title = label("loco", size: 20, weight: .bold)
+        let subtitle = label("Writing suggestions, rendered over any app.", size: 12, weight: .regular)
+        subtitle.textColor = .secondaryLabelColor
+
+        let enableToggle = NSButton(checkboxWithTitle: "Enable suggestions",
+                                    target: self, action: #selector(toggleEnabled(_:)))
+        enableToggle.state = enabled ? .on : .off
+
+        let trusted = AXIsProcessTrusted()
+        let axStatus = label(trusted ? "✓ Accessibility access granted"
+                                     : "⚠︎ Accessibility access required",
+                             size: 12, weight: .regular)
+        axStatus.textColor = trusted ? .systemGreen : .systemOrange
+        let axButton = NSButton(title: "Open Accessibility Settings…",
+                                target: self, action: #selector(openAccessibilitySettings))
+        axButton.bezelStyle = .rounded
+
+        let quit = NSButton(title: "Quit loco", target: self, action: #selector(quit))
+        quit.bezelStyle = .rounded
+        quit.keyEquivalent = "q"
+
+        let stack = NSStackView(views: [title, subtitle, separator(),
+                                        enableToggle, separator(),
+                                        axStatus, axButton, separator(), quit])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 22, bottom: 20, right: 22)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let content = NSView()
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: content.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        window.contentView = content
+        return window
+    }
+
+    private func label(_ text: String, size: CGFloat, weight: NSFont.Weight) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: size, weight: weight)
+        return field
+    }
+
+    private func separator() -> NSBox {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.widthAnchor.constraint(equalToConstant: 336).isActive = true
+        return box
+    }
+
+    @objc private func toggleEnabled(_ sender: NSButton) {
+        enabled = sender.state == .on
+        if enabled {
+            lastSignature = ""
+            tick()
+        } else {
+            clearOverlay()
+        }
+    }
+
+    @objc private func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
+
     private func clearIfNeeded() {
         if lastSignature.isEmpty { return }
+        clearOverlay()
+    }
+
+    /// Tear down all on-screen UI and reset detection state.
+    private func clearOverlay() {
         lastSignature = ""
         flagged = []
         view.update(highlights: [])
