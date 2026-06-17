@@ -9,9 +9,30 @@ import NaturalLanguage
 // response format so the model returns structured grammar corrections.
 
 /// One grammar/spelling correction: the exact original substring and its fix.
-struct Correction: Equatable {
+struct Correction: Equatable, Sendable {
     let wrong: String
     let fix: String
+}
+
+/// Process-wide cache of sentence → corrections. Safe because greedy decoding
+/// is deterministic: the same sentence always yields the same result. Bounded
+/// with simple FIFO eviction.
+actor GrammarCache {
+    static let shared = GrammarCache()
+    private var store: [String: [Correction]] = [:]
+    private var order: [String] = []
+    private let limit = 1000
+
+    func get(_ key: String) -> [Correction]? { store[key] }
+
+    func set(_ key: String, _ value: [Correction]) {
+        if store[key] == nil { order.append(key) }
+        store[key] = value
+        if order.count > limit {
+            let evicted = order.removeFirst()
+            store[evicted] = nil
+        }
+    }
 }
 
 // MARK: - Paths & bundling
@@ -256,10 +277,13 @@ struct LLMClient {
         return collected.filter { seen.insert("\($0.wrong)|\($0.fix)").inserted }
     }
 
-    /// Check one sentence in isolation.
+    /// Check one sentence in isolation, caching successful results so unchanged
+    /// sentences don't hit the model again.
     private func checkSentence(_ sentence: String) async -> [Correction] {
         let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > 1 else { return [] }
+
+        if let cached = await GrammarCache.shared.get(trimmed) { return cached }
 
         let body: [String: Any] = [
             "messages": [
@@ -278,6 +302,8 @@ struct LLMClient {
         request.httpBody = payload
         request.timeoutInterval = 30
 
+        // A failed request returns [] WITHOUT caching, so a transient blip
+        // doesn't get stuck as "no mistakes".
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
 
@@ -287,7 +313,9 @@ struct LLMClient {
               let content = message["content"] as? String else { return [] }
 
         // Validate against the sentence so phrases are scoped to where they belong.
-        return Self.parse(content, in: sentence)
+        let result = Self.parse(content, in: sentence)
+        await GrammarCache.shared.set(trimmed, result)   // cache the successful result (even if empty)
+        return result
     }
 
     /// Split text into sentences (Apple's tokenizer), dropping empty fragments.
