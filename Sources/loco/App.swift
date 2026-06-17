@@ -169,10 +169,12 @@ final class BrowserJSBridge {
         "com.vivaldi.Vivaldi": "Vivaldi",
     ]
 
-    // Reads the real DOM caret rect (relative to the focused element) AND whether
-    // the caret's block line is empty. No double-quotes/backslashes so it embeds
-    // cleanly in the AppleScript string.
-    private static let js = "(function(){try{var s=window.getSelection();if(!s||!s.rangeCount){return '';}var r=s.getRangeAt(0);var n=r.startContainer;var blk=(n.nodeType===3)?n.parentNode:n;while(blk&&blk!==document.body){var d=window.getComputedStyle(blk).display;if(d==='block'||d==='list-item'){break;}blk=blk.parentNode;}var empty=blk?((blk.innerText||'').trim().length===0):false;var rect=null;var rs=r.getClientRects();if(rs.length){rect=rs[0];}if(!rect){var o=r.startOffset;var r2=document.createRange();if(n.nodeType===3&&o>0){r2.setStart(n,o-1);r2.setEnd(n,o);var q=r2.getClientRects();if(q.length){rect=q[q.length-1];}}if(!rect&&n.nodeType===3&&n.length>o){r2.setStart(n,o);r2.setEnd(n,o+1);var q2=r2.getClientRects();if(q2.length){rect=q2[0];}}}var el=document.activeElement;var e=el?el.getBoundingClientRect():{left:0,top:0};var out={empty:empty};if(rect){out.x=Math.round(rect.left-e.left);out.y=Math.round(rect.top-e.top);out.h=Math.round(rect.height)||18;}return JSON.stringify(out);}catch(x){return '';}})();"
+    // Reads the real DOM selection box (relative to the focused element) AND
+    // whether the caret's block line is empty. For a collapsed caret this is one
+    // line; for a selection spanning multiple lines it's the union of every line
+    // fragment, so `h` grows to cover the whole selection. No double-quotes or
+    // backslashes so it embeds cleanly in the AppleScript string.
+    private static let js = "(function(){try{var s=window.getSelection();if(!s||!s.rangeCount){return '';}var r=s.getRangeAt(0);var n=r.startContainer;var blk=(n.nodeType===3)?n.parentNode:n;while(blk&&blk!==document.body){var d=window.getComputedStyle(blk).display;if(d==='block'||d==='list-item'){break;}blk=blk.parentNode;}var empty=blk?((blk.innerText||'').trim().length===0):false;var top=null,bottom=null,left=null;var rs=r.getClientRects();for(var i=0;i<rs.length;i++){var rc=rs[i];if(rc.width===0&&rc.height===0){continue;}if(top===null||rc.top<top){top=rc.top;}if(bottom===null||rc.bottom>bottom){bottom=rc.bottom;}if(left===null||rc.left<left){left=rc.left;}}if(top===null){var o=r.startOffset;var rr=null;var r2=document.createRange();if(n.nodeType===3&&o>0){r2.setStart(n,o-1);r2.setEnd(n,o);var q=r2.getClientRects();if(q.length){rr=q[q.length-1];}}if(!rr&&n.nodeType===3&&n.length>o){r2.setStart(n,o);r2.setEnd(n,o+1);var q2=r2.getClientRects();if(q2.length){rr=q2[0];}}if(rr){top=rr.top;bottom=rr.bottom;left=rr.left;}}var el=document.activeElement;var e=el?el.getBoundingClientRect():{left:0,top:0};var out={empty:empty};if(top!==null){out.x=Math.round(left-e.left);out.y=Math.round(top-e.top);out.h=Math.round(bottom-top)||18;}return JSON.stringify(out);}catch(x){return '';}})();"
 
     private var scripts: [String: NSAppleScript] = [:]   // compiled once per app
     private var warned = false
@@ -694,7 +696,15 @@ final class AppController: NSObject {
             if let caretIndex = selection?.location, isCurrentLineEmpty(value: value, caret: caretIndex) {
                 hidePill(); return
             }
-            caret = resolveCaret(for: element, fieldBox: fieldBox)
+            // A real selection (length > 0) gives a multi-line union rect via
+            // AXBoundsForRange — use it so the pill spans the selection.
+            if let sel = selection, sel.length > 0,
+               let selRect = AX.bounds(of: sel, in: element).map(toCocoa),
+               isInsideField(selRect, fieldBox) {
+                caret = selRect
+            } else {
+                caret = resolveCaret(for: element, fieldBox: fieldBox)
+            }
         }
 
         activeElement = element
@@ -729,12 +739,19 @@ final class AppController: NSObject {
         return isInsideField(rect, fieldBox) ? rect : nil
     }
 
-    /// Position the pill in the field's left margin at the given line rect.
+    /// Position the pill in the field's left margin, spanning the given line (or
+    /// multi-line selection) rect. The pill grows to cover a multi-line selection
+    /// and never extends past the visible field.
     private func placeGutter(lineRect: CGRect, fieldBox: CGRect) {
-        let chip = GutterView.size
-        let gx = fieldBox.minX - chip.width - 4
-        let gy = lineRect.midY - chip.height / 2
-        gutterPanel.setFrame(NSRect(x: gx, y: gy, width: chip.width, height: chip.height), display: true)
+        let width = GutterView.size.width
+        // Clamp the span to the visible field so a partly-scrolled selection
+        // doesn't push the pill off the field.
+        let top = min(lineRect.maxY, fieldBox.maxY)
+        let bottom = max(lineRect.minY, fieldBox.minY)
+        let height = max(GutterView.size.height, top - bottom)
+        let gx = fieldBox.minX - width - 4
+        let gy = (top + bottom) / 2 - height / 2
+        gutterPanel.setFrame(NSRect(x: gx, y: gy, width: width, height: height), display: true)
         gutterPanel.orderFrontRegardless()
         popoverAnchor = NSPoint(x: fieldBox.minX, y: gy)
         if popoverPanel.isVisible { showPopover() }
