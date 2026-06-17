@@ -543,9 +543,77 @@ final class AppController: NSObject {
         print("   Red squiggle marks it; hover the badge to open the React panel and Fix.")
         print("   Panel UI from: \(Self.webURL().absoluteString)\n")
 
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        // Event-driven: react to focus/value/selection changes via AXObserver,
+        // and to app switches via NSWorkspace. A slow safety poll backstops
+        // anything not delivered as a notification (e.g. scroll, window moves).
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(activeAppChanged),
+            name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        rebuildObservers()
+
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+    }
+
+    // MARK: - AX observers (event-driven updates)
+
+    private var axObserver: AXObserver?
+    private var observedElement: AXUIElement?
+
+    @objc private func activeAppChanged() {
+        rebuildObservers()
+        tick()
+    }
+
+    /// (Re)create the AXObserver for the frontmost app and observe focus changes.
+    private func rebuildObservers() {
+        if let axObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(),
+                                  AXObserverGetRunLoopSource(axObserver), .defaultMode)
+        }
+        axObserver = nil
+        observedElement = nil
+
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
+
+        let callback: AXObserverCallback = { _, _, notification, refcon in
+            guard let refcon else { return }
+            let controller = Unmanaged<AppController>.fromOpaque(refcon).takeUnretainedValue()
+            MainActor.assumeIsolated { controller.handleAXNotification(notification as String) }
+        }
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
+        axObserver = observer
+
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let appElement = AXUIElementCreateApplication(pid)
+        AXObserverAddNotification(observer, appElement,
+                                  kAXFocusedUIElementChangedNotification as CFString, refcon)
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        attachToFocusedElement()
+    }
+
+    /// Observe value/selection changes on the currently focused element.
+    private func attachToFocusedElement() {
+        guard let observer = axObserver else { return }
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        if let old = observedElement {
+            AXObserverRemoveNotification(observer, old, kAXValueChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, old, kAXSelectedTextChangedNotification as CFString)
+        }
+        observedElement = AX.focusedElement()
+        if let element = observedElement {
+            AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
+            AXObserverAddNotification(observer, element, kAXSelectedTextChangedNotification as CFString, refcon)
+        }
+    }
+
+    private func handleAXNotification(_ notification: String) {
+        if notification == kAXFocusedUIElementChangedNotification as String {
+            attachToFocusedElement()
+        }
+        tick()
     }
 
     private func ensureAccessibilityPermission() -> Bool {
@@ -553,11 +621,18 @@ final class AppController: NSObject {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// One sampling pass: find focus, read text + geometry, redraw.
+    /// One pass: find focus, read text + geometry, redraw. Driven by AX
+    /// notifications, with the safety timer as a backstop.
     private func tick() {
         guard let element = AX.focusedElement() else {
             clearIfNeeded()
             return
+        }
+
+        // Keep value/selection observers attached to the live focused element
+        // (some focus changes don't deliver a notification).
+        if observedElement == nil || !CFEqual(observedElement!, element) {
+            attachToFocusedElement()
         }
 
         // Chromium/Electron won't expose web text until we flip on their AX tree.
