@@ -1,7 +1,6 @@
 import Cocoa
 import ApplicationServices
 import WebKit
-import CursorBounds
 
 // MARK: - Entry point
 
@@ -101,15 +100,8 @@ enum AX {
 //
 // Stand-in for the NLP/LLM backend: a tiny local rule engine that produces
 // real issues to render. Swap this for streamed server suggestions later;
-// everything downstream (geometry, squiggles, the card, write-back) is agnostic
+// everything downstream (geometry, highlights, the card, write-back) is agnostic
 // to where the issues come from.
-
-struct Issue {
-    let range: NSRange        // UTF-16 range into the field's value
-    let replacement: String
-    let message: String
-    let color: NSColor
-}
 
 enum Linter {
     static let misspellings: [String: String] = [
@@ -120,45 +112,63 @@ enum Linter {
         "adress": "address", "tommorow": "tomorrow", "untill": "until",
     ]
 
-    static func issues(in text: String) -> [Issue] {
+    /// Native-field lint: scan the raw text value for known misspellings.
+    static func words(in text: String) -> [(word: String, replacement: String, range: NSRange)] {
         guard !text.isEmpty else { return [] }
-        var result: [Issue] = []
-
+        var result: [(String, String, NSRange)] = []
         text.enumerateSubstrings(in: text.startIndex..<text.endIndex,
                                  options: .byWords) { sub, range, _, _ in
             guard let sub, let fix = misspellings[sub.lowercased()] else { return }
             let cased = matchCase(fix, like: sub)
-            result.append(Issue(range: NSRange(range, in: text),
-                                replacement: cased,
-                                message: "“\(sub)” → “\(cased)”",
-                                color: .systemRed))
+            result.append((String(sub), cased, NSRange(range, in: text)))
         }
         return result
     }
 
     /// Preserve a leading capital from the original word.
-    private static func matchCase(_ replacement: String, like original: String) -> String {
+    static func matchCase(_ replacement: String, like original: String) -> String {
         guard let first = original.first, first.isUppercase else { return replacement }
         return replacement.prefix(1).uppercased() + replacement.dropFirst()
     }
 }
 
-// MARK: - Browser JS bridge (exact caret from the real page)
+/// One flagged word with everything the overlay + card + write-back need.
+struct FlaggedWord {
+    let word: String
+    let replacement: String
+    let message: String
+    let category: String
+    let rect: CGRect          // Cocoa coords (bottom-left origin), screen space
+    let range: NSRange?       // native write-back via AX (nil for browsers)
+    let key: String           // lowercased word
+    let occurrence: Int       // Nth match of this key — disambiguates duplicates
+
+    /// Stable identity for hover/dismiss bookkeeping.
+    var id: String { "\(key)#\(occurrence)" }
+}
+
+// MARK: - Browser bridge (in-page DOM scan + write-back)
 //
-// Runs JavaScript in the browser's active tab via AppleScript and reads the real
-// DOM caret rect (getSelection().getClientRects()), relative to the focused
-// element — so we map it onto the AX field frame regardless of scroll. Requires
+// Contenteditable surfaces (Gmail, docs, chat boxes) expose text via AX but no
+// per-range geometry — so we run JS in the real page to FIND the misspellings
+// and read each word's DOM rect directly. Same channel applies fixes. Requires
 // the browser's "Allow JavaScript from Apple Events" (View → Developer) and
 // Automation permission. No extension needed.
 
-/// Result of the in-page caret query: the caret rect (relative to the focused
-/// element) and whether the caret's line has no text.
-struct CaretInfo {
-    let rect: CGRect?
-    let lineEmpty: Bool
+/// A flagged word as the page reports it: text, fix, and a rect relative to the
+/// focused element's bounding box.
+struct RawHit {
+    let word: String
+    let replacement: String
+    let key: String
+    let occurrence: Int
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
 }
 
-final class BrowserJSBridge {
+final class BrowserBridge {
     static let appNames: [String: String] = [
         "com.google.Chrome": "Google Chrome",
         "com.google.Chrome.canary": "Google Chrome Canary",
@@ -169,55 +179,73 @@ final class BrowserJSBridge {
         "com.vivaldi.Vivaldi": "Vivaldi",
     ]
 
-    // Reads the real DOM selection box (relative to the focused element) AND
-    // whether the caret's block line is empty. For a collapsed caret this is one
-    // line; for a selection spanning multiple lines it's the union of every line
-    // fragment, so `h` grows to cover the whole selection. No double-quotes or
-    // backslashes so it embeds cleanly in the AppleScript string.
-    private static let js = "(function(){try{var s=window.getSelection();if(!s||!s.rangeCount){return '';}var r=s.getRangeAt(0);var n=r.startContainer;var blk=(n.nodeType===3)?n.parentNode:n;while(blk&&blk!==document.body){var d=window.getComputedStyle(blk).display;if(d==='block'||d==='list-item'){break;}blk=blk.parentNode;}var empty=blk?((blk.innerText||'').trim().length===0):false;var top=null,bottom=null,left=null;var rs=r.getClientRects();for(var i=0;i<rs.length;i++){var rc=rs[i];if(rc.width===0&&rc.height===0){continue;}if(top===null||rc.top<top){top=rc.top;}if(bottom===null||rc.bottom>bottom){bottom=rc.bottom;}if(left===null||rc.left<left){left=rc.left;}}if(top===null){var o=r.startOffset;var rr=null;var r2=document.createRange();if(n.nodeType===3&&o>0){r2.setStart(n,o-1);r2.setEnd(n,o);var q=r2.getClientRects();if(q.length){rr=q[q.length-1];}}if(!rr&&n.nodeType===3&&n.length>o){r2.setStart(n,o);r2.setEnd(n,o+1);var q2=r2.getClientRects();if(q2.length){rr=q2[0];}}if(rr){top=rr.top;bottom=rr.bottom;left=rr.left;}}var el=document.activeElement;var e=el?el.getBoundingClientRect():{left:0,top:0};var out={empty:empty};if(top!==null){out.x=Math.round(left-e.left);out.y=Math.round(top-e.top);out.h=Math.round(bottom-top)||18;}return JSON.stringify(out);}catch(x){return '';}})();"
+    /// The misspelling table as a JS object literal. Keys are lowercase letters
+    /// (valid identifiers); values use backticks so apostrophes ("don't") need no
+    /// escaping — and no double-quotes/backslashes, so it embeds in AppleScript.
+    private static let dictLiteral: String = {
+        let entries = Linter.misspellings.map { "\($0.key):`\($0.value)`" }
+        return "{" + entries.joined(separator: ",") + "}"
+    }()
 
-    private var scripts: [String: NSAppleScript] = [:]   // compiled once per app
+    // Walk the focused contenteditable's text nodes, flag dictionary words, and
+    // return each match's DOM rect relative to the element. Skips non-editable
+    // focus (URL bar, page body) so we never highlight the whole page.
+    private static let scanJS = "(function(){try{var el=document.activeElement;if(!el||!el.isContentEditable){return '';}var dict=" + dictLiteral + ";var e=el.getBoundingClientRect();var wk=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);var out=[];var re=/[A-Za-z]+/g;var nd;var occ={};while(nd=wk.nextNode()){var t=nd.nodeValue;re.lastIndex=0;var m;while(m=re.exec(t)){var w=m[0];var k=w.toLowerCase();var rp=dict[k];if(rp){var ix=(occ[k]||0);occ[k]=ix+1;var rg=document.createRange();rg.setStart(nd,m.index);rg.setEnd(nd,m.index+w.length);var rc=rg.getBoundingClientRect();if(rc.width>0){out.push({w:w,r:rp,k:k,i:ix,x:Math.round(rc.left-e.left),y:Math.round(rc.top-e.top),width:Math.round(rc.width),h:Math.round(rc.height)});}}}}return JSON.stringify(out);}catch(x){return '';}})();"
+
+    private var scanScripts: [String: NSAppleScript] = [:]   // compiled once per app
     private var warned = false
 
-    /// Caret info from the active tab for a browser app name. Synchronous — call
-    /// on the main thread. Reuses a compiled NSAppleScript (no spawn/recompile).
-    func caretInfo(appName: String) -> CaretInfo? {
+    /// Flagged words from the active tab's focused contenteditable. Synchronous —
+    /// call on the main thread. Returns nil when JS is unavailable / not editable.
+    func scan(appName: String) -> [RawHit]? {
         let script: NSAppleScript
-        if let cached = scripts[appName] {
+        if let cached = scanScripts[appName] {
             script = cached
         } else {
-            let source = "tell application \"\(appName)\"\nexecute active tab of front window javascript \"\(Self.js)\"\nend tell"
-            guard let compiled = NSAppleScript(source: source) else { return nil }
-            scripts[appName] = compiled
+            guard let compiled = NSAppleScript(source: wrap(appName, Self.scanJS)) else { return nil }
+            scanScripts[appName] = compiled
             script = compiled
         }
 
         var error: NSDictionary?
         let descriptor = script.executeAndReturnError(&error)
-        if let error {
-            warnOnce(error)
-            return nil
-        }
+        if let error { warnOnce(error); return nil }
         guard let text = descriptor.stringValue, !text.isEmpty,
               let data = text.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return nil }
 
-        let lineEmpty = (obj["empty"] as? NSNumber)?.boolValue ?? false
-        var rect: CGRect?
-        if let x = (obj["x"] as? NSNumber)?.doubleValue,
-           let y = (obj["y"] as? NSNumber)?.doubleValue,
-           let h = (obj["h"] as? NSNumber)?.doubleValue {
-            rect = CGRect(x: x, y: y, width: 2, height: h)
+        return arr.compactMap { obj in
+            guard let w = obj["w"] as? String, let r = obj["r"] as? String,
+                  let k = obj["k"] as? String,
+                  let i = (obj["i"] as? NSNumber)?.intValue,
+                  let x = (obj["x"] as? NSNumber)?.doubleValue,
+                  let y = (obj["y"] as? NSNumber)?.doubleValue,
+                  let width = (obj["width"] as? NSNumber)?.doubleValue,
+                  let h = (obj["h"] as? NSNumber)?.doubleValue else { return nil }
+            return RawHit(word: w, replacement: r, key: k, occurrence: i,
+                          x: x, y: y, width: width, height: h)
         }
-        return CaretInfo(rect: rect, lineEmpty: lineEmpty)
+    }
+
+    /// Replace the Nth occurrence of `key` in the focused contenteditable with
+    /// `replacement`, via the DOM (execCommand so the editor's model updates).
+    func replace(appName: String, key: String, occurrence: Int, replacement: String) {
+        let js = "(function(){try{var el=document.activeElement;if(!el||!el.isContentEditable){return 'no';}var key=`\(key)`;var target=\(occurrence);var rep=`\(replacement)`;var wk=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);var re=/[A-Za-z]+/g;var nd;var occ=0;while(nd=wk.nextNode()){var t=nd.nodeValue;re.lastIndex=0;var m;while(m=re.exec(t)){var w=m[0];if(w.toLowerCase()===key){if(occ===target){var rg=document.createRange();rg.setStart(nd,m.index);rg.setEnd(nd,m.index+w.length);var sel=window.getSelection();sel.removeAllRanges();sel.addRange(rg);if(!document.execCommand('insertText',false,rep)){nd.nodeValue=t.slice(0,m.index)+rep+t.slice(m.index+w.length);}return 'ok';}occ++;}}}return 'miss';}catch(x){return 'err';}})();"
+        var error: NSDictionary?
+        NSAppleScript(source: wrap(appName, js))?.executeAndReturnError(&error)
+        if let error { warnOnce(error) }
+    }
+
+    private func wrap(_ appName: String, _ js: String) -> String {
+        "tell application \"\(appName)\"\nexecute active tab of front window javascript \"\(js)\"\nend tell"
     }
 
     private func warnOnce(_ error: NSDictionary) {
         guard !warned else { return }
         warned = true
         print("""
-        ⚠️ Browser JS caret unavailable. To enable exact in-browser tracking:
+        ⚠️ Browser JS unavailable. To enable in-browser highlighting:
            1. In Brave/Chrome: View → Developer → Allow JavaScript from Apple Events
            2. Grant Automation permission for loco to control the browser when prompted
            (\(error[NSAppleScript.errorMessage] ?? error))
@@ -244,21 +272,20 @@ final class OverlayWindow: NSWindow {
     }
 }
 
-/// One squiggle to draw: a rect (in view coords) and its color.
-struct Underline {
+/// One word highlight: a rect (view coords) and its accent color.
+struct Highlight {
     let rect: CGRect
     let color: NSColor
 }
 
-/// Draws wavy squiggles beneath flagged ranges. Coordinates handed in are
+/// Draws a soft colored highlight under each flagged word, plus a thin accent
+/// line at the baseline — the Grammarly inline look. Coordinates handed in are
 /// already converted to this view's (bottom-left origin) space.
 final class OverlayView: NSView {
-    private var underlines: [Underline] = []
-    private var fieldBox: CGRect?   // debug: shows the overlay is rendering
+    private var highlights: [Highlight] = []
 
-    func update(underlines: [Underline], fieldBox: CGRect?) {
-        self.underlines = underlines
-        self.fieldBox = fieldBox
+    func update(highlights: [Highlight]) {
+        self.highlights = highlights
         needsDisplay = true
     }
 
@@ -266,192 +293,26 @@ final class OverlayView: NSView {
         NSColor.clear.set()
         dirtyRect.fill()
 
-        for underline in underlines {
-            underline.color.setStroke()
-            let path = squigglePath(under: underline.rect)
-            path.stroke()
+        for h in highlights {
+            let box = h.rect.insetBy(dx: -1, dy: -1)
+            h.color.withAlphaComponent(0.16).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3).fill()
+
+            // Accent underline hugging the baseline.
+            h.color.withAlphaComponent(0.9).setStroke()
+            let line = NSBezierPath()
+            line.lineWidth = 2
+            line.move(to: NSPoint(x: box.minX + 1, y: box.minY + 0.5))
+            line.line(to: NSPoint(x: box.maxX - 1, y: box.minY + 0.5))
+            line.stroke()
         }
     }
-
-    /// A small zig-zag wave hugging the bottom edge of `rect`.
-    private func squigglePath(under rect: CGRect) -> NSBezierPath {
-        let path = NSBezierPath()
-        path.lineWidth = 1.6
-        path.lineJoinStyle = .round
-
-        let amplitude: CGFloat = 1.8
-        let step: CGFloat = 2.0
-        let baseline = rect.minY - 1
-
-        var x = rect.minX
-        var up = true
-        path.move(to: NSPoint(x: x, y: baseline))
-        while x < rect.maxX {
-            x = min(x + step, rect.maxX)
-            path.line(to: NSPoint(x: x, y: baseline + (up ? amplitude : 0)))
-            up.toggle()
-        }
-        return path
-    }
 }
 
-// MARK: - Floating UI (badge + hover popover)
+// MARK: - Floating popover
 
-/// A view that reports mouse enter/exit — used to drive hover state for both
-/// the badge and the popover so the popover stays open while the cursor is over
-/// either one.
-class HoverView: NSView {
-    var onEnter: (() -> Void)?
-    var onExit: (() -> Void)?
-    private var tracking: NSTrackingArea?
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds,
-                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                  owner: self)
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) { onEnter?() }
-    override func mouseExited(with event: NSEvent) { onExit?() }
-}
-
-/// A small, subtle pill shown in the field's left margin. Hovering it opens the
-/// suggestions panel. The hover area is the whole view; only the thin pill on
-/// its right edge is painted, so it sits just left of the text without overlap.
-final class GutterView: HoverView {
-    static let size = NSSize(width: 14, height: 22)
-    private static let pillWidth: CGFloat = 5
-
-    var count: Int = 0 { didSet { needsDisplay = true } }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let pill = NSRect(x: bounds.maxX - Self.pillWidth - 2, y: 2,
-                          width: Self.pillWidth, height: bounds.height - 4)
-        let color = count > 0 ? NSColor.systemRed : NSColor.systemGray
-        color.setFill()
-        NSBezierPath(roundedRect: pill, xRadius: Self.pillWidth / 2, yRadius: Self.pillWidth / 2).fill()
-    }
-}
-
-/// Non-activating panel base — floats above everything and never steals focus
-/// from the underlying text field, so write-back keeps working.
-class FloatingPanel: NSPanel {
-    init(size: NSSize) {
-        super.init(contentRect: NSRect(origin: .zero, size: size),
-                   styleMask: [.nonactivatingPanel],
-                   backing: .buffered,
-                   defer: false)
-        isFloatingPanel = true
-        level = .statusBar          // match the squiggle overlay's level
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        becomesKeyOnlyIfNeeded = true
-        // NSPanel defaults this to true, which hides it whenever our (accessory,
-        // never-frontmost) app isn't active — i.e. always. Keep it visible.
-        hidesOnDeactivate = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-    }
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
-/// Hosts the hoverable count chip pinned to the field's corner.
-final class GutterPanel: FloatingPanel {
-    let gutter = GutterView(frame: NSRect(origin: .zero, size: GutterView.size))
-    init() {
-        super.init(size: GutterView.size)
-        hasShadow = false
-        gutter.autoresizingMask = [.width, .height]
-        contentView = gutter
-    }
-}
-
-/// The bigger "real UI" panel revealed on hover: a header and a list of every
-/// issue, each individually fixable, plus Fix-all.
-final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDelegate {
-    private(set) var webView: WKWebView!
-
-    /// Which corner of the panel is pinned to `anchor`, so it grows away from
-    /// the gutter as the web content resizes.
-    enum Corner { case bottomRight, topLeft }
-    private var anchor: NSPoint = .zero
-    private var anchorCorner: Corner = .topLeft
-
-    /// Inbound messages from the React app: {type, ...}.
-    var onMessage: (([String: Any]) -> Void)?
-    /// Hover state so the popover stays open while the cursor is over it.
-    var onEnter: (() -> Void)?
-    var onExit: (() -> Void)?
-
-    init(url: URL) {
-        super.init(size: NSSize(width: 344, height: 160))
-        hasShadow = true   // native shadow (outside the frame, non-interactive)
-
-        let config = WKWebViewConfiguration()
-        let userContent = WKUserContentController()
-        userContent.add(self, name: "loco")
-        config.userContentController = userContent
-
-        let web = HoverWebView(frame: NSRect(x: 0, y: 0, width: 344, height: 160),
-                               configuration: config)
-        web.navigationDelegate = self
-        web.autoresizingMask = [.width, .height]
-        web.setValue(false, forKey: "drawsBackground")   // transparent webview
-        web.onEnter = { [weak self] in self?.onEnter?() }
-        web.onExit = { [weak self] in self?.onExit?() }
-        web.load(URLRequest(url: url))
-
-        webView = web
-        contentView = web
-    }
-
-    /// Push the current issues into the React app.
-    func setIssues(_ issues: [Issue]) {
-        let payload = issues.map { ["message": $0.message, "replacement": $0.replacement] }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.loco && window.loco.setIssues(\(json))")
-    }
-
-    func present(anchor: NSPoint, corner: Corner) {
-        self.anchor = anchor
-        self.anchorCorner = corner
-        reposition()
-        orderFrontRegardless()
-    }
-
-    /// Size to the web content, re-pin to the anchor, and refresh the shadow to
-    /// match the new (rounded) content shape.
-    func resize(toContentWidth width: CGFloat, height: CGFloat) {
-        setContentSize(NSSize(width: width, height: height))
-        reposition()
-        invalidateShadow()
-    }
-
-    private func reposition() {
-        let origin: NSPoint
-        switch anchorCorner {
-        case .bottomRight:
-            origin = NSPoint(x: anchor.x - frame.width, y: anchor.y)
-        case .topLeft:
-            origin = NSPoint(x: anchor.x, y: anchor.y - frame.height)
-        }
-        setFrameOrigin(origin)
-    }
-
-    func userContentController(_ controller: WKUserContentController,
-                               didReceive message: WKScriptMessage) {
-        if let body = message.body as? [String: Any] { onMessage?(body) }
-    }
-}
-
-/// WKWebView that reports hover enter/exit (WKWebView doesn't subclass HoverView,
-/// so it re-implements the tracking area).
+/// A view that reports mouse enter/exit — keeps the popover open while the cursor
+/// is over it.
 final class HoverWebView: WKWebView {
     var onEnter: (() -> Void)?
     var onExit: (() -> Void)?
@@ -470,28 +331,126 @@ final class HoverWebView: WKWebView {
     override func mouseExited(with event: NSEvent) { onExit?() }
 }
 
+/// Non-activating panel base — floats above everything and never steals focus
+/// from the underlying text field, so write-back keeps working.
+class FloatingPanel: NSPanel {
+    init(size: NSSize) {
+        super.init(contentRect: NSRect(origin: .zero, size: size),
+                   styleMask: [.nonactivatingPanel],
+                   backing: .buffered,
+                   defer: false)
+        isFloatingPanel = true
+        level = .statusBar          // match the overlay's level
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        becomesKeyOnlyIfNeeded = true
+        // NSPanel defaults this to true, which hides it whenever our (accessory,
+        // never-frontmost) app isn't active — i.e. always. Keep it visible.
+        hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    }
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+/// The per-word suggestion card: category, the suggestion (click to apply),
+/// Dismiss, and a footer link. Anchored just under the flagged word.
+final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDelegate {
+    private(set) var webView: WKWebView!
+
+    /// Top-left of the card is pinned to `anchor`; it grows downward.
+    private var anchor: NSPoint = .zero
+
+    var onMessage: (([String: Any]) -> Void)?
+    var onEnter: (() -> Void)?
+    var onExit: (() -> Void)?
+
+    init(url: URL) {
+        super.init(size: NSSize(width: 300, height: 150))
+        hasShadow = true   // native shadow (outside the frame, non-interactive)
+
+        let config = WKWebViewConfiguration()
+        let userContent = WKUserContentController()
+        userContent.add(self, name: "loco")
+        config.userContentController = userContent
+
+        let web = HoverWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 150),
+                               configuration: config)
+        web.navigationDelegate = self
+        web.autoresizingMask = [.width, .height]
+        web.setValue(false, forKey: "drawsBackground")   // transparent webview
+        web.onEnter = { [weak self] in self?.onEnter?() }
+        web.onExit = { [weak self] in self?.onExit?() }
+        web.load(URLRequest(url: url))
+
+        webView = web
+        contentView = web
+    }
+
+    /// Push the current single suggestion into the React card.
+    func setSuggestion(_ word: FlaggedWord) {
+        let payload: [String: Any] = [
+            "message": word.message,
+            "suggestion": word.replacement,
+            "category": word.category,
+            "word": word.word,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.loco && window.loco.setSuggestion(\(json))")
+    }
+
+    func present(anchor: NSPoint) {
+        self.anchor = anchor
+        reposition()
+        orderFrontRegardless()
+    }
+
+    func resize(toContentWidth width: CGFloat, height: CGFloat) {
+        setContentSize(NSSize(width: width, height: height))
+        reposition()
+        invalidateShadow()
+    }
+
+    private func reposition() {
+        setFrameOrigin(NSPoint(x: anchor.x, y: anchor.y - frame.height))
+    }
+
+    func userContentController(_ controller: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        if let body = message.body as? [String: Any] { onMessage?(body) }
+    }
+}
+
 // MARK: - Controller
 
 @MainActor
 final class AppController: NSObject {
     private var window: OverlayWindow!
     private var view: OverlayView!
-    private var gutterPanel: GutterPanel!
     private var popoverPanel: PopoverPanel!
-    private let browserJS = BrowserJSBridge()
+    private let browser = BrowserBridge()
     private var timer: Timer?
+    private var mouseMonitor: Any?
 
-    // The field + issues the UI currently targets, so Fix can write back.
+    // The field + flagged words the UI currently targets.
     private var activeElement: AXUIElement?
-    private var activeIssues: [Issue] = []
+    private var activeBrowserAppName: String?
+    private var flagged: [FlaggedWord] = []
 
-    // Where the popover's top-left corner is pinned (beside the gutter bar),
-    // and a small grace timer so moving gutter→popover doesn't dismiss it.
-    private var popoverAnchor: NSPoint = .zero
+    // The word whose card is open, and the word the cursor is currently over.
+    private var activeWord: FlaggedWord?
+    private var hoveredID: String?
     private var hideHoverTimer: Timer?
 
-    // Cache so we only re-evaluate when the text/frame changes.
+    // Words the user dismissed (by id) — cleared whenever the text changes,
+    // since edits shift occurrence indices.
+    private var dismissed = Set<String>()
+
+    // Cache so we only re-evaluate when text/frame/selection changes.
     private var lastSignature: String = ""
+    private var lastValueHash: Int = 0
 
     // PIDs we've already force-enabled accessibility on (Chromium/Electron
     // build their AX tree lazily and only for an attached AT — we have to ask).
@@ -515,15 +474,12 @@ final class AppController: NSObject {
 
     func start() {
         if !ensureAccessibilityPermission() {
-            // Permission dialog has been shown; the binary now appears in
-            // System Settings. User flips the toggle and re-runs.
             print("""
             ⏳ Accessibility permission required.
                1. Open System Settings → Privacy & Security → Accessibility
                2. Enable the entry for this binary (or your terminal app)
                3. Re-run:  swift run loco
             """)
-            // Keep running so the toggle can take effect live on some setups.
         }
 
         let screen = NSScreen.screens.first ?? NSScreen.main!
@@ -532,18 +488,21 @@ final class AppController: NSObject {
         window.contentView = view
         window.orderFrontRegardless()
 
-        gutterPanel = GutterPanel()
-        gutterPanel.gutter.onEnter = { [weak self] in self?.showPopover() }
-        gutterPanel.gutter.onExit = { [weak self] in self?.scheduleHidePopover() }
-
         popoverPanel = PopoverPanel(url: Self.webURL())
         popoverPanel.onEnter = { [weak self] in self?.cancelHidePopover() }
         popoverPanel.onExit = { [weak self] in self?.scheduleHidePopover() }
         popoverPanel.onMessage = { [weak self] body in self?.handleWebMessage(body) }
 
         print("✅ loco running. Type a misspelling (e.g. \"teh\", \"recieve\", \"definately\").")
-        print("   Red squiggle marks it; hover the badge to open the React panel and Fix.")
-        print("   Panel UI from: \(Self.webURL().absoluteString)\n")
+        print("   The word gets highlighted; hover it to open the card and apply the fix.")
+        print("   Card UI from: \(Self.webURL().absoluteString)\n")
+
+        // Hover detection over the click-through overlay: a global mouse monitor
+        // (fires for other apps; our accessory app is never frontmost) checks the
+        // cursor against the flagged-word rects without consuming the events.
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleMouseMove() }
+        }
 
         // Event-driven: react to focus/value/selection changes via AXObserver,
         // and to app switches via NSWorkspace. A slow safety poll backstops
@@ -623,16 +582,14 @@ final class AppController: NSObject {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// One pass: find focus, read text + geometry, redraw. Driven by AX
-    /// notifications, with the safety timer as a backstop.
+    /// One pass: find focus, detect flagged words + geometry, redraw highlights.
     private func tick() {
         guard let element = AX.focusedElement() else {
             clearIfNeeded()
             return
         }
 
-        // Keep value/selection observers attached to the live focused element
-        // (some focus changes don't deliver a notification).
+        // Keep value/selection observers attached to the live focused element.
         if observedElement == nil || !CFEqual(observedElement!, element) {
             attachToFocusedElement()
         }
@@ -647,75 +604,72 @@ final class AppController: NSObject {
             return
         }
 
-        // Caret/selection drives where the pill sits, so it's part of the
-        // change-signature (moving the caret must reposition even if text is same).
+        // Caret/selection + frame are part of the change-signature so scroll and
+        // caret moves re-evaluate (highlight rects move even if text is same).
         let selection = AX.selectedRange(element)
         let selKey = selection.map { "\($0.location),\($0.length)" } ?? "-"
-
-        // Skip re-evaluation when nothing changed (text, field moved/scrolled, caret).
-        let signature = "\(role)|\(NSStringFromRect(axFrame))|\(value.count)|\(value.hashValue)|\(selKey)"
+        let signature = "\(role)|\(NSStringFromRect(axFrame))|\(value.hashValue)|\(selKey)"
         if signature == lastSignature { return }
         lastSignature = signature
 
+        // Text changed → drop stale dismissals (occurrence indices shift).
+        if value.hashValue != lastValueHash {
+            dismissed.removeAll()
+            lastValueHash = value.hashValue
+        }
+
         let fieldBox = toCocoa(axFrame)
+        let appName = browserAppName(for: element)
 
-        // Detect issues, then resolve each one's on-screen geometry.
-        let issues = Linter.issues(in: value)
-        var underlines: [Underline] = []
-        var firstIssueRect: CGRect?
-
-        for issue in issues {
-            guard let rect = screenRect(for: issue.range, in: element),
-                  isSaneRect(rect, in: fieldBox) else { continue }
-            underlines.append(Underline(rect: rect, color: issue.color))
-            if firstIssueRect == nil { firstIssueRect = rect }
-        }
-
-        view.update(underlines: underlines, fieldBox: fieldBox)
-
-        // Only show the pill for editable text fields.
-        let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
-        guard textRoles.contains(role) else {
-            dismissUI()
-            return
-        }
-
-        // Resolve the caret. In browsers, run JS in the real page for the exact
-        // DOM caret + line emptiness (handles contenteditable + scroll).
-        var caret: CGRect?
-        if let appName = browserAppName(for: element), let info = browserJS.caretInfo(appName: appName) {
-            if info.lineEmpty { hidePill(); return }   // nothing to flag on a blank line
-            if let local = info.rect {
-                let rect = CGRect(x: fieldBox.minX + local.minX,
-                                  y: fieldBox.maxY - local.minY - local.height,
-                                  width: local.width, height: local.height)
-                if isInsideField(rect, fieldBox) { caret = rect }
+        // Detect flagged words. Browser contenteditable → in-page DOM scan;
+        // everything else → AX value lint + AXBoundsForRange geometry.
+        var words: [FlaggedWord] = []
+        if let appName, let hits = browser.scan(appName: appName) {
+            activeBrowserAppName = appName
+            for h in hits {
+                let rect = CGRect(x: fieldBox.minX + h.x,
+                                  y: fieldBox.maxY - h.y - h.height,
+                                  width: h.width, height: h.height)
+                guard isInsideField(rect, fieldBox) else { continue }
+                words.append(FlaggedWord(word: h.word, replacement: h.replacement,
+                                         message: message(h.word, h.replacement),
+                                         category: "Correctness", rect: rect, range: nil,
+                                         key: h.key, occurrence: h.occurrence))
             }
         } else {
-            // Non-browser / JS unavailable: use AX, and the value-based empty check.
-            if let caretIndex = selection?.location, isCurrentLineEmpty(value: value, caret: caretIndex) {
-                hidePill(); return
-            }
-            // A real selection (length > 0) gives a multi-line union rect via
-            // AXBoundsForRange — use it so the pill spans the selection.
-            if let sel = selection, sel.length > 0,
-               let selRect = AX.bounds(of: sel, in: element).map(toCocoa),
-               isInsideField(selRect, fieldBox) {
-                caret = selRect
-            } else {
-                caret = resolveCaret(for: element, fieldBox: fieldBox)
+            activeBrowserAppName = nil
+            let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+            if textRoles.contains(role) {
+                var occ: [String: Int] = [:]
+                for hit in Linter.words(in: value) {
+                    let key = hit.word.lowercased()
+                    let i = occ[key, default: 0]; occ[key] = i + 1
+                    guard let rect = screenRect(for: hit.range, in: element),
+                          isSaneRect(rect, in: fieldBox) else { continue }
+                    words.append(FlaggedWord(word: hit.word, replacement: hit.replacement,
+                                             message: message(hit.word, hit.replacement),
+                                             category: "Correctness", rect: rect, range: hit.range,
+                                             key: key, occurrence: i))
+                }
             }
         }
 
+        words = words.filter { !dismissed.contains($0.id) }
+
         activeElement = element
-        activeIssues = issues
-        gutterPanel.gutter.count = issues.count   // colour updates immediately
-        placeGutter(lineRect: caret ?? firstLineRect(fieldBox), fieldBox: fieldBox)
+        flagged = words
+        view.update(highlights: words.map { Highlight(rect: $0.rect, color: .systemRed) })
+
+        // If the open card's word is gone (fixed/edited away), close it.
+        if let aw = activeWord, !words.contains(where: { $0.id == aw.id }) {
+            popoverPanel.orderOut(nil)
+            activeWord = nil
+            hoveredID = nil
+        }
     }
 
-    private func hidePill() {
-        gutterPanel.orderOut(nil)
-        popoverPanel.orderOut(nil)
+    private func message(_ word: String, _ replacement: String) -> String {
+        "“\(word)” → “\(replacement)”"
     }
 
     /// Browser app name (for AppleScript) if the focused element belongs to one.
@@ -724,55 +678,41 @@ final class AppController: NSObject {
         guard AXUIElementGetPid(element, &pid) == .success,
               let app = NSRunningApplication(processIdentifier: pid),
               let bundleID = app.bundleIdentifier else { return nil }
-        return BrowserJSBridge.appNames[bundleID]
+        return BrowserBridge.appNames[bundleID]
     }
 
-    /// Caret rect via the CursorBounds package (text-caret source only, so it
-    /// returns nil rather than falling back to the field frame).
-    private func resolveCaret(for element: AXUIElement, fieldBox: CGRect) -> CGRect? {
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
-        guard let result = try? CursorBounds().cursorPosition(
-            forPID: pid, correctionMode: .none, corner: .topLeft, sourcePriority: [.textCaret]
-        ) else { return nil }
-        let rect = toCocoa(result.bounds)
-        return isInsideField(rect, fieldBox) ? rect : nil
+    // MARK: Hover → card
+
+    /// Driven by the global mouse monitor: open the card for the word under the
+    /// cursor, keep it open over the word or the card, hide otherwise.
+    private func handleMouseMove() {
+        let p = NSEvent.mouseLocation
+
+        if popoverPanel.isVisible, popoverPanel.frame.insetBy(dx: -4, dy: -4).contains(p) {
+            cancelHidePopover()
+            return
+        }
+
+        if let hit = flagged.first(where: { $0.rect.insetBy(dx: -2, dy: -3).contains(p) }) {
+            cancelHidePopover()
+            if hit.id != hoveredID {
+                hoveredID = hit.id
+                showCard(for: hit)
+            }
+        } else if hoveredID != nil {
+            hoveredID = nil
+            scheduleHidePopover()
+        }
     }
 
-    /// Position the pill in the field's left margin, spanning the given line (or
-    /// multi-line selection) rect. The pill grows to cover a multi-line selection
-    /// and never extends past the visible field.
-    private func placeGutter(lineRect: CGRect, fieldBox: CGRect) {
-        let width = GutterView.size.width
-        // Clamp the span to the visible field so a partly-scrolled selection
-        // doesn't push the pill off the field.
-        let top = min(lineRect.maxY, fieldBox.maxY)
-        let bottom = max(lineRect.minY, fieldBox.minY)
-        let height = max(GutterView.size.height, top - bottom)
-        let gx = fieldBox.minX - width - 4
-        let gy = (top + bottom) / 2 - height / 2
-        gutterPanel.setFrame(NSRect(x: gx, y: gy, width: width, height: height), display: true)
-        gutterPanel.orderFrontRegardless()
-        popoverAnchor = NSPoint(x: fieldBox.minX, y: gy)
-        if popoverPanel.isVisible { showPopover() }
+    private func showCard(for word: FlaggedWord) {
+        activeWord = word
+        popoverPanel.setSuggestion(word)
+        // Anchor the card's top-left just below the word, growing downward.
+        popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
     }
 
-    /// Fallback line rect (first line) when no caret geometry is available.
-    private func firstLineRect(_ fieldBox: CGRect) -> CGRect {
-        let centerY = fieldBox.maxY - min(16, fieldBox.height / 2)
-        return CGRect(x: fieldBox.minX, y: centerY - 8, width: 0, height: 16)
-    }
-
-    // MARK: Hover → popover
-
-    private func showPopover() {
-        cancelHidePopover()
-        guard !activeIssues.isEmpty else { return }
-        popoverPanel.setIssues(activeIssues)
-        popoverPanel.present(anchor: popoverAnchor, corner: .topLeft)
-    }
-
-    /// Where the React panel UI is served from. Override with LOCO_WEB_URL
+    /// Where the React card UI is served from. Override with LOCO_WEB_URL
     /// (e.g. a built dist file:// URL) for a production-style run.
     private static func webURL() -> URL {
         if let raw = ProcessInfo.processInfo.environment["LOCO_WEB_URL"],
@@ -785,7 +725,11 @@ final class AppController: NSObject {
     private func scheduleHidePopover() {
         hideHoverTimer?.invalidate()
         hideHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.popoverPanel.orderOut(nil) }
+            MainActor.assumeIsolated {
+                self?.popoverPanel.orderOut(nil)
+                self?.activeWord = nil
+                self?.hoveredID = nil
+            }
         }
     }
 
@@ -794,58 +738,49 @@ final class AppController: NSObject {
         hideHoverTimer = nil
     }
 
-    // MARK: Messages from the React panel
+    // MARK: Messages from the React card
 
     private func handleWebMessage(_ body: [String: Any]) {
         guard let type = body["type"] as? String else { return }
         switch type {
         case "ready":
-            // Page finished loading — push whatever issues are current.
-            popoverPanel.setIssues(activeIssues)
+            if let word = activeWord { popoverPanel.setSuggestion(word) }
         case "resize":
             if let width = (body["width"] as? NSNumber)?.doubleValue,
                let height = (body["height"] as? NSNumber)?.doubleValue {
                 popoverPanel.resize(toContentWidth: CGFloat(width), height: CGFloat(height))
             }
-        case "fix":
-            if let index = (body["index"] as? NSNumber)?.intValue,
-               activeIssues.indices.contains(index) {
-                apply(activeIssues[index])
-                finishFix()
-            }
-        case "fixAll":
-            // Apply last→first so earlier ranges stay valid as lengths change.
-            for issue in activeIssues.sorted(by: { $0.range.location > $1.range.location }) {
-                apply(issue)
-            }
-            finishFix()
+        case "apply":
+            if let word = activeWord { apply(word) }
+            finishCard()
+        case "dismiss":
+            if let word = activeWord { dismissed.insert(word.id) }
+            finishCard()
         default:
             break
         }
     }
 
-    /// Replace one issue's range in the field via AX, preserving the rest.
-    private func apply(_ issue: Issue) {
-        guard let element = activeElement else { return }
-        var range = CFRange(location: issue.range.location, length: issue.range.length)
-        if let axRange = AXValueCreate(.cfRange, &range) {
-            AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
-            AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
-                                         issue.replacement as CFString)
+    /// Apply one fix: browser → DOM replace via JS; native → AX range replace.
+    private func apply(_ word: FlaggedWord) {
+        if let appName = activeBrowserAppName {
+            browser.replace(appName: appName, key: word.key,
+                            occurrence: word.occurrence, replacement: word.replacement)
+        } else if let element = activeElement, let range = word.range {
+            var cf = CFRange(location: range.location, length: range.length)
+            if let axRange = AXValueCreate(.cfRange, &cf) {
+                AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+                AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
+                                             word.replacement as CFString)
+            }
         }
     }
 
-    private func finishFix() {
+    private func finishCard() {
         popoverPanel.orderOut(nil)
+        activeWord = nil
+        hoveredID = nil
         lastSignature = ""   // force a fresh evaluation on the next tick
-    }
-
-    private func dismissUI() {
-        activeElement = nil
-        activeIssues = []
-        cancelHidePopover()
-        gutterPanel.orderOut(nil)
-        popoverPanel.orderOut(nil)
     }
 
     /// Force a Chromium/Electron app to build and expose its accessibility tree.
@@ -870,27 +805,16 @@ final class AppController: NSObject {
     private func clearIfNeeded() {
         if lastSignature.isEmpty { return }
         lastSignature = ""
-        view.update(underlines: [], fieldBox: nil)
-        dismissUI()
+        flagged = []
+        view.update(highlights: [])
+        popoverPanel.orderOut(nil)
+        activeWord = nil
+        hoveredID = nil
+        activeElement = nil
     }
 
-    /// Whether the line containing the caret has no (non-whitespace) text.
-    private func isCurrentLineEmpty(value: String, caret: Int) -> Bool {
-        let ns = value as NSString
-        let length = ns.length
-        let position = max(0, min(caret, length))
-
-        var start = position
-        while start > 0, ns.character(at: start - 1) != 10 { start -= 1 }   // 10 == "\n"
-        var end = position
-        while end < length, ns.character(at: end) != 10 { end += 1 }
-
-        let line = ns.substring(with: NSRange(location: start, length: end - start))
-        return line.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
-    /// A resolved line/selection rect is trustworthy only if it sits within the
-    /// field (contenteditable sometimes returns valid-looking but off-field rects).
+    /// A resolved rect is trustworthy only if it sits within the field
+    /// (contenteditable sometimes returns valid-looking but off-field rects).
     private func isInsideField(_ rect: CGRect, _ field: CGRect) -> Bool {
         guard rect.height > 0 else { return false }
         let slack: CGFloat = 8
@@ -900,7 +824,7 @@ final class AppController: NSObject {
             && rect.minX <= field.maxX
     }
 
-    /// A rect safe to draw a squiggle for: inside the field and not absurdly
+    /// A rect safe to draw a highlight for: inside the field and not absurdly
     /// large (some fields return document- or screen-sized rects).
     private func isSaneRect(_ rect: CGRect, in field: CGRect) -> Bool {
         isInsideField(rect, field)
@@ -910,7 +834,7 @@ final class AppController: NSObject {
 
     /// Resolve one character range to a screen rect (view coords) via
     /// AXBoundsForRange. Works on native controls and real <textarea>s; returns
-    /// nil on fields that don't implement it (most Chromium contenteditable).
+    /// nil on fields that don't implement it.
     private func screenRect(for ns: NSRange, in element: AXUIElement) -> CGRect? {
         AX.bounds(of: CFRange(location: ns.location, length: ns.length), in: element).map(toCocoa)
     }

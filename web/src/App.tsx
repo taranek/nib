@@ -1,28 +1,28 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { type Issue, onSetIssues, send } from "./bridge";
+import { type Suggestion, onSetSuggestion, send } from "./bridge";
 
-// Sample data so the page is useful when opened in a plain browser too.
-const SAMPLE: Issue[] = [
-  { message: "“teh” → “the”", replacement: "the" },
-  { message: "“wierd” → “weird”", replacement: "weird" },
-  { message: "“definately” → “definitely”", replacement: "definitely" },
-  { message: "“alot” → “a lot”", replacement: "a lot" },
-];
+// Sample so the card is useful when opened in a plain browser too.
+const SAMPLE: Suggestion = {
+  category: "Correctness",
+  suggestion: "the",
+  message: "“teh” → “the”",
+  word: "teh",
+};
 
 const inWebView = Boolean(window.webkit?.messageHandlers?.loco);
 
 export function App() {
-  const [issues, setIssues] = useState<Issue[]>(inWebView ? [] : SAMPLE);
+  const [s, setS] = useState<Suggestion>(SAMPLE);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // Receive issues pushed from Swift, and announce readiness.
+  // Receive the suggestion pushed from Swift, and announce readiness.
   useEffect(() => {
-    onSetIssues(setIssues);
+    onSetSuggestion(setS);
     send({ type: "ready" });
   }, []);
 
-  // Report the OUTER wrapper size (card + shadow padding) so the native panel
-  // contains everything — no clipped shadow, no scrollbar.
+  // Report the card size so the native panel fits it exactly (no clipped
+  // shadow, no scrollbar).
   useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -36,35 +36,41 @@ export function App() {
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [issues]);
+  }, [s]);
 
   return (
     <div className="wrap" ref={wrapRef}>
       <div className="card">
-        <header className="card__head">
-          <span className="card__logo">loco</span>
-          <span className="card__count">
-            {issues.length} suggestion{issues.length === 1 ? "" : "s"}
-          </span>
-          {issues.length > 1 && (
-            <button className="btn btn--ghost" onClick={() => send({ type: "fixAll" })}>
-              Fix all
-            </button>
-          )}
-        </header>
+        <div className="card__cat">{s.category}</div>
 
-        <ul className="list">
-          {issues.map((issue, index) => (
-            <li className="row" key={index}>
-              <span className="row__msg">{issue.message}</span>
-              <button className="btn" onClick={() => send({ type: "fix", index })}>
-                Fix
-              </button>
-            </li>
-          ))}
-          {issues.length === 0 && <li className="row row--empty">No suggestions</li>}
-        </ul>
+        <button className="sugg" onClick={() => send({ type: "apply" })}>
+          {s.suggestion}
+        </button>
+
+        <button className="action" onClick={() => send({ type: "dismiss" })}>
+          <TrashIcon />
+          <span>Dismiss</span>
+        </button>
+
+        <div className="foot">
+          <span className="foot__mark">loco</span>
+          <span>Powered by loco</span>
+        </div>
       </div>
     </div>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M3 4h10M6.5 4V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M5 4l.5 8a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1L11 4"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }

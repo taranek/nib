@@ -4,13 +4,9 @@ import PackageDescription
 let package = Package(
     name: "loco",
     platforms: [.macOS(.v13)],
-    dependencies: [
-        .package(url: "https://github.com/Aeastr/CursorBounds.git", branch: "main"),
-    ],
     targets: [
         .executableTarget(
             name: "loco",
-            dependencies: [.product(name: "CursorBounds", package: "CursorBounds")],
             path: "Sources/loco"
         )
     ],

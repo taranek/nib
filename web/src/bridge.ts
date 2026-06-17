@@ -1,17 +1,23 @@
-// The contract between the React UI and the Swift host (WKWebView).
+// The contract between the React card and the Swift host (WKWebView).
 //
-//  Swift → JS : window.loco.setIssues(issues)   (called via evaluateJavaScript)
+//  Swift → JS : window.loco.setSuggestion(s)   (called via evaluateJavaScript)
 //  JS → Swift : window.webkit.messageHandlers.loco.postMessage({...})
 
-export interface Issue {
+export interface Suggestion {
+  /** Category label shown above the suggestion (e.g. "Correctness"). */
+  category: string;
+  /** The replacement text — the primary click-to-apply action. */
+  suggestion: string;
+  /** Human-readable description, e.g. “teh” → “the”. */
   message: string;
-  replacement: string;
+  /** The original flagged word. */
+  word: string;
 }
 
 type OutboundMessage =
   | { type: "ready" }
-  | { type: "fix"; index: number }
-  | { type: "fixAll" }
+  | { type: "apply" }
+  | { type: "dismiss" }
   | { type: "resize"; width: number; height: number };
 
 interface WebkitBridge {
@@ -23,7 +29,7 @@ interface WebkitBridge {
 declare global {
   interface Window {
     webkit?: WebkitBridge;
-    loco?: { setIssues: (issues: Issue[]) => void };
+    loco?: { setSuggestion: (s: Suggestion) => void };
   }
 }
 
@@ -32,7 +38,7 @@ export function send(msg: OutboundMessage): void {
   window.webkit?.messageHandlers?.loco?.postMessage(msg);
 }
 
-/** Register the inbound entry point Swift calls to push issues. */
-export function onSetIssues(handler: (issues: Issue[]) => void): void {
-  window.loco = { setIssues: handler };
+/** Register the inbound entry point Swift calls to push a suggestion. */
+export function onSetSuggestion(handler: (s: Suggestion) => void): void {
+  window.loco = { setSuggestion: handler };
 }
