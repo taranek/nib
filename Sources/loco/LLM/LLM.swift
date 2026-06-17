@@ -121,16 +121,41 @@ final class LLMServer {
 
     let port: Int
     private var process: Process?
+    private var owns = false   // did we spawn the server (so we may kill it)?
 
     init(port: Int = 18080) { self.port = port }
 
     var chatURL: URL { URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")! }
     private var healthURL: URL { URL(string: "http://127.0.0.1:\(port)/health")! }
 
-    /// Spawn llama-server and poll until it's listening. Idempotent-ish: a second
-    /// call while running is a no-op.
+    /// Attach to a server already listening on the port (e.g. one left warm by a
+    /// previous run during dev), otherwise spawn our own.
     func start() {
-        guard process == nil else { return }
+        guard process == nil, status != .ready else { return }
+        status = .starting
+        Task { await startOrAttach() }
+    }
+
+    private func startOrAttach() async {
+        if await isHealthy() {
+            owns = false
+            status = .ready
+            print("🧠 LLM: attached to running server on port \(port)")
+            return
+        }
+        spawn()
+    }
+
+    private func isHealthy() async -> Bool {
+        var request = URLRequest(url: healthURL)
+        request.timeoutInterval = 1.5
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+        return String(data: data, encoding: .utf8)?.contains("\"ok\"") == true
+    }
+
+    /// Spawn llama-server and poll until it's listening.
+    private func spawn() {
         guard let bin = LLMPaths.resolveBinary() else {
             status = .failed("llama-server binary not found")
             print("⚠️ LLM: no llama-server binary. Set LOCO_LLAMA_SERVER or place it in \(LLMPaths.binDir.path)")
@@ -179,6 +204,7 @@ final class LLMServer {
         do {
             try p.run()
             process = p
+            owns = true
             print("🧠 LLM: starting llama-server (model: \(URL(fileURLWithPath: model).lastPathComponent))")
             Task { await pollUntilReady() }
         } catch {
@@ -188,7 +214,7 @@ final class LLMServer {
     }
 
     func stop() {
-        process?.terminate()
+        if owns { process?.terminate() }   // never kill a server we merely attached to
         process = nil
         status = .stopped
     }
