@@ -50,14 +50,12 @@ export function Settings() {
               : "Accessibility access required"}
           </span>
         </div>
-        {!state.accessibilityTrusted && (
-          <button
-            className="btn"
-            onClick={() => send({ type: "openAccessibility" })}
-          >
-            Open Accessibility Settings…
-          </button>
-        )}
+        <button
+          className={"btn" + (state.accessibilityTrusted ? " btn--ghost" : "")}
+          onClick={() => send({ type: "openAccessibility" })}
+        >
+          Open Accessibility Settings…
+        </button>
       </section>
 
       <footer className="settings__foot">
