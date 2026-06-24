@@ -174,6 +174,9 @@ final class AppController: NSObject {
     private var observedElement: AXUIElement?
 
     @objc private func activeAppChanged() {
+        // The selection pill belongs to the app we're leaving — the overlay is
+        // global (above all apps), so drop it before re-evaluating the new app.
+        hidePill()
         rebuildObservers()
         tick()
     }
@@ -767,6 +770,9 @@ final class AppController: NSObject {
     // MARK: - Clearing & geometry
 
     private func clearIfNeeded() {
+        // The pill tracks its own state (independent of the detection signature),
+        // so always re-check it — otherwise a stale pill can outlive its field.
+        hidePill()
         if lastSignature.isEmpty { return }
         clearOverlay()
     }
