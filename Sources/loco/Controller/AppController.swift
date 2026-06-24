@@ -42,16 +42,16 @@ final class AppController: NSObject {
     private var rephraseElement: AXUIElement?
     private var rephraseRange: NSRange?          // native write-back range
     private var selectionDebounce: Timer?
-    private var rephraseTask: Task<Void, Never>?
-    private var rephraseCache: [String: String] = [:]
-    private var pendingRewrite: PendingRewrite?
 
-    private struct PendingRewrite {
-        let original: String
-        let result: String
-        let appName: String?
-        let element: AXUIElement?
-        let range: NSRange?
+    // The card opens against a target; React fetches rewrites and sends back the
+    // accepted text, which we write into this target.
+    private var rewriteTarget: RewriteTarget?
+
+    private struct RewriteTarget {
+        let original: String         // text the accepted result replaces
+        let appName: String?         // browser app (DOM write-back) or nil (native)
+        let element: AXUIElement?    // native focused element
+        let range: NSRange?          // native write-back range
     }
 
     // Words the user dismissed (by id) — cleared whenever the text changes,
@@ -458,13 +458,18 @@ final class AppController: NSObject {
     private func showCard(for word: FlaggedWord) {
         popoverMode = .grammar
         activeWord = word
-        // Grammar uses the same card as rephrase: show the corrected sentence,
+        // Grammar: Swift already has the corrected sentence; show it (no fetch).
         // Accept replaces the whole sentence.
-        pendingRewrite = PendingRewrite(original: word.original, result: word.corrected,
-                                        appName: activeBrowserAppName, element: activeElement,
-                                        range: word.range)
-        popoverPanel.setRewrite(action: "Grammar", original: word.original,
-                                result: word.corrected, loading: false, unchanged: false)
+        rewriteTarget = RewriteTarget(original: word.original, appName: activeBrowserAppName,
+                                      element: activeElement, range: word.range)
+        popoverPanel.setCard([
+            "mode": "grammar",
+            "original": word.original,
+            "result": word.corrected,
+            "styles": [],
+            "llmUrl": "",
+            "ready": true,
+        ])
         popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
     }
 
@@ -559,75 +564,48 @@ final class AppController: NSObject {
         }
     }
 
-    /// Show (and compute) the rephrase proposal for the current selection.
+    private static let styleList: [[String: String]] =
+        RewriteStyle.allCases.map { ["id": $0.rawValue, "label": $0.label] }
+
+    /// Open the rewrite card on the selection. React fetches all styles from the
+    /// local LLM directly; Swift only supplies the text + LLM URL and applies the
+    /// accepted result.
     private func showRephrase() {
         guard let text = rephraseText else { return }
         popoverMode = .rephrase
-        let anchor = NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2)
-
-        guard llmReady, let client = llmClient else {
-            popoverPanel.setRewrite(action: "Rephrase", original: text,
-                                    result: "Model still loading…", loading: false)
-            popoverPanel.present(anchor: anchor)
-            return
-        }
-
-        if let cached = rephraseCache[text] {
-            presentRewriteResult(original: text, result: cached)
-            popoverPanel.present(anchor: anchor)
-            return
-        }
-
-        pendingRewrite = nil
-        popoverPanel.setRewrite(action: "Rephrase", original: text, result: "", loading: true)
-        popoverPanel.present(anchor: anchor)
-
-        rephraseTask?.cancel()
-        rephraseTask = Task { [weak self] in
-            let result = await client.rephrase(text)
-            if Task.isCancelled { return }
-            await MainActor.run {
-                guard let self, self.popoverMode == .rephrase, let result else { return }
-                self.rephraseCache[text] = result
-                self.presentRewriteResult(original: text, result: result)
-            }
-        }
+        rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
+                                      element: rephraseElement, range: rephraseRange)
+        popoverPanel.setCard([
+            "mode": "rewrite",
+            "original": text,
+            "result": "",
+            "styles": Self.styleList,
+            "llmUrl": llmServer.chatURL.absoluteString,
+            "ready": llmReady,
+        ])
+        popoverPanel.present(anchor: NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2))
     }
 
-    /// Show a finished proposal; if it matches the input there's nothing to
-    /// apply, so flag it as unchanged and skip the pending fix.
-    private func presentRewriteResult(original: String, result: String) {
-        let unchanged = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            == original.trimmingCharacters(in: .whitespacesAndNewlines)
-        pendingRewrite = unchanged ? nil : makePending(original: original, result: result)
-        popoverPanel.setRewrite(action: "Rephrase", original: original,
-                                result: result, loading: false, unchanged: unchanged)
-    }
-
-    private func makePending(original: String, result: String) -> PendingRewrite {
-        PendingRewrite(original: original, result: result,
-                       appName: rephraseAppName, element: rephraseElement, range: rephraseRange)
-    }
-
-    private func applyRewrite(_ p: PendingRewrite) {
-        if let appName = p.appName {
-            browser.replaceText(appName: appName, original: p.original, replacement: p.result)
-        } else if let element = p.element {
-            if let range = p.range {
+    /// Write `text` into the current target (browser DOM or native AX).
+    private func applyRewrite(text: String) {
+        guard let target = rewriteTarget, !text.isEmpty else { return }
+        if let appName = target.appName {
+            browser.replaceText(appName: appName, original: target.original, replacement: text)
+        } else if let element = target.element {
+            if let range = target.range {
                 var cf = CFRange(location: range.location, length: range.length)
                 if let axRange = AXValueCreate(.cfRange, &cf) {
                     AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
                 }
             }
-            AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, p.result as CFString)
+            AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString)
         }
     }
 
     private func finishRephrase() {
-        rephraseTask?.cancel()
         popoverPanel.orderOut(nil)
         popoverMode = .none
-        pendingRewrite = nil
+        rewriteTarget = nil
         hidePill()
         lastSignature = ""       // the text changed — re-evaluate next tick
         checkedValueHash = 0
@@ -644,7 +622,7 @@ final class AppController: NSObject {
                 popoverPanel.resize(toContentWidth: CGFloat(width), height: CGFloat(height))
             }
         case "applyRewrite":
-            if let p = pendingRewrite { applyRewrite(p) }
+            if let text = body["text"] as? String { applyRewrite(text: text) }
             finishRephrase()
         case "dismiss":
             // For grammar, suppress the sentence so it stops being flagged.

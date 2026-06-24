@@ -1,33 +1,30 @@
 // The contract between the React UI and the Swift host (WKWebView).
 //
-//  Swift → JS : window.loco.setSuggestion(s) / window.loco.setSettings(state)
+//  Swift → JS : window.loco.setCard(data) / window.loco.setSettings(state)
 //  JS → Swift : window.webkit.messageHandlers.loco.postMessage({...})
 //
-// The same bundle drives two surfaces, picked by URL hash: the per-word card
-// (default) and the settings window (#settings).
+// The same bundle drives two surfaces, picked by URL hash: the card (default)
+// and the settings window (#settings).
 
-export interface Suggestion {
-  /** Category label shown above the suggestion (e.g. "Correctness"). */
-  category: string;
-  /** The replacement text — the primary click-to-apply action. */
-  suggestion: string;
-  /** Human-readable description, e.g. “teh” → “the”. */
-  message: string;
-  /** The original flagged word. */
-  word: string;
+export interface RewriteStyleOption {
+  id: string;
+  label: string;
 }
 
-export interface Rewrite {
-  /** Action label, e.g. "Rephrase". */
-  action: string;
-  /** The original selected text. */
+/** Card data pushed from Swift. Grammar carries a precomputed `result`; rewrite
+ *  carries `styles` + `llmUrl` and React fetches each style from the LLM. */
+export interface CardData {
+  mode: "grammar" | "rewrite";
+  /** The text the accepted result will replace. */
   original: string;
-  /** The proposed rewrite (empty while loading). */
+  /** Grammar only: the corrected sentence. */
   result: string;
-  /** True until the model returns. */
-  loading: boolean;
-  /** True when the proposal matches the input (nothing to apply). */
-  unchanged: boolean;
+  /** Rewrite only: the style tabs. */
+  styles: RewriteStyleOption[];
+  /** Rewrite only: the local LLM chat-completions URL React fetches. */
+  llmUrl: string;
+  /** Whether the local model is ready. */
+  ready: boolean;
 }
 
 export interface SettingsState {
@@ -41,8 +38,7 @@ export interface SettingsState {
 
 type OutboundMessage =
   | { type: "ready" }
-  | { type: "apply" }
-  | { type: "applyRewrite" }
+  | { type: "applyRewrite"; text: string }
   | { type: "dismiss" }
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
@@ -56,8 +52,7 @@ interface WebkitBridge {
 }
 
 interface LocoInbound {
-  setSuggestion?: (s: Suggestion) => void;
-  setRewrite?: (r: Rewrite) => void;
+  setCard?: (data: CardData) => void;
   setSettings?: (state: SettingsState) => void;
 }
 
@@ -73,14 +68,9 @@ export function send(msg: OutboundMessage): void {
   window.webkit?.messageHandlers?.loco?.postMessage(msg);
 }
 
-/** Register the inbound entry point Swift calls to push a suggestion. */
-export function onSetSuggestion(handler: (s: Suggestion) => void): void {
-  window.loco = { ...window.loco, setSuggestion: handler };
-}
-
-/** Register the inbound entry point Swift calls to push a rephrase proposal. */
-export function onSetRewrite(handler: (r: Rewrite) => void): void {
-  window.loco = { ...window.loco, setRewrite: handler };
+/** Register the inbound entry point Swift calls to push card data. */
+export function onSetCard(handler: (data: CardData) => void): void {
+  window.loco = { ...window.loco, setCard: handler };
 }
 
 /** Register the inbound entry point Swift calls to push settings state. */

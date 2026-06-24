@@ -14,6 +14,38 @@ struct SentenceCorrection: Equatable, Sendable {
     let corrected: String
 }
 
+/// The available ways to rewrite a selection.
+enum RewriteStyle: String, CaseIterable, Sendable {
+    case improve, rephrase, shorten
+
+    /// Label shown in the card's style picker.
+    var label: String {
+        switch self {
+        case .improve: return "Improve wording"
+        case .rephrase: return "Rephrase"
+        case .shorten: return "Shorten"
+        }
+    }
+
+    /// The instruction handed to the model.
+    var instruction: String {
+        switch self {
+        case .improve:
+            return "Improve the wording of the user's text: make it clearer and more "
+                + "natural, fixing any spelling or grammar, but keep the same meaning, "
+                + "tone, and roughly the same length. Put the result in the 'rewrite' field."
+        case .rephrase:
+            return "Rephrase the user's text using different wording while keeping the "
+                + "same meaning and language, in clear natural English. Put the result "
+                + "in the 'rewrite' field."
+        case .shorten:
+            return "Make the user's text more concise: keep the same meaning and language "
+                + "but use fewer words, in clear natural English. Put the result in the "
+                + "'rewrite' field."
+        }
+    }
+}
+
 /// Process-wide cache of sentence → corrected sentence. Safe because greedy
 /// decoding is deterministic. Bounded with simple FIFO eviction.
 actor GrammarCache {
@@ -347,10 +379,8 @@ struct LLMClient {
 
     // MARK: Text actions
 
-    func rephrase(_ text: String) async -> String? {
-        await rewrite("Rewrite the user's text in clear, natural, correct English. "
-            + "Fix all spelling, grammar, and punctuation, and preserve the meaning. "
-            + "Put the rewritten text in the 'rewrite' field.", text)
+    func rewrite(style: RewriteStyle, _ text: String) async -> String? {
+        await rewrite(style.instruction, text)
     }
 
     /// JSON schema for a single rewrite — constraining the output to a JSON

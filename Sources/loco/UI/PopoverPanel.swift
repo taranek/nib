@@ -92,18 +92,11 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
     /// Push a rephrase/grammar proposal into the card (loading state until the
     /// result
     /// arrives).
-    func setRewrite(action: String, original: String, result: String,
-                    loading: Bool, unchanged: Bool = false) {
-        let payload: [String: Any] = [
-            "action": action,
-            "original": original,
-            "result": result,
-            "loading": loading,
-            "unchanged": unchanged,
-        ]
+    /// Push card data (grammar result or rewrite request) to the React card.
+    func setCard(_ payload: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.loco && window.loco.setRewrite && window.loco.setRewrite(\(json))")
+        webView.evaluateJavaScript("window.loco && window.loco.setCard && window.loco.setCard(\(json))")
     }
 
     func present(anchor: NSPoint) {

@@ -1,6 +1,97 @@
+/* Tailwind with preflight, but everything in @layers — our hand-written CSS is
+   unlayered (higher priority), so it still wins any conflict with preflight,
+   while shadcn components get the button/box-sizing reset they assume. */
+@layer theme, base, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* shadcn theme tokens (oklch). Mapped so Tailwind utilities like bg-muted,
+   text-foreground, etc. resolve. The card is dark → document carries `.dark`. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+
+  /* Extra semantic tokens (used by the hand-written card CSS). */
+  --text-secondary: #3c4043;
+  --primary-hover: oklch(0.25 0 0);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --diff-del: #c0362c;
+  --diff-ins: #1a7f37;
+}
+
+/* Dark tokens — our own palette (a refined dark surface with translucent
+   hairlines), shifted off any single source's exact values. */
+.dark {
+  --background: #090a0c;
+  --foreground: #f4f5f7;
+  --card: #131418; /* panel surface */
+  --card-foreground: #f4f5f7;
+  --popover: #131418;
+  --popover-foreground: #f4f5f7;
+  --primary: #5b63d6; /* brand */
+  --primary-foreground: #ffffff;
+  --secondary: #1b1c20;
+  --secondary-foreground: #f4f5f7;
+  --muted: #1b1c20; /* tab track */
+  --muted-foreground: #888d96; /* inactive tab text */
+  --accent: #242530; /* raised */
+  --accent-foreground: #f4f5f7;
+  --destructive: #e9605f;
+  --border: #ffffff15; /* translucent hairlines */
+  --input: #ffffff15;
+  --ring: #7574ff;
+
+  --text-secondary: #ced4df;
+  --primary-hover: #6b72e6;
+  --border-strong: #ffffff26;
+  --diff-del: #f47b84;
+  --diff-ins: #54d98a;
 }
 
 /* Transparent background so the native window shows the page's own card +
@@ -18,104 +109,33 @@ body,
   width: max-content;
 }
 
+/* The floating suggestion/rewrite card. Refined dark surface (it sits over any
+   app, so dark reads consistently) with a Linear-style layered background: a
+   soft top highlight + a faint cool tint, fading into a near-black gradient. */
+/* Linear-style panel: flat dark surface, hairline translucent border, a soft
+   outer ring + drop shadow, faint top highlight. */
 .card {
   width: 340px;
-  border-radius: 14px;
-  background: rgba(250, 250, 252, 0.98);
-  backdrop-filter: saturate(180%) blur(20px);
-  border: 0.5px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
   overflow: hidden;
-  padding: 14px 16px 10px;
   box-sizing: border-box;
+  color: var(--text-secondary);
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.1),
+    0 7px 32px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-@media (prefers-color-scheme: dark) {
-  .card {
-    background: rgba(38, 38, 40, 0.98);
-    border: 0.5px solid rgba(255, 255, 255, 0.1);
-  }
+/* Card regions split by hairline borders (Linear-style header/content divide). */
+.rw-head {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
-/* Category label, e.g. "Correctness". */
-.card__cat {
-  font-size: 13px;
-  color: rgba(128, 128, 128, 0.95);
-  margin-bottom: 6px;
-}
-
-/* The suggestion — primary, click-to-apply. */
-.sugg {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  padding: 2px 0 10px;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: #2962ff;
-  cursor: pointer;
-}
-
-.sugg:active {
-  filter: brightness(0.9);
-}
-
-/* Secondary rows (Dismiss). */
-.action {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  padding: 8px 0;
-  font-size: 14px;
-  color: rgba(60, 60, 67, 0.95);
-  cursor: pointer;
-  border-top: 0.5px solid rgba(128, 128, 128, 0.2);
-}
-
-.action:hover {
-  color: #000;
-}
-
-@media (prefers-color-scheme: dark) {
-  .action {
-    color: rgba(235, 235, 245, 0.85);
-  }
-  .action:hover {
-    color: #fff;
-  }
-}
-
-.action svg {
-  color: rgba(128, 128, 128, 0.9);
-}
-
-/* Footer link. */
-.foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0 2px;
-  font-size: 13px;
-  color: rgba(128, 128, 128, 0.85);
-  border-top: 0.5px solid rgba(128, 128, 128, 0.2);
-}
-
-.foot__mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #1faa59;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
+.rw-content {
+  padding: 12px 14px;
 }
 
 /* ── Settings surface ─────────────────────────────────────────────── */
@@ -280,43 +300,64 @@ body,
   cursor: default;
 }
 
-/* Rephrase card */
+/* Rephrase / grammar card body (always on the dark card surface) */
 .rewrite {
   font-size: 15px;
-  line-height: 1.4;
-  color: #1d1d1f;
-  padding: 2px 0 12px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .rewrite {
-    color: #f5f5f7;
-  }
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .rewrite--loading {
-  color: rgba(128, 128, 128, 0.9);
+  color: var(--muted-foreground);
   font-style: italic;
 }
 
+/* Inline diff: removed words struck-through red, added words green. */
+.d--equal {
+  color: var(--text-secondary);
+}
+
+.d--del {
+  color: var(--diff-del);
+  text-decoration: line-through;
+}
+
+.d--ins {
+  color: var(--diff-ins);
+  font-weight: 600;
+}
+
 .rewrite--ok {
-  color: #1faa59;
+  color: var(--diff-ins);
   font-size: 14px;
 }
 
 .rewrite__row {
   display: flex;
   gap: 8px;
-  border-top: 0.5px solid rgba(128, 128, 128, 0.2);
-  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
 }
 
 .rewrite__row .btn {
-  background: #2962ff;
+  background: var(--primary); /* brand */
+}
+
+.rewrite__row .btn:hover {
+  background: var(--primary-hover);
 }
 
 .rewrite__row .btn--ghost {
   background: transparent;
-  color: rgba(60, 60, 67, 0.9);
-  border: 0.5px solid rgba(128, 128, 128, 0.3);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.rewrite__row .btn--ghost:hover {
+  color: var(--foreground);
+  border-color: var(--border-strong);
+}
+
+.rewrite__body {
+  min-height: 22px;
 }
