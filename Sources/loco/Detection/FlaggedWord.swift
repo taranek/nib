@@ -1,17 +1,15 @@
 import CoreGraphics
 import Foundation
 
-/// One flagged span with everything the overlay + card + write-back need.
+/// A changed-word region to underline, carrying the whole-sentence correction
+/// it belongs to. Hovering any region for a sentence shows the same corrected
+/// sentence; accepting replaces the entire sentence.
 struct FlaggedWord {
-    let word: String          // the exact wrong substring
-    let replacement: String   // the suggested fix
-    let message: String       // "wrong → fix" for the card
-    let category: String      // e.g. "Grammar"
     let rect: CGRect          // Cocoa coords (bottom-left origin), screen space
-    let range: NSRange?       // native write-back via AX (nil for browsers)
-    let key: String           // match key — the wrong substring, verbatim
-    let occurrence: Int       // Nth match of this key — disambiguates duplicates
+    let original: String      // the sentence as written
+    let corrected: String     // the corrected sentence
+    let range: NSRange?       // native write-back range of the sentence (nil for browsers)
+    let sentenceID: String    // identity for hover grouping + dismiss
 
-    /// Stable identity for hover/dismiss bookkeeping.
-    var id: String { "\(key)#\(occurrence)" }
+    var id: String { sentenceID }
 }

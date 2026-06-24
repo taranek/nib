@@ -17,6 +17,19 @@ export interface Suggestion {
   word: string;
 }
 
+export interface Rewrite {
+  /** Action label, e.g. "Rephrase". */
+  action: string;
+  /** The original selected text. */
+  original: string;
+  /** The proposed rewrite (empty while loading). */
+  result: string;
+  /** True until the model returns. */
+  loading: boolean;
+  /** True when the proposal matches the input (nothing to apply). */
+  unchanged: boolean;
+}
+
 export interface SettingsState {
   enabled: boolean;
   accessibilityTrusted: boolean;
@@ -29,6 +42,7 @@ export interface SettingsState {
 type OutboundMessage =
   | { type: "ready" }
   | { type: "apply" }
+  | { type: "applyRewrite" }
   | { type: "dismiss" }
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
@@ -43,6 +57,7 @@ interface WebkitBridge {
 
 interface LocoInbound {
   setSuggestion?: (s: Suggestion) => void;
+  setRewrite?: (r: Rewrite) => void;
   setSettings?: (state: SettingsState) => void;
 }
 
@@ -61,6 +76,11 @@ export function send(msg: OutboundMessage): void {
 /** Register the inbound entry point Swift calls to push a suggestion. */
 export function onSetSuggestion(handler: (s: Suggestion) => void): void {
   window.loco = { ...window.loco, setSuggestion: handler };
+}
+
+/** Register the inbound entry point Swift calls to push a rephrase proposal. */
+export function onSetRewrite(handler: (r: Rewrite) => void): void {
+  window.loco = { ...window.loco, setRewrite: handler };
 }
 
 /** Register the inbound entry point Swift calls to push settings state. */

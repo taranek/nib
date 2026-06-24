@@ -30,9 +30,19 @@ struct Highlight {
 /// already converted to this view's (bottom-left origin) space.
 final class OverlayView: NSView {
     private var highlights: [Highlight] = []
+    private var pill: CGRect?
+    private lazy var pillGlyph = NSImage(systemSymbolName: "arrow.triangle.2.circlepath",
+                                         accessibilityDescription: "Rephrase")
 
+    /// Grammar highlights (separate from the pill so each redraws independently).
     func update(highlights: [Highlight]) {
         self.highlights = highlights
+        needsDisplay = true
+    }
+
+    /// The rephrase pill (nil hides it).
+    func setPill(_ rect: CGRect?) {
+        pill = rect
         needsDisplay = true
     }
 
@@ -52,6 +62,16 @@ final class OverlayView: NSView {
             line.move(to: NSPoint(x: box.minX + 1, y: box.minY + 0.5))
             line.line(to: NSPoint(x: box.maxX - 1, y: box.minY + 0.5))
             line.stroke()
+        }
+
+        if let pill {
+            NSColor.systemBlue.setFill()
+            NSBezierPath(roundedRect: pill, xRadius: pill.width / 2, yRadius: pill.height / 2).fill()
+            if let glyph = pillGlyph {
+                let inset = pill.insetBy(dx: 3.5, dy: 3.5)
+                glyph.withSymbolConfiguration(.init(paletteColors: [.white]))?
+                    .draw(in: inset, from: .zero, operation: .sourceOver, fraction: 1)
+            }
         }
     }
 }

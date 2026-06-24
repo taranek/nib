@@ -9,11 +9,21 @@ import Foundation
 // AppleScript/JS quoting. Requires the browser's "Allow JavaScript from Apple
 // Events" (View → Developer) and Automation permission. No extension needed.
 
-/// A located phrase as the page reports it: which phrase (index into the request
-/// list), which occurrence, and a rect relative to the focused element's box.
-struct RawLocate {
-    let phraseIndex: Int
-    let occurrence: Int
+/// A rect for one requested character range, relative to the focused box.
+struct RawRect {
+    let index: Int     // which requested range
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
+/// The current page selection: its text, a rect relative to the focused box,
+/// whether it spans multiple lines, and the whole-sentence text it sits within.
+struct RawSelection {
+    let text: String
+    let sentence: String
+    let multiline: Bool
     let x: Double
     let y: Double
     let width: Double
@@ -33,20 +43,20 @@ final class BrowserBridge {
 
     private var warned = false
 
-    /// The plain text of the focused contenteditable, taken from the DOM so it
-    /// matches what `locate` searches. Returns nil when focus isn't editable.
+    /// The plain text of the focused contenteditable, taken from the DOM so its
+    /// offsets line up with `rects`. Returns nil when focus isn't editable.
     func focusedText(appName: String) -> String? {
         let js = "(function(){try{var el=document.activeElement;if(!el||!el.isContentEditable){return '';}return el.textContent||'';}catch(x){return '';}})()"
         guard let text = run(appName, js), !text.isEmpty else { return nil }
         return text
     }
 
-    /// Locate each phrase's occurrences in the focused contenteditable and return
-    /// their rects. Returns nil when JS is unavailable / the focus isn't editable.
-    func locate(appName: String, phrases: [String]) -> [RawLocate]? {
-        guard !phrases.isEmpty else { return [] }
-        let b64 = base64(["phrases": phrases])
-        let js = "(function(b64){try{var a=JSON.parse(decodeURIComponent(escape(atob(b64))));var el=document.activeElement;if(!el||!el.isContentEditable){return '';}function w(c){return c>='A'&&c<='Z'||c>='a'&&c<='z'||c>='0'&&c<='9';}function bound(t,i,n){var b=i>0?t.charAt(i-1):'';var f=(i+n)<t.length?t.charAt(i+n):'';return !w(b)&&!w(f);}var e=el.getBoundingClientRect();var out=[];for(var pi=0;pi<a.phrases.length;pi++){var phrase=a.phrases[pi];if(!phrase){continue;}var wk=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);var nd;var occ=0;while(nd=wk.nextNode()){var t=nd.nodeValue;var from=0;var idx;while((idx=t.indexOf(phrase,from))!==-1){from=idx+phrase.length;if(!bound(t,idx,phrase.length)){continue;}var rg=document.createRange();rg.setStart(nd,idx);rg.setEnd(nd,idx+phrase.length);var rc=rg.getBoundingClientRect();if(rc.width>0){out.push({p:pi,i:occ,x:Math.round(rc.left-e.left),y:Math.round(rc.top-e.top),width:Math.round(rc.width),h:Math.round(rc.height)});}occ++;}}}return JSON.stringify(out);}catch(x){return '';}})('\(b64)')"
+    /// Rects for character ranges (start, length) into the focused element's
+    /// textContent — used to underline the changed words of a sentence.
+    func rects(appName: String, ranges: [(Int, Int)]) -> [RawRect]? {
+        guard !ranges.isEmpty else { return [] }
+        let b64 = base64(["ranges": ranges.map { [$0.0, $0.1] }])
+        let js = "(function(b64){try{var a=JSON.parse(decodeURIComponent(escape(atob(b64))));var el=document.activeElement;if(!el||!el.isContentEditable){return '';}var e=el.getBoundingClientRect();var wk=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);var nodes=[];var full='';var nd;while(nd=wk.nextNode()){nodes.push({node:nd,start:full.length});full+=nd.nodeValue;}function loc(i){for(var k=0;k<nodes.length;k++){var s=nodes[k].start;var len=nodes[k].node.nodeValue.length;if(i<=s+len){return {node:nodes[k].node,off:i-s};}}var last=nodes[nodes.length-1];return {node:last.node,off:last.node.nodeValue.length};}var out=[];for(var j=0;j<a.ranges.length;j++){var st=a.ranges[j][0];var ln=a.ranges[j][1];var A=loc(st);var B=loc(st+ln);var rg=document.createRange();rg.setStart(A.node,A.off);rg.setEnd(B.node,B.off);var rc=rg.getBoundingClientRect();if(rc.width>0){out.push({i:j,x:Math.round(rc.left-e.left),y:Math.round(rc.top-e.top),width:Math.round(rc.width),h:Math.round(rc.height)});}}return JSON.stringify(out);}catch(x){return '';}})('\(b64)')"
 
         guard let text = run(appName, js), !text.isEmpty,
               let data = text.data(using: .utf8),
@@ -54,21 +64,39 @@ final class BrowserBridge {
         else { return nil }
 
         return arr.compactMap { obj in
-            guard let p = (obj["p"] as? NSNumber)?.intValue,
-                  let i = (obj["i"] as? NSNumber)?.intValue,
+            guard let i = (obj["i"] as? NSNumber)?.intValue,
                   let x = (obj["x"] as? NSNumber)?.doubleValue,
                   let y = (obj["y"] as? NSNumber)?.doubleValue,
                   let width = (obj["width"] as? NSNumber)?.doubleValue,
                   let h = (obj["h"] as? NSNumber)?.doubleValue else { return nil }
-            return RawLocate(phraseIndex: p, occurrence: i, x: x, y: y, width: width, height: h)
+            return RawRect(index: i, x: x, y: y, width: width, height: h)
         }
     }
 
-    /// Replace the Nth occurrence of `phrase` with `fix` via the DOM
-    /// (execCommand so the editor's model updates and fires input events).
-    func replace(appName: String, phrase: String, occurrence: Int, fix: String) {
-        let b64 = base64(["phrase": phrase, "occurrence": occurrence, "fix": fix])
-        let js = "(function(b64){try{var a=JSON.parse(decodeURIComponent(escape(atob(b64))));var el=document.activeElement;if(!el||!el.isContentEditable){return 'no';}function w(c){return c>='A'&&c<='Z'||c>='a'&&c<='z'||c>='0'&&c<='9';}function bound(t,i,n){var b=i>0?t.charAt(i-1):'';var f=(i+n)<t.length?t.charAt(i+n):'';return !w(b)&&!w(f);}var phrase=a.phrase;var target=a.occurrence;var fix=a.fix;var wk=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);var nd;var occ=0;while(nd=wk.nextNode()){var t=nd.nodeValue;var from=0;var idx;while((idx=t.indexOf(phrase,from))!==-1){from=idx+phrase.length;if(!bound(t,idx,phrase.length)){continue;}if(occ===target){var rg=document.createRange();rg.setStart(nd,idx);rg.setEnd(nd,idx+phrase.length);var sel=window.getSelection();sel.removeAllRanges();sel.addRange(rg);if(!document.execCommand('insertText',false,fix)){nd.nodeValue=t.slice(0,idx)+fix+t.slice(idx+phrase.length);}return 'ok';}occ++;}}return 'miss';}catch(x){return 'err';}})('\(b64)')"
+    /// The current non-empty selection in the focused contenteditable: its text
+    /// and a rect relative to the focused element's box. Nil if nothing selected.
+    func selection(appName: String) -> RawSelection? {
+        let js = "(function(){try{var el=document.activeElement;if(!el||!el.isContentEditable){return '';}var s=window.getSelection();if(!s||!s.rangeCount||s.isCollapsed){return '';}var r=s.getRangeAt(0);var e=el.getBoundingClientRect();var rc=r.getBoundingClientRect();var selText=s.toString();var multiline=r.getClientRects().length>1;var full=el.textContent||'';var pre=document.createRange();pre.selectNodeContents(el);pre.setEnd(r.startContainer,r.startOffset);var start=pre.toString().length;var end=start+selText.length;var enders='.!?';var a=start;while(a>0&&enders.indexOf(full.charAt(a-1))<0){a--;}while(a<end&&full.charCodeAt(a)<=32){a++;}var b=end;while(b<full.length&&enders.indexOf(full.charAt(b-1))<0){b++;}var sentence=full.slice(a,b).trim();return JSON.stringify({text:selText,sentence:sentence,multiline:multiline,x:Math.round(rc.left-e.left),y:Math.round(rc.top-e.top),width:Math.round(rc.width),h:Math.round(rc.height)});}catch(x){return '';}})()"
+        guard let out = run(appName, js), !out.isEmpty,
+              let data = out.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = o["text"] as? String, !text.isEmpty,
+              let x = (o["x"] as? NSNumber)?.doubleValue,
+              let y = (o["y"] as? NSNumber)?.doubleValue,
+              let width = (o["width"] as? NSNumber)?.doubleValue,
+              let h = (o["h"] as? NSNumber)?.doubleValue else { return nil }
+        let sentence = (o["sentence"] as? String) ?? ""
+        let multiline = (o["multiline"] as? NSNumber)?.boolValue ?? false
+        return RawSelection(text: text, sentence: sentence, multiline: multiline,
+                            x: x, y: y, width: width, height: h)
+    }
+
+    /// Replace `original` with `replacement`. Prefers the live selection if it
+    /// still matches; otherwise finds `original` in the editable and selects it
+    /// first. execCommand keeps the editor's model in sync.
+    func replaceText(appName: String, original: String, replacement: String) {
+        let b64 = base64(["orig": original, "rep": replacement])
+        let js = "(function(b64){try{var a=JSON.parse(decodeURIComponent(escape(atob(b64))));var el=document.activeElement;if(!el||!el.isContentEditable){return 'no';}var s=window.getSelection();if(s&&s.rangeCount&&!s.isCollapsed&&s.toString()===a.orig){document.execCommand('insertText',false,a.rep);return 'ok';}var wk=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);var nodes=[];var full='';var nd;while(nd=wk.nextNode()){nodes.push({node:nd,start:full.length});full+=nd.nodeValue;}var idx=full.indexOf(a.orig);if(idx<0){return 'miss';}function loc(i){for(var k=0;k<nodes.length;k++){var st=nodes[k].start;var len=nodes[k].node.nodeValue.length;if(i<=st+len){return {node:nodes[k].node,off:i-st};}}var last=nodes[nodes.length-1];return {node:last.node,off:last.node.nodeValue.length};}var A=loc(idx),B=loc(idx+a.orig.length);var rg=document.createRange();rg.setStart(A.node,A.off);rg.setEnd(B.node,B.off);s.removeAllRanges();s.addRange(rg);document.execCommand('insertText',false,a.rep);return 'ok';}catch(x){return 'err';}})('\(b64)')"
         _ = run(appName, js)
     }
 

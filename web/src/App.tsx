@@ -1,9 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { type Suggestion, onSetSuggestion, send } from "./bridge";
+import {
+  type Rewrite,
+  type Suggestion,
+  onSetRewrite,
+  onSetSuggestion,
+  send,
+} from "./bridge";
 
 // Sample so the card is useful when opened in a plain browser too.
 const SAMPLE: Suggestion = {
-  category: "Correctness",
+  category: "Grammar",
   suggestion: "the",
   message: "“teh” → “the”",
   word: "teh",
@@ -11,18 +17,21 @@ const SAMPLE: Suggestion = {
 
 const inWebView = Boolean(window.webkit?.messageHandlers?.loco);
 
+type View =
+  | { kind: "grammar"; suggestion: Suggestion }
+  | { kind: "rewrite"; rewrite: Rewrite };
+
 export function App() {
-  const [s, setS] = useState<Suggestion>(SAMPLE);
+  const [view, setView] = useState<View>({ kind: "grammar", suggestion: SAMPLE });
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // Receive the suggestion pushed from Swift, and announce readiness.
   useEffect(() => {
-    onSetSuggestion(setS);
+    onSetSuggestion((suggestion) => setView({ kind: "grammar", suggestion }));
+    onSetRewrite((rewrite) => setView({ kind: "rewrite", rewrite }));
     send({ type: "ready" });
   }, []);
 
-  // Report the card size so the native panel fits it exactly (no clipped
-  // shadow, no scrollbar).
+  // Report the card size so the native panel fits it exactly.
   useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -36,28 +45,60 @@ export function App() {
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [s]);
+  }, [view]);
 
   return (
     <div className="wrap" ref={wrapRef}>
       <div className="card">
-        <div className="card__cat">{s.category}</div>
-
-        <button className="sugg" onClick={() => send({ type: "apply" })}>
-          {s.suggestion}
-        </button>
-
-        <button className="action" onClick={() => send({ type: "dismiss" })}>
-          <TrashIcon />
-          <span>Dismiss</span>
-        </button>
-
-        <div className="foot">
-          <span className="foot__mark">loco</span>
-          <span>Powered by loco</span>
-        </div>
+        {view.kind === "grammar"
+          ? <GrammarCard s={view.suggestion} />
+          : <RewriteCard r={view.rewrite} />}
       </div>
     </div>
+  );
+}
+
+function GrammarCard({ s }: { s: Suggestion }) {
+  return (
+    <>
+      <div className="card__cat">{s.category}</div>
+      <button className="sugg" onClick={() => send({ type: "apply" })}>
+        {s.suggestion}
+      </button>
+      <button className="action" onClick={() => send({ type: "dismiss" })}>
+        <TrashIcon />
+        <span>Dismiss</span>
+      </button>
+    </>
+  );
+}
+
+function RewriteCard({ r }: { r: Rewrite }) {
+  return (
+    <>
+      <div className="card__cat">{r.action}</div>
+      {r.loading ? (
+        <div className="rewrite rewrite--loading">Rephrasing…</div>
+      ) : r.unchanged ? (
+        <div className="rewrite rewrite--ok">✓ Looks good — no changes needed.</div>
+      ) : (
+        <div className="rewrite">{r.result}</div>
+      )}
+      <div className="rewrite__row">
+        {!r.unchanged && (
+          <button
+            className="btn"
+            disabled={r.loading || !r.result}
+            onClick={() => send({ type: "applyRewrite" })}
+          >
+            Accept
+          </button>
+        )}
+        <button className="btn btn--ghost" onClick={() => send({ type: "dismiss" })}>
+          {r.unchanged ? "Close" : "Dismiss"}
+        </button>
+      </div>
+    </>
   );
 }
 

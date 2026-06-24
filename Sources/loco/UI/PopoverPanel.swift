@@ -89,17 +89,21 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         contentView = web
     }
 
-    /// Push the current single suggestion into the React card.
-    func setSuggestion(_ word: FlaggedWord) {
+    /// Push a rephrase/grammar proposal into the card (loading state until the
+    /// result
+    /// arrives).
+    func setRewrite(action: String, original: String, result: String,
+                    loading: Bool, unchanged: Bool = false) {
         let payload: [String: Any] = [
-            "message": word.message,
-            "suggestion": word.replacement,
-            "category": word.category,
-            "word": word.word,
+            "action": action,
+            "original": original,
+            "result": result,
+            "loading": loading,
+            "unchanged": unchanged,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.loco && window.loco.setSuggestion(\(json))")
+        webView.evaluateJavaScript("window.loco && window.loco.setRewrite && window.loco.setRewrite(\(json))")
     }
 
     func present(anchor: NSPoint) {
@@ -115,7 +119,18 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
     }
 
     private func reposition() {
-        setFrameOrigin(NSPoint(x: anchor.x, y: anchor.y - frame.height))
+        // Grow down from the anchor (its top-left), then clamp fully on-screen so
+        // the card is never clipped at a screen edge.
+        var origin = NSPoint(x: anchor.x, y: anchor.y - frame.height)
+        let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
+        if let vis = screen?.visibleFrame {
+            let margin: CGFloat = 8
+            origin.x = min(origin.x, vis.maxX - margin - frame.width)
+            origin.x = max(origin.x, vis.minX + margin)
+            origin.y = min(origin.y, vis.maxY - margin - frame.height)
+            origin.y = max(origin.y, vis.minY + margin)
+        }
+        setFrameOrigin(origin)
     }
 
     func userContentController(_ controller: WKUserContentController,

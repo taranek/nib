@@ -33,6 +33,27 @@ final class AppController: NSObject {
     private var hoveredID: String?
     private var hideHoverTimer: Timer?
 
+    // Rephrase: a pill near the current selection; hover it for a proposal.
+    private enum PopoverMode { case none, grammar, rephrase }
+    private var popoverMode: PopoverMode = .none
+    private var pillRect: CGRect?
+    private var rephraseText: String?            // selection text the pill acts on
+    private var rephraseAppName: String?
+    private var rephraseElement: AXUIElement?
+    private var rephraseRange: NSRange?          // native write-back range
+    private var selectionDebounce: Timer?
+    private var rephraseTask: Task<Void, Never>?
+    private var rephraseCache: [String: String] = [:]
+    private var pendingRewrite: PendingRewrite?
+
+    private struct PendingRewrite {
+        let original: String
+        let result: String
+        let appName: String?
+        let element: AXUIElement?
+        let range: NSRange?
+    }
+
     // Words the user dismissed (by id) — cleared whenever the text changes,
     // since edits shift occurrence indices.
     private var dismissed = Set<String>()
@@ -46,7 +67,8 @@ final class AppController: NSObject {
     private let llmServer = LLMServer()
     private var llmClient: LLMClient?
     private var llmReady = false
-    private var currentCorrections: [(wrong: String, fix: String)] = []
+    private var currentCorrections: [SentenceCorrection] = []
+    private var currentFullText: String = ""
     private var checkedValueHash: Int = 0
     private var grammarDebounce: Timer?
     private var grammarTask: Task<Void, Never>?
@@ -184,22 +206,27 @@ final class AppController: NSObject {
         attachToFocusedElement()
     }
 
-    /// Observe value changes on the currently focused element.
+    /// Observe value + selection changes on the currently focused element.
     private func attachToFocusedElement() {
         guard let observer = axObserver else { return }
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         if let old = observedElement {
             AXObserverRemoveNotification(observer, old, kAXValueChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, old, kAXSelectedTextChangedNotification as CFString)
         }
         observedElement = AX.focusedElement()
         if let element = observedElement {
             AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
+            AXObserverAddNotification(observer, element, kAXSelectedTextChangedNotification as CFString, refcon)
         }
     }
 
     private func handleAXNotification(_ notification: String) {
         if notification == kAXFocusedUIElementChangedNotification as String {
             attachToFocusedElement()
+        }
+        if notification == kAXSelectedTextChangedNotification as String {
+            scheduleSelectionUpdate()
         }
         tick()
     }
@@ -256,7 +283,7 @@ final class AppController: NSObject {
             scheduleRecheck(value: value, appName: appName)
         } else {
             // Position-only change (scroll/move): re-locate cached corrections.
-            renderCorrections(currentCorrections, appName: appName)
+            renderSentenceFixes(currentCorrections, fullText: currentFullText, appName: appName)
         }
     }
 
@@ -275,91 +302,86 @@ final class AppController: NSObject {
     private func recheck(value: String, appName: String?) {
         let token = value.hashValue
         let text = appName.flatMap { browser.focusedText(appName: $0) } ?? value
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard llmReady, let client = llmClient,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             currentCorrections = []
+            currentFullText = text
             checkedValueHash = token
             applyDetection([], element: AX.focusedElement())
             return
         }
 
-        if llmReady, let client = llmClient {
-            print("📝 validating focused input (\(text.count) chars)…")
-            grammarTask?.cancel()
-            grammarTask = Task { [weak self] in
-                let corrections = await client.check(text: text)
-                if Task.isCancelled { return }
-                await MainActor.run {
-                    guard let self else { return }
-                    print("   → \(corrections.count) suggestion(s)")
-                    // Only apply if the field still holds the text we checked.
-                    let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
-                    guard current == value else { print("   (stale — field changed)"); return }
-                    self.currentCorrections = corrections.map { (wrong: $0.wrong, fix: $0.fix) }
-                    self.checkedValueHash = token
-                    self.renderCorrections(self.currentCorrections, appName: appName)
-                }
+        print("📝 validating focused input (\(text.count) chars)…")
+        grammarTask?.cancel()
+        grammarTask = Task { [weak self] in
+            let corrections = await client.corrections(in: text)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard let self else { return }
+                print("   → \(corrections.count) sentence fix(es)")
+                // Only apply if the field still holds the text we checked.
+                let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
+                guard current == value else { print("   (stale — field changed)"); return }
+                self.currentCorrections = corrections
+                self.currentFullText = text
+                self.checkedValueHash = token
+                self.renderSentenceFixes(corrections, fullText: text, appName: appName)
             }
-        } else {
-            var pairs: [(wrong: String, fix: String)] = []
-            var seen = Set<String>()
-            for hit in Linter.words(in: text) where seen.insert(hit.word).inserted {
-                pairs.append((wrong: hit.word, fix: hit.replacement))
-            }
-            currentCorrections = pairs
-            checkedValueHash = token
-            renderCorrections(pairs, appName: appName)
         }
     }
 
-    /// Map each correction's `wrong` phrase to an on-screen rect and render.
-    /// Browser → in-page DOM search; native → AXBoundsForRange over the value.
-    private func renderCorrections(_ pairs: [(wrong: String, fix: String)], appName: String?) {
+    /// For each corrected sentence, underline the changed words (diff) and carry
+    /// the whole-sentence fix. Browser → rects by text offset; native →
+    /// AXBoundsForRange over the value.
+    private func renderSentenceFixes(_ corrections: [SentenceCorrection],
+                                     fullText: String, appName: String?) {
         guard let element = AX.focusedElement(), let axFrame = AX.frame(element) else {
             applyDetection([], element: nil); return
         }
         let fieldBox = toCocoa(axFrame)
-        var words: [FlaggedWord] = []
+        let ns = fullText as NSString
 
-        if let appName, let hits = browser.locate(appName: appName, phrases: pairs.map { $0.wrong }) {
+        // Changed-word ranges (offsets into fullText) + the sentence each belongs to.
+        struct Pending { let range: NSRange; let original: String; let corrected: String }
+        var pendings: [Pending] = []
+        for sc in corrections {
+            let sentence = ns.range(of: sc.original)
+            guard sentence.location != NSNotFound else { continue }
+            let changed = WordDiff.changedRanges(original: sc.original, corrected: sc.corrected)
+            let ranges = changed.isEmpty ? [NSRange(location: 0, length: sc.original.utf16.count)] : changed
+            for r in ranges {
+                pendings.append(Pending(
+                    range: NSRange(location: sentence.location + r.location, length: r.length),
+                    original: sc.original, corrected: sc.corrected))
+            }
+        }
+
+        var words: [FlaggedWord] = []
+        if let appName {
             activeBrowserAppName = appName
-            for h in hits where pairs.indices.contains(h.phraseIndex) {
-                let pair = pairs[h.phraseIndex]
-                let rect = CGRect(x: fieldBox.minX + h.x,
-                                  y: fieldBox.maxY - h.y - h.height,
-                                  width: h.width, height: h.height)
-                guard isInsideField(rect, fieldBox) else { continue }
-                words.append(FlaggedWord(word: pair.wrong, replacement: pair.fix,
-                                         message: message(pair.wrong, pair.fix),
-                                         category: "Grammar", rect: rect, range: nil,
-                                         key: pair.wrong, occurrence: h.occurrence))
+            if let rs = browser.rects(appName: appName, ranges: pendings.map { ($0.range.location, $0.range.length) }) {
+                for rr in rs where pendings.indices.contains(rr.index) {
+                    let p = pendings[rr.index]
+                    let rect = CGRect(x: fieldBox.minX + rr.x, y: fieldBox.maxY - rr.y - rr.height,
+                                      width: rr.width, height: rr.height)
+                    guard isInsideField(rect, fieldBox) else { continue }
+                    words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
+                                             range: nil, sentenceID: p.original))
+                }
             }
         } else {
             activeBrowserAppName = nil
-            let ns = (AX.string(element, kAXValueAttribute) ?? "") as NSString
-            for pair in pairs {
-                var from = 0
-                var occ = 0
-                while from <= ns.length {
-                    let r = ns.range(of: pair.wrong, options: [],
-                                     range: NSRange(location: from, length: ns.length - from))
-                    if r.location == NSNotFound { break }
-                    from = r.location + max(1, r.length)
-                    guard isWordBounded(r, in: ns) else { continue }
-                    if let rect = screenRect(for: r, in: element), isSaneRect(rect, in: fieldBox) {
-                        words.append(FlaggedWord(word: pair.wrong, replacement: pair.fix,
-                                                 message: message(pair.wrong, pair.fix),
-                                                 category: "Grammar", rect: rect, range: r,
-                                                 key: pair.wrong, occurrence: occ))
-                    }
-                    occ += 1
-                }
+            for p in pendings {
+                guard let rect = screenRect(for: p.range, in: element), isSaneRect(rect, in: fieldBox) else { continue }
+                let sentence = ns.range(of: p.original)
+                words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
+                                         range: sentence.location != NSNotFound ? sentence : nil,
+                                         sentenceID: p.original))
             }
         }
 
         words = words.filter { !dismissed.contains($0.id) }
-        if !pairs.isEmpty {
-            print("   highlighted \(words.count)/\(pairs.count) on \(appName ?? "native")")
-        }
+        if !corrections.isEmpty { print("   highlighted \(words.count) on \(appName ?? "native")") }
         applyDetection(words, element: element)
     }
 
@@ -375,15 +397,13 @@ final class AppController: NSObject {
             lastHighlightsKey = key
             view.update(highlights: highlights)
         }
-        if let aw = activeWord, !words.contains(where: { $0.id == aw.id }) {
+        if popoverMode == .grammar, let aw = activeWord,
+           !words.contains(where: { $0.id == aw.id }) {
             popoverPanel.orderOut(nil)
             activeWord = nil
             hoveredID = nil
+            popoverMode = .none
         }
-    }
-
-    private func message(_ wrong: String, _ fix: String) -> String {
-        "“\(wrong)” → “\(fix)”"
     }
 
     private func frontmostIsSelf() -> Bool {
@@ -402,8 +422,9 @@ final class AppController: NSObject {
 
     // MARK: - Hover → card
 
-    /// Driven by the global mouse monitor: open the card for the word under the
-    /// cursor, keep it open over the word or the card, hide otherwise.
+    /// Driven by the global mouse monitor: open the rephrase card over the pill,
+    /// or a grammar card over a flagged word; keep it open over the card; hide
+    /// otherwise.
     private func handleMouseMove() {
         let p = NSEvent.mouseLocation
 
@@ -412,22 +433,35 @@ final class AppController: NSObject {
             return
         }
 
+        // Rephrase pill takes priority — it sits next to the selection.
+        if let pill = pillRect, pill.insetBy(dx: -6, dy: -6).contains(p) {
+            cancelHidePopover()
+            if popoverMode != .rephrase { showRephrase() }
+            return
+        }
+
         if let hit = flagged.first(where: { $0.rect.insetBy(dx: -2, dy: -3).contains(p) }) {
             cancelHidePopover()
-            if hit.id != hoveredID {
+            if hit.id != hoveredID || popoverMode != .grammar {
                 hoveredID = hit.id
                 showCard(for: hit)
             }
-        } else if hoveredID != nil {
+        } else if popoverMode != .none {
             hoveredID = nil
             scheduleHidePopover()
         }
     }
 
     private func showCard(for word: FlaggedWord) {
+        popoverMode = .grammar
         activeWord = word
-        popoverPanel.setSuggestion(word)
-        // Anchor the card's top-left just below the word, growing downward.
+        // Grammar uses the same card as rephrase: show the corrected sentence,
+        // Accept replaces the whole sentence.
+        pendingRewrite = PendingRewrite(original: word.original, result: word.corrected,
+                                        appName: activeBrowserAppName, element: activeElement,
+                                        range: word.range)
+        popoverPanel.setRewrite(action: "Grammar", original: word.original,
+                                result: word.corrected, loading: false, unchanged: false)
         popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
     }
 
@@ -438,6 +472,7 @@ final class AppController: NSObject {
                 self?.popoverPanel.orderOut(nil)
                 self?.activeWord = nil
                 self?.hoveredID = nil
+                self?.popoverMode = .none
             }
         }
     }
@@ -447,50 +482,174 @@ final class AppController: NSObject {
         hideHoverTimer = nil
     }
 
+    // MARK: - Rephrase (selection pill)
+
+    /// Recompute the pill from the current selection (debounced off selection
+    /// changes so we don't run JS on every caret move).
+    private func scheduleSelectionUpdate() {
+        selectionDebounce?.invalidate()
+        selectionDebounce = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateSelectionPill() }
+        }
+    }
+
+    private func updateSelectionPill() {
+        guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(),
+              let element = AX.focusedElement(), let axFrame = AX.frame(element) else {
+            hidePill(); return
+        }
+        let fieldBox = toCocoa(axFrame)
+        let appName = browserAppName(for: element)
+
+        var text: String?
+        var selRect: CGRect?
+        var nativeRange: NSRange?
+
+        if let appName, let sel = browser.selection(appName: appName) {
+            // Multi-line selection → rephrase the whole sentence(s) it sits in.
+            text = (sel.multiline && !sel.sentence.isEmpty) ? sel.sentence : sel.text
+            selRect = CGRect(x: fieldBox.minX + sel.x, y: fieldBox.maxY - sel.y - sel.height,
+                             width: sel.width, height: sel.height)
+        } else if appName == nil, let t = AX.string(element, kAXSelectedTextAttribute),
+                  !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let cf = AX.selectedRange(element) {
+            selRect = AX.bounds(of: cf, in: element).map(toCocoa)
+            let selRange = NSRange(location: cf.location, length: cf.length)
+            if t.contains("\n") {
+                // Multi-line: expand to whole sentence(s).
+                let full = (AX.string(element, kAXValueAttribute) ?? "") as NSString
+                let expanded = sentenceRange(covering: selRange, in: full)
+                text = full.substring(with: expanded)
+                nativeRange = expanded
+            } else {
+                text = t
+                nativeRange = selRange
+            }
+        }
+
+        guard let target = text, let r = selRect,
+              !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              isInsideField(r, fieldBox) else {
+            hidePill(); return
+        }
+
+        rephraseText = target
+        rephraseAppName = appName
+        rephraseElement = element
+        rephraseRange = nativeRange
+
+        // Pill in the field's left margin, vertically centered on the selection.
+        let size: CGFloat = 18
+        let x = max(2, fieldBox.minX - size - 4)
+        let pill = CGRect(x: x, y: r.midY - size / 2, width: size, height: size)
+        pillRect = pill
+        view.setPill(pill)
+    }
+
+    private func hidePill() {
+        guard pillRect != nil else { return }
+        pillRect = nil
+        view.setPill(nil)
+        if popoverMode == .rephrase {
+            popoverPanel.orderOut(nil)
+            popoverMode = .none
+        }
+    }
+
+    /// Show (and compute) the rephrase proposal for the current selection.
+    private func showRephrase() {
+        guard let text = rephraseText else { return }
+        popoverMode = .rephrase
+        let anchor = NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2)
+
+        guard llmReady, let client = llmClient else {
+            popoverPanel.setRewrite(action: "Rephrase", original: text,
+                                    result: "Model still loading…", loading: false)
+            popoverPanel.present(anchor: anchor)
+            return
+        }
+
+        if let cached = rephraseCache[text] {
+            presentRewriteResult(original: text, result: cached)
+            popoverPanel.present(anchor: anchor)
+            return
+        }
+
+        pendingRewrite = nil
+        popoverPanel.setRewrite(action: "Rephrase", original: text, result: "", loading: true)
+        popoverPanel.present(anchor: anchor)
+
+        rephraseTask?.cancel()
+        rephraseTask = Task { [weak self] in
+            let result = await client.rephrase(text)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard let self, self.popoverMode == .rephrase, let result else { return }
+                self.rephraseCache[text] = result
+                self.presentRewriteResult(original: text, result: result)
+            }
+        }
+    }
+
+    /// Show a finished proposal; if it matches the input there's nothing to
+    /// apply, so flag it as unchanged and skip the pending fix.
+    private func presentRewriteResult(original: String, result: String) {
+        let unchanged = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            == original.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingRewrite = unchanged ? nil : makePending(original: original, result: result)
+        popoverPanel.setRewrite(action: "Rephrase", original: original,
+                                result: result, loading: false, unchanged: unchanged)
+    }
+
+    private func makePending(original: String, result: String) -> PendingRewrite {
+        PendingRewrite(original: original, result: result,
+                       appName: rephraseAppName, element: rephraseElement, range: rephraseRange)
+    }
+
+    private func applyRewrite(_ p: PendingRewrite) {
+        if let appName = p.appName {
+            browser.replaceText(appName: appName, original: p.original, replacement: p.result)
+        } else if let element = p.element {
+            if let range = p.range {
+                var cf = CFRange(location: range.location, length: range.length)
+                if let axRange = AXValueCreate(.cfRange, &cf) {
+                    AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+                }
+            }
+            AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, p.result as CFString)
+        }
+    }
+
+    private func finishRephrase() {
+        rephraseTask?.cancel()
+        popoverPanel.orderOut(nil)
+        popoverMode = .none
+        pendingRewrite = nil
+        hidePill()
+        lastSignature = ""       // the text changed — re-evaluate next tick
+        checkedValueHash = 0
+    }
+
     // MARK: - Messages from the React card
 
     private func handleWebMessage(_ body: [String: Any]) {
         guard let type = body["type"] as? String else { return }
         switch type {
-        case "ready":
-            if let word = activeWord { popoverPanel.setSuggestion(word) }
         case "resize":
             if let width = (body["width"] as? NSNumber)?.doubleValue,
                let height = (body["height"] as? NSNumber)?.doubleValue {
                 popoverPanel.resize(toContentWidth: CGFloat(width), height: CGFloat(height))
             }
-        case "apply":
-            if let word = activeWord { apply(word) }
-            finishCard()
+        case "applyRewrite":
+            if let p = pendingRewrite { applyRewrite(p) }
+            finishRephrase()
         case "dismiss":
-            if let word = activeWord { dismissed.insert(word.id) }
-            finishCard()
+            // For grammar, suppress the sentence so it stops being flagged.
+            if popoverMode == .grammar, let word = activeWord { dismissed.insert(word.id) }
+            finishRephrase()
         default:
             break
         }
-    }
-
-    /// Apply one fix: browser → DOM replace via JS; native → AX range replace.
-    private func apply(_ word: FlaggedWord) {
-        if let appName = activeBrowserAppName {
-            browser.replace(appName: appName, phrase: word.key,
-                            occurrence: word.occurrence, fix: word.replacement)
-        } else if let element = activeElement, let range = word.range {
-            var cf = CFRange(location: range.location, length: range.length)
-            if let axRange = AXValueCreate(.cfRange, &cf) {
-                AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
-                AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
-                                             word.replacement as CFString)
-            }
-        }
-    }
-
-    private func finishCard() {
-        popoverPanel.orderOut(nil)
-        activeWord = nil
-        hoveredID = nil
-        lastSignature = ""       // force a fresh evaluation on the next tick
-        checkedValueHash = 0     // the text changed — recheck rather than re-locate
     }
 
     /// Force a Chromium/Electron app to build and expose its accessibility tree.
@@ -618,7 +777,10 @@ final class AppController: NSObject {
         lastHighlightsKey = ""
         flagged = []
         view.update(highlights: [])
+        view.setPill(nil)
+        pillRect = nil
         popoverPanel.orderOut(nil)
+        popoverMode = .none
         activeWord = nil
         hoveredID = nil
         activeElement = nil
@@ -635,16 +797,24 @@ final class AppController: NSObject {
             && rect.minX <= field.maxX
     }
 
-    /// Whether a match sits on word boundaries (so "o" doesn't match inside
-    /// another word), matching the in-page locate logic.
-    private func isWordBounded(_ r: NSRange, in ns: NSString) -> Bool {
-        let alnum = CharacterSet.alphanumerics
-        func isWord(_ i: Int) -> Bool {
-            guard i >= 0, i < ns.length else { return false }
-            guard let scalar = Unicode.Scalar(ns.character(at: i)) else { return false }
-            return alnum.contains(scalar)
+    /// Expand a range to the whole sentence(s) it overlaps: back to the previous
+    /// sentence terminator, forward to the next one. Matches the in-page logic.
+    private func sentenceRange(covering range: NSRange, in ns: NSString) -> NSRange {
+        let enders = CharacterSet(charactersIn: ".!?")
+        func isEnder(_ i: Int) -> Bool {
+            guard i >= 0, i < ns.length, let s = Unicode.Scalar(ns.character(at: i)) else { return false }
+            return enders.contains(s)
         }
-        return !isWord(r.location - 1) && !isWord(r.location + r.length)
+        func isSpace(_ i: Int) -> Bool {
+            guard i >= 0, i < ns.length else { return false }
+            return ns.character(at: i) <= 32
+        }
+        var start = range.location
+        while start > 0, !isEnder(start - 1) { start -= 1 }
+        while start < range.location, isSpace(start) { start += 1 }
+        var end = range.location + range.length
+        while end < ns.length, !isEnder(end - 1) { end += 1 }
+        return NSRange(location: start, length: max(0, end - start))
     }
 
     /// A rect safe to draw a highlight for: inside the field and not absurdly

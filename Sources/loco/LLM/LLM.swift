@@ -8,24 +8,23 @@ import NaturalLanguage
 // loads one GGUF model and exposes /v1/chat/completions. We use a JSON-schema
 // response format so the model returns structured grammar corrections.
 
-/// One grammar/spelling correction: the exact original substring and its fix.
-struct Correction: Equatable, Sendable {
-    let wrong: String
-    let fix: String
+/// A sentence and its corrected form.
+struct SentenceCorrection: Equatable, Sendable {
+    let original: String
+    let corrected: String
 }
 
-/// Process-wide cache of sentence → corrections. Safe because greedy decoding
-/// is deterministic: the same sentence always yields the same result. Bounded
-/// with simple FIFO eviction.
+/// Process-wide cache of sentence → corrected sentence. Safe because greedy
+/// decoding is deterministic. Bounded with simple FIFO eviction.
 actor GrammarCache {
     static let shared = GrammarCache()
-    private var store: [String: [Correction]] = [:]
+    private var store: [String: String] = [:]
     private var order: [String] = []
     private let limit = 1000
 
-    func get(_ key: String) -> [Correction]? { store[key] }
+    func get(_ key: String) -> String? { store[key] }
 
-    func set(_ key: String, _ value: [Correction]) {
+    func set(_ key: String, _ value: String) {
         if store[key] == nil { order.append(key) }
         store[key] = value
         if order.count > limit {
@@ -244,83 +243,79 @@ final class LLMServer {
 struct LLMClient {
     let chatURL: URL
 
-    private static let systemPrompt = """
-    You are a precise grammar and spelling checker. You are given one sentence to \
-    check. Find every grammar, spelling, and punctuation mistake in it. Return JSON \
-    only. For each mistake, set "wrong" to the exact substring copied verbatim from \
-    the sentence (character-for-character, a whole word or short phrase), and "fix" \
-    to its corrected replacement. Do not flag correct text. If the sentence has no \
-    mistakes, return an empty array.
+    private static let correctPrompt = """
+    You correct a single sentence. Fix every spelling, grammar, punctuation, and \
+    usage error, and make it read as natural, idiomatic English — but change as \
+    little as possible. Put the corrected sentence in the "corrected" field.
+
+    Rules:
+    - Keep contractions (don't, doesn't, it's, I'm, they're, etc.) — never expand them.
+    - Keep sentence-ending punctuation (. ! ?) exactly as written.
+    - Preserve the original meaning; do not add or remove information.
+    - If the sentence is already correct, return it unchanged.
     """
 
-    private static let schema: [String: Any] = [
+    /// Worked examples — small models follow these far better than rules alone
+    /// (capitalization, idiomatic usage, keeping correct sentences unchanged).
+    private static let fewShot: [[String: Any]] = [
+        ["role": "user", "content": "she doesn't like it alot."],
+        ["role": "assistant", "content": #"{"corrected":"She doesn't like it much."}"#],
+        ["role": "user", "content": "They're going home tomorrow."],
+        ["role": "assistant", "content": #"{"corrected":"They're going home tomorrow."}"#],
+        ["role": "user", "content": "i has went to teh store yesterday."],
+        ["role": "assistant", "content": #"{"corrected":"I went to the store yesterday."}"#],
+    ]
+
+    private static let correctSchema: [String: Any] = [
         "type": "json_schema",
         "json_schema": [
-            "name": "corrections",
+            "name": "corrected",
             "strict": true,
             "schema": [
                 "type": "object",
-                "properties": [
-                    "corrections": [
-                        "type": "array",
-                        "items": [
-                            "type": "object",
-                            "properties": [
-                                "wrong": ["type": "string"],
-                                "fix": ["type": "string"],
-                            ],
-                            "required": ["wrong", "fix"],
-                        ],
-                    ],
-                ],
-                "required": ["corrections"],
+                "properties": ["corrected": ["type": "string"]],
+                "required": ["corrected"],
             ],
         ],
     ]
 
-    /// Check the input sentence by sentence (concurrently) and merge the
-    /// corrections. Each correction's `wrong` is verbatim from its sentence, so
-    /// it's locatable in the full text.
-    func check(text: String) async -> [Correction] {
+    /// Correct the input sentence by sentence (concurrently). Returns only the
+    /// sentences the model actually changed, paired with their corrections.
+    func corrections(in text: String) async -> [SentenceCorrection] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > 1 else { return [] }
 
         let sentences = Self.sentences(in: text)
-        if sentences.count <= 1 {
-            return await checkSentence(trimmed)
-        }
-
-        var collected: [Correction] = []
-        await withTaskGroup(of: [Correction].self) { group in
+        var out: [SentenceCorrection] = []
+        await withTaskGroup(of: SentenceCorrection?.self) { group in
             for sentence in sentences {
-                group.addTask { await checkSentence(sentence) }
+                group.addTask { await correctSentence(sentence) }
             }
-            for await result in group { collected.append(contentsOf: result) }
+            for await result in group { if let result { out.append(result) } }
         }
-
-        // Dedup across sentences (same mistake repeated).
-        var seen = Set<String>()
-        return collected.filter { seen.insert("\($0.wrong)|\($0.fix)").inserted }
+        return out
     }
 
-    /// Check one sentence in isolation, caching successful results so unchanged
-    /// sentences don't hit the model again.
-    private func checkSentence(_ sentence: String) async -> [Correction] {
+    /// Correct one sentence in isolation, caching successful results. Returns nil
+    /// if the model left it unchanged (or the request failed).
+    private func correctSentence(_ sentence: String) async -> SentenceCorrection? {
         let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > 1 else { return [] }
+        guard trimmed.count > 1 else { return nil }
 
-        if let cached = await GrammarCache.shared.get(trimmed) { return cached }
+        if let cached = await GrammarCache.shared.get(trimmed) {
+            return cached == trimmed ? nil : SentenceCorrection(original: trimmed, corrected: cached)
+        }
 
+        let messages: [[String: Any]] = [["role": "system", "content": Self.correctPrompt]]
+            + Self.fewShot
+            + [["role": "user", "content": trimmed]]
         let body: [String: Any] = [
-            "messages": [
-                ["role": "system", "content": Self.systemPrompt],
-                ["role": "user", "content": sentence],
-            ],
+            "messages": messages,
             "temperature": 0,
             "max_tokens": 512,
-            "response_format": Self.schema,
+            "response_format": Self.correctSchema,
         ]
-        guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return [] }
+        guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return nil }
 
         var request = URLRequest(url: chatURL)
         request.httpMethod = "POST"
@@ -328,20 +323,86 @@ struct LLMClient {
         request.httpBody = payload
         request.timeoutInterval = 30
 
-        // A failed request returns [] WITHOUT caching, so a transient blip
-        // doesn't get stuck as "no mistakes".
+        // A failed request returns nil WITHOUT caching.
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
-
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else { return [] }
+              let content = message["content"] as? String else { return nil }
 
-        // Validate against the sentence so phrases are scoped to where they belong.
-        let result = Self.parse(content, in: sentence)
-        await GrammarCache.shared.set(trimmed, result)   // cache the successful result (even if empty)
-        return result
+        let json = content
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let jsonData = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let corrected = (obj["corrected"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !corrected.isEmpty else { return nil }
+
+        await GrammarCache.shared.set(trimmed, corrected)
+        return corrected == trimmed ? nil : SentenceCorrection(original: trimmed, corrected: corrected)
+    }
+
+    // MARK: Text actions
+
+    func rephrase(_ text: String) async -> String? {
+        await rewrite("Rewrite the user's text in clear, natural, correct English. "
+            + "Fix all spelling, grammar, and punctuation, and preserve the meaning. "
+            + "Put the rewritten text in the 'rewrite' field.", text)
+    }
+
+    /// JSON schema for a single rewrite — constraining the output to a JSON
+    /// object forces the model straight to the answer (no chain-of-thought prose).
+    private static let rewriteSchema: [String: Any] = [
+        "type": "json_schema",
+        "json_schema": [
+            "name": "rewrite",
+            "strict": true,
+            "schema": [
+                "type": "object",
+                "properties": ["rewrite": ["type": "string"]],
+                "required": ["rewrite"],
+            ],
+        ],
+    ]
+
+    /// One rewrite turn; returns the model's text from the JSON `rewrite` field.
+    private func rewrite(_ instruction: String, _ text: String) async -> String? {
+        let body: [String: Any] = [
+            "messages": [
+                ["role": "system", "content": instruction],
+                ["role": "user", "content": text],
+            ],
+            "temperature": 0,
+            "max_tokens": 1024,
+            "response_format": Self.rewriteSchema,
+        ]
+        guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+
+        var request = URLRequest(url: chatURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = payload
+        request.timeoutInterval = 60
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else { return nil }
+
+        let json = content
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rewrite = obj["rewrite"] as? String else { return nil }
+        let cleaned = rewrite.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     /// Split text into sentences (Apple's tokenizer), dropping empty fragments.
@@ -355,31 +416,6 @@ struct LLMClient {
                 result.append(sentence)
             }
             return true
-        }
-        return result
-    }
-
-    /// Parse the model's JSON content into corrections, keeping only verbatim,
-    /// non-trivial, deduplicated entries.
-    static func parse(_ content: String, in text: String) -> [Correction] {
-        // The schema yields clean JSON, but be defensive about stray fences.
-        let json = content
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = json.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let items = root["corrections"] as? [[String: Any]] else { return [] }
-
-        var seen = Set<String>()
-        var result: [Correction] = []
-        for item in items {
-            guard let wrong = item["wrong"] as? String,
-                  let fix = item["fix"] as? String,
-                  !wrong.isEmpty, wrong != fix,
-                  text.contains(wrong),            // must be locatable verbatim
-                  seen.insert(wrong).inserted else { continue }
-            result.append(Correction(wrong: wrong, fix: fix))
         }
         return result
     }
