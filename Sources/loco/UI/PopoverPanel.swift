@@ -37,12 +37,16 @@ class FloatingPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = true
         becomesKeyOnlyIfNeeded = true
+        // macOS only delivers mouseMoved (which drives CSS :hover in the WKWebView)
+        // to the KEY window. A .nonactivatingPanel can be key without activating
+        // our app or stealing the browser's focus, so allow it + accept moves.
+        acceptsMouseMovedEvents = true
         // NSPanel defaults this to true, which hides it whenever our (accessory,
         // never-frontmost) app isn't active — i.e. always. Keep it visible.
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
@@ -103,6 +107,9 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         self.anchor = anchor
         reposition()
         orderFrontRegardless()
+        // Become key (without activating the app, since it's non-activating) so
+        // the webview receives mouseMoved and CSS :hover updates smoothly.
+        makeKey()
     }
 
     func resize(toContentWidth width: CGFloat, height: CGFloat) {

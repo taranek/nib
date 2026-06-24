@@ -246,6 +246,11 @@ final class AppController: NSObject {
     private func tick() {
         guard enabled else { return }
 
+        // A card is open (and key, for hover) — its webview is the focused UI
+        // element, so detection would see "focus left the field" and clear it.
+        // Leave everything as-is until the card is dismissed.
+        if popoverMode != .none { return }
+
         // Skip detection while our own UI is in front — nothing to correct there,
         // and not redrawing the full-screen overlay keeps the popover smooth.
         if settingsPopover?.isShown == true || frontmostIsSelf() {
