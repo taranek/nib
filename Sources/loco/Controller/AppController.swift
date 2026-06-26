@@ -1,5 +1,6 @@
 import Cocoa
 import ApplicationServices
+import Carbon.HIToolbox
 import WebKit
 
 // MARK: - Controller
@@ -32,6 +33,9 @@ final class AppController: NSObject {
     private var activeWord: FlaggedWord?
     private var hoveredID: String?
     private var hideHoverTimer: Timer?
+    // Auto-close a popover the user opened but never moved onto.
+    private var autoDismissTimer: Timer?
+    private let autoDismissDelay: TimeInterval = 1.5
 
     // Rephrase: a pill near the current selection; hover it for a proposal.
     private enum PopoverMode { case none, grammar, rephrase }
@@ -42,6 +46,7 @@ final class AppController: NSObject {
     private var rephraseElement: AXUIElement?
     private var rephraseRange: NSRange?          // native write-back range
     private var selectionDebounce: Timer?
+    private var rephraseHotKey: GlobalHotKey?     // global shortcut → rephrase
 
     // The card opens against a target; React fetches rewrites and sends back the
     // accepted text, which we write into this target.
@@ -128,6 +133,8 @@ final class AppController: NSObject {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
             MainActor.assumeIsolated { self?.handleMouseMove() }
         }
+
+        registerRephraseHotKey()
 
         // Event-driven: react to focus/value changes via AXObserver, and to app
         // switches via NSWorkspace. A slow safety poll backstops anything not
@@ -481,18 +488,33 @@ final class AppController: NSObject {
     private func scheduleHidePopover() {
         hideHoverTimer?.invalidate()
         hideHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.popoverPanel.orderOut(nil)
-                self?.activeWord = nil
-                self?.hoveredID = nil
-                self?.popoverMode = .none
-            }
+            MainActor.assumeIsolated { self?.closePopover() }
         }
     }
 
     private func cancelHidePopover() {
         hideHoverTimer?.invalidate()
         hideHoverTimer = nil
+        // Hovering the popover/pill/word counts as engagement — keep it open.
+        autoDismissTimer?.invalidate()
+        autoDismissTimer = nil
+    }
+
+    /// Auto-close a freshly opened popover if the user never moves onto it.
+    private func startAutoDismiss() {
+        autoDismissTimer?.invalidate()
+        autoDismissTimer = Timer.scheduledTimer(withTimeInterval: autoDismissDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closePopover() }
+        }
+    }
+
+    private func closePopover() {
+        popoverPanel.orderOut(nil)
+        activeWord = nil
+        hoveredID = nil
+        popoverMode = .none
+        autoDismissTimer?.invalidate()
+        autoDismissTimer = nil
     }
 
     // MARK: - Rephrase (selection pill)
@@ -589,6 +611,31 @@ final class AppController: NSObject {
             "ready": llmReady,
         ])
         popoverPanel.present(anchor: NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2))
+    }
+
+    /// Register the global shortcut that opens the rephrase card on the current
+    /// selection. Default ⌘` (backtick); overridable via UserDefaults.
+    private func registerRephraseHotKey() {
+        let d = UserDefaults.standard
+        let keyCode = UInt32(d.object(forKey: "rephraseHotKeyCode") as? Int ?? kVK_ANSI_Grave)
+        let modifiers = UInt32(d.object(forKey: "rephraseHotKeyModifiers") as? Int ?? cmdKey)
+        rephraseHotKey = GlobalHotKey(keyCode: keyCode, modifiers: modifiers) { [weak self] in
+            MainActor.assumeIsolated { self?.triggerRephraseHotKey() }
+        }
+        if rephraseHotKey == nil {
+            print("⚠️ Couldn't register the rephrase hotkey (another app may own it).")
+        }
+    }
+
+    /// Hotkey pressed: toggle the rephrase card for the current selection.
+    private func triggerRephraseHotKey() {
+        if popoverMode == .rephrase { hidePill(); return }   // already open → close
+        guard enabled, popoverMode == .none else { return }  // don't fight the grammar card
+        updateSelectionPill()                                 // recompute selection + pill
+        if rephraseText != nil, pillRect != nil {
+            showRephrase()
+            startAutoDismiss()   // mouse isn't near it — close unless engaged
+        }
     }
 
     /// Write `text` into the current target (browser DOM or native AX).

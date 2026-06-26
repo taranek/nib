@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/motion-tabs";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
+import { motion } from "motion/react";
 
 // Sample so the card is useful when opened in a plain browser too.
 const SAMPLE: CardData = {
@@ -23,7 +24,7 @@ const SAMPLE: CardData = {
   original: "I think we should make it better.",
   result: "",
   styles: [
-    { id: "improve", label: "Improve" },
+    { id: "grammar", label: "Grammar" },
     { id: "rephrase", label: "Rephrase" },
     { id: "shorten", label: "Shorten" },
   ],
@@ -59,13 +60,23 @@ export function App() {
 
   return (
     <div className="wrap" ref={wrapRef}>
-      <div className="card">
+      {/* Origin-aware entrance: the card's top-left is pinned to the anchor, so
+          scaling from there makes it grow out of the trigger. Keyed on the card
+          identity so it replays per new card, not on tab switches. */}
+      <motion.div
+        key={`${card.mode}|${card.original}`}
+        className="card"
+        style={{ transformOrigin: "top left" }}
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ type: "spring", duration: 0.22, bounce: 0.2 }}
+      >
         {card.mode === "grammar" ? (
           <GrammarBody card={card} />
         ) : (
           <RewriteBody key={card.original} card={card} />
         )}
-      </div>
+      </motion.div>
     </div>
   );
 }
@@ -99,7 +110,7 @@ function GrammarBody({ card }: { card: CardData }) {
 }
 
 function RewriteBody({ card }: { card: CardData }) {
-  const [active, setActive] = useState(card.styles[0]?.id ?? "improve");
+  const [active, setActive] = useState(card.styles[0]?.id ?? "grammar");
   const [results, setResults] = useState<Record<string, RewriteState>>({});
   const onResult = useCallback(
     (id: string, s: RewriteState) => setResults((p) => ({ ...p, [id]: s })),

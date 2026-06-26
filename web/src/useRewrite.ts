@@ -9,10 +9,10 @@ const KEEP_TERMS =
   "written — never expand or replace them (e.g. keep 'config', 'repo', 'API').";
 
 const INSTRUCTIONS: Record<string, string> = {
-  improve:
-    "Improve the wording of the user's text: make it clearer and more natural, " +
-    "fixing any spelling or grammar, but keep the same meaning, tone, and roughly " +
-    "the same length." +
+  grammar:
+    "Correct only the spelling, grammar, and punctuation in the user's text, " +
+    "changing as little as possible. Keep the original wording, meaning, tone, " +
+    "and length. If there are no errors, return the text unchanged." +
     KEEP_TERMS +
     " Put the result in the 'rewrite' field.",
   rephrase:
@@ -49,7 +49,7 @@ async function fetchRewrite(
   text: string,
   llmUrl: string,
 ): Promise<string | null> {
-  const instruction = INSTRUCTIONS[style] ?? INSTRUCTIONS.improve;
+  const instruction = INSTRUCTIONS[style] ?? INSTRUCTIONS.grammar;
   try {
     const res = await fetch(llmUrl, {
       method: "POST",
