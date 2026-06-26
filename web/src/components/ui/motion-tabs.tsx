@@ -207,16 +207,44 @@ function TabsContents({
       child.props.value === activeValue
   )
 
+  // Animate the container height to the ACTIVE panel's height (panels are
+  // top-aligned so each keeps its own height; the container clips + animates).
+  const panelRefs = React.useRef<Array<HTMLDivElement | null>>([])
+  const [height, setHeight] = React.useState<number>()
+
+  React.useLayoutEffect(() => {
+    const el = panelRefs.current[activeIndex]
+    if (!el) return
+    const measure = () => setHeight(el.offsetHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [activeIndex, childrenArray.length])
+
   return (
-    <div data-slot='tabs-contents' className={cn('overflow-hidden', className)} {...props}>
+    <motion.div
+      data-slot='tabs-contents'
+      className={cn('overflow-hidden', className)}
+      initial={false}
+      animate={{ height: height ?? 'auto' }}
+      transition={{ type: 'spring', stiffness: 260, damping: 30, bounce: 0 }}
+      {...props}
+    >
       <motion.div className='-mx-2 flex' animate={{ x: activeIndex * -100 + '%' }} transition={transition}>
         {childrenArray.map((child, index) => (
-          <div key={index} className='w-full shrink-0 px-2'>
+          <div
+            key={index}
+            ref={(node) => {
+              panelRefs.current[index] = node
+            }}
+            className='w-full shrink-0 self-start px-2'
+          >
             {child}
           </div>
         ))}
       </motion.div>
-    </div>
+    </motion.div>
   )
 }
 
@@ -235,7 +263,7 @@ function TabsContent({ children, value, className, ...props }: TabsContentProps)
       data-slot='tabs-content'
       className={cn('overflow-hidden', className)}
       initial={{ filter: 'blur(0px)' }}
-      animate={{ filter: isActive ? 'blur(0px)' : 'blur(2px)' }}
+      animate={{ filter: isActive ? 'blur(0px)' : 'blur(3px)' }}
       exit={{ filter: 'blur(0px)' }}
       transition={{ type: 'spring', stiffness: 300, damping: 20 }}
       {...props}

@@ -113,6 +113,20 @@ body,
   margin: 0;
   background: transparent;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Respect the OS "Reduce motion" setting for CSS-driven motion (button
+   hover/press transitions). Motion's JS animations are handled by the root
+   MotionConfig reducedMotion="user". */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Transparent margin so the card's soft CSS shadow has room (the native window
