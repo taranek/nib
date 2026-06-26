@@ -27,6 +27,7 @@ const SAMPLE: CardData = {
     { id: "grammar", label: "Grammar" },
     { id: "rephrase", label: "Rephrase" },
     { id: "shorten", label: "Shorten" },
+    { id: "translate", label: "Translate" },
   ],
   llmUrl: "http://127.0.0.1:18080/v1/chat/completions",
   ready: true,
@@ -234,6 +235,21 @@ function RewritePanel({
     return (
       <div className="rewrite__body">
         <div className="rewrite rewrite--loading">Couldn't reach the model.</div>
+      </div>
+    );
+  // Translation replaces the whole text, so a word-diff would mark everything
+  // changed — show the plain translated result instead. If the model returned the
+  // text unchanged, it's already English, so don't propose anything.
+  if (style === "translate")
+    return (
+      <div className="rewrite__body">
+        {st.text.trim() === original.trim() ? (
+          <div className="rewrite rewrite--ok">
+            ✓ Already in English — nothing to translate.
+          </div>
+        ) : (
+          <div className="rewrite">{st.text}</div>
+        )}
       </div>
     );
   if (st.text.trim() === original.trim())

@@ -25,6 +25,12 @@ const INSTRUCTIONS: Record<string, string> = {
     "fewer words, in clear natural English." +
     KEEP_TERMS +
     " Put the result in the 'rewrite' field.",
+  translate:
+    "Translate the user's text into English. Detect the source language " +
+    "automatically and produce natural, fluent English that preserves the meaning " +
+    "and tone. If the text is already English, return it unchanged." +
+    KEEP_TERMS +
+    " Put the result in the 'rewrite' field.",
 };
 
 // Constrain output to JSON so the small model returns the answer directly.
