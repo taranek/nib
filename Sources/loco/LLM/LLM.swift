@@ -276,15 +276,17 @@ struct LLMClient {
     let chatURL: URL
 
     private static let correctPrompt = """
-    You correct a single sentence. Fix every spelling, grammar, punctuation, and \
-    usage error, and make it read as natural, idiomatic English — but change as \
-    little as possible. Put the corrected sentence in the "corrected" field.
+    You correct a single sentence. Fix ONLY clear spelling, grammar, and \
+    punctuation errors, changing as little as possible. Put the result in the \
+    "corrected" field.
 
     Rules:
     - Keep contractions (don't, doesn't, it's, I'm, they're, etc.) — never expand them.
     - Keep sentence-ending punctuation (. ! ?) exactly as written.
-    - Preserve the original meaning; do not add or remove information.
-    - If the sentence is already correct, return it unchanged.
+    - Preserve ALL of the original wording and content: never delete or reword \
+    parentheticals (…), quotes, names, code, or anything that is already correct.
+    - Do not rewrite for style or concision. If the sentence has no clear error, \
+    return it exactly unchanged.
     """
 
     /// Worked examples — small models follow these far better than rules alone
@@ -292,10 +294,10 @@ struct LLMClient {
     private static let fewShot: [[String: Any]] = [
         ["role": "user", "content": "she doesn't like it alot."],
         ["role": "assistant", "content": #"{"corrected":"She doesn't like it much."}"#],
-        ["role": "user", "content": "They're going home tomorrow."],
-        ["role": "assistant", "content": #"{"corrected":"They're going home tomorrow."}"#],
         ["role": "user", "content": "i has went to teh store yesterday."],
         ["role": "assistant", "content": #"{"corrected":"I went to the store yesterday."}"#],
+        ["role": "user", "content": "Context for the other agent (the actual fix): this config is correct"],
+        ["role": "assistant", "content": #"{"corrected":"Context for the other agent (the actual fix): this config is correct"}"#],
     ]
 
     private static let correctSchema: [String: Any] = [

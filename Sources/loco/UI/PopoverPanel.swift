@@ -62,9 +62,16 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
     var onEnter: (() -> Void)?
     var onExit: (() -> Void)?
 
+    /// Transparent margin (CSS `.wrap` padding) around the card inside the window,
+    /// so the CSS shadow has room and the rounded corners aren't framed by the
+    /// rectangular native window shadow. Must match `.wrap { padding }`.
+    private let shadowMargin: CGFloat = 24
+
     init(url: URL) {
         super.init(size: NSSize(width: 300, height: 150))
-        hasShadow = true   // native shadow (outside the frame, non-interactive)
+        // No native (rectangular) shadow — the card draws its own soft, rounded
+        // shadow in CSS within the transparent margin.
+        hasShadow = false
 
         let config = WKWebViewConfiguration()
         let userContent = WKUserContentController()
@@ -115,20 +122,23 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
     func resize(toContentWidth width: CGFloat, height: CGFloat) {
         setContentSize(NSSize(width: width, height: height))
         reposition()
-        invalidateShadow()
     }
 
     private func reposition() {
-        // Grow down from the anchor (its top-left), then clamp fully on-screen so
-        // the card is never clipped at a screen edge.
-        var origin = NSPoint(x: anchor.x, y: anchor.y - frame.height)
+        // The window includes a `shadowMargin` transparent border around the card,
+        // so offset by it to land the card's visual top-left on `anchor`, then
+        // nudge it right a touch and clamp fully on-screen.
+        let nudgeX: CGFloat = 16
+        let nudgeY: CGFloat = 4   // push down a touch from the anchor
+        var origin = NSPoint(x: anchor.x - shadowMargin + nudgeX,
+                             y: anchor.y - frame.height + shadowMargin - nudgeY)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
         if let vis = screen?.visibleFrame {
-            let margin: CGFloat = 8
-            origin.x = min(origin.x, vis.maxX - margin - frame.width)
-            origin.x = max(origin.x, vis.minX + margin)
-            origin.y = min(origin.y, vis.maxY - margin - frame.height)
-            origin.y = max(origin.y, vis.minY + margin)
+            let edge: CGFloat = 8
+            origin.x = min(origin.x, vis.maxX - edge - frame.width)
+            origin.x = max(origin.x, vis.minX + edge)
+            origin.y = min(origin.y, vis.maxY - edge - frame.height)
+            origin.y = max(origin.y, vis.minY + edge)
         }
         setFrameOrigin(origin)
     }

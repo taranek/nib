@@ -65,14 +65,20 @@
   --diff-ins: #1a7f37;
 }
 
-/* Dark tokens — our own palette (a refined dark surface with translucent
-   hairlines), shifted off any single source's exact values. */
+/* Dark tokens — a refined dark surface with translucent hairlines. */
 .dark {
-  --background: #090a0c;
+  /* Background levels (darkest → lightest). */
+  --color-bg-level-0: #08090a;
+  --color-bg-level-1: #0f1011;
+  --color-bg-level-2: #141516;
+  --color-bg-level-3: #191a1b;
+  --color-bg-tint: #141516;
+
+  --background: var(--color-bg-level-0);
   --foreground: #f4f5f7;
-  --card: #131418; /* panel surface */
+  --card: var(--color-bg-level-3); /* panel surface */
   --card-foreground: #f4f5f7;
-  --popover: #131418;
+  --popover: var(--color-bg-level-3);
   --popover-foreground: #f4f5f7;
   --primary: #5b63d6; /* brand */
   --primary-foreground: #ffffff;
@@ -105,8 +111,11 @@ body,
   overflow: hidden;
 }
 
+/* Transparent margin so the card's soft CSS shadow has room (the native window
+   shadow is disabled). Must match PopoverPanel.shadowMargin. */
 .wrap {
   width: max-content;
+  padding: 24px;
 }
 
 /* The floating suggestion/rewrite card. Refined dark surface (it sits over any
@@ -116,15 +125,14 @@ body,
    outer ring + drop shadow, faint top highlight. */
 .card {
   width: 340px;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   box-sizing: border-box;
   color: var(--text-secondary);
   background: var(--card);
-  border: 1px solid var(--border);
   box-shadow:
-    0 0 0 2px rgba(0, 0, 0, 0.1),
-    0 7px 32px rgba(0, 0, 0, 0.45),
+    0 6px 16px rgba(0, 0, 0, 0.4),
+    0 1px 4px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 

@@ -2,18 +2,29 @@ import { useEffect, useState } from "react";
 
 // The rewrite styles' instructions, mirrored from the Swift RewriteStyle enum.
 // (We fetch the local LLM directly from the webview, so the prompts live here.)
+// Keep abbreviations, jargon, names, and code intact across every style — e.g.
+// don't turn "config" into "configuration" or "repo" into "repository".
+const KEEP_TERMS =
+  " Keep abbreviations, acronyms, technical terms, names, and code exactly as " +
+  "written — never expand or replace them (e.g. keep 'config', 'repo', 'API').";
+
 const INSTRUCTIONS: Record<string, string> = {
   improve:
     "Improve the wording of the user's text: make it clearer and more natural, " +
     "fixing any spelling or grammar, but keep the same meaning, tone, and roughly " +
-    "the same length. Put the result in the 'rewrite' field.",
+    "the same length." +
+    KEEP_TERMS +
+    " Put the result in the 'rewrite' field.",
   rephrase:
     "Rephrase the user's text using different wording while keeping the same " +
-    "meaning and language, in clear natural English. Put the result in the " +
-    "'rewrite' field.",
+    "meaning and language, in clear natural English." +
+    KEEP_TERMS +
+    " Put the result in the 'rewrite' field.",
   shorten:
     "Make the user's text more concise: keep the same meaning and language but use " +
-    "fewer words, in clear natural English. Put the result in the 'rewrite' field.",
+    "fewer words, in clear natural English." +
+    KEEP_TERMS +
+    " Put the result in the 'rewrite' field.",
 };
 
 // Constrain output to JSON so the small model returns the answer directly.
