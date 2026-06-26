@@ -21,7 +21,7 @@ enum RewriteStyle: String, CaseIterable, Sendable {
     /// Label shown in the card's style picker.
     var label: String {
         switch self {
-        case .improve: return "Improve wording"
+        case .improve: return "Improve"
         case .rephrase: return "Rephrase"
         case .shorten: return "Shorten"
         }

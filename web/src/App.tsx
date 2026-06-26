@@ -14,6 +14,8 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/motion-tabs";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { Button } from "@/components/ui/button";
 
 // Sample so the card is useful when opened in a plain browser too.
 const SAMPLE: CardData = {
@@ -21,7 +23,7 @@ const SAMPLE: CardData = {
   original: "I think we should make it better.",
   result: "",
   styles: [
-    { id: "improve", label: "Improve wording" },
+    { id: "improve", label: "Improve" },
     { id: "rephrase", label: "Rephrase" },
     { id: "shorten", label: "Shorten" },
   ],
@@ -70,6 +72,22 @@ export function App() {
 
 function GrammarBody({ card }: { card: CardData }) {
   const canAccept = card.result.trim() !== card.original.trim() && !!card.result;
+
+  // Keyboard: Enter accepts the correction, Esc dismisses.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        send({ type: "dismiss" });
+      } else if (e.key === "Enter" && canAccept) {
+        e.preventDefault();
+        send({ type: "applyRewrite", text: card.result });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canAccept, card.result]);
+
   return (
     <>
       <div className="rw-content">
@@ -88,6 +106,24 @@ function RewriteBody({ card }: { card: CardData }) {
     [],
   );
 
+  // Keyboard: ←/→ and Tab/⇧Tab cycle the style tabs.
+  useEffect(() => {
+    const ids = card.styles.map((s) => s.id);
+    if (ids.length < 2) return;
+    const onKey = (e: KeyboardEvent) => {
+      const back = e.key === "ArrowLeft" || (e.key === "Tab" && e.shiftKey);
+      const fwd = e.key === "ArrowRight" || (e.key === "Tab" && !e.shiftKey);
+      if (!back && !fwd) return;
+      e.preventDefault();
+      setActive((cur) => {
+        const i = Math.max(0, ids.indexOf(cur));
+        return ids[(i + (fwd ? 1 : -1) + ids.length) % ids.length];
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [card.styles]);
+
   const activeRes = results[active];
   const canAccept =
     !!activeRes &&
@@ -95,6 +131,21 @@ function RewriteBody({ card }: { card: CardData }) {
     !activeRes.error &&
     activeRes.text !== "" &&
     activeRes.text.trim() !== card.original.trim();
+
+  // Keyboard: Enter accepts the active proposal, Esc dismisses.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        send({ type: "dismiss" });
+      } else if (e.key === "Enter" && canAccept && activeRes) {
+        e.preventDefault();
+        send({ type: "applyRewrite", text: activeRes.text });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canAccept, activeRes]);
 
   if (!card.ready) {
     return (
@@ -141,7 +192,7 @@ function RewriteBody({ card }: { card: CardData }) {
           </TabsContents>
         </div>
       </Tabs>
-      <Actions canAccept={canAccept} acceptText={activeRes?.text ?? ""} />
+      <Actions canAccept={canAccept} acceptText={activeRes?.text ?? ""} nav />
     </>
   );
 }
@@ -190,23 +241,36 @@ function RewritePanel({
 function Actions({
   canAccept,
   acceptText,
+  nav = false,
 }: {
   canAccept: boolean;
   acceptText: string;
+  nav?: boolean;
 }) {
   return (
     <div className="rewrite__row">
+      {nav && (
+        <span className="nav-hint">
+          <KbdGroup>
+            <Kbd variant="outline">←</Kbd>
+            <Kbd variant="outline">→</Kbd>
+          </KbdGroup>
+          <span className="nav-hint__label">switch modes</span>
+        </span>
+      )}
+      <Button onClick={() => send({ type: "dismiss" })}>
+        {canAccept ? "Dismiss" : "Close"}
+        <Kbd variant="outline" className="-me-1 ms-0.5 text-[10px]">ESC</Kbd>
+      </Button>
       {canAccept && (
-        <button
-          className="btn"
+        <Button
+          variant="brand"
           onClick={() => send({ type: "applyRewrite", text: acceptText })}
         >
           Accept
-        </button>
+          <Kbd variant="outline" className="-me-1 ms-0.5 border-white/20 text-[var(--primary-foreground)] group-hover:text-white">⏎</Kbd>
+        </Button>
       )}
-      <button className="btn btn--ghost" onClick={() => send({ type: "dismiss" })}>
-        {canAccept ? "Dismiss" : "Close"}
-      </button>
     </div>
   );
 }

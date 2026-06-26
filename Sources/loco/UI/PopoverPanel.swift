@@ -115,8 +115,9 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         reposition()
         orderFrontRegardless()
         // Become key (without activating the app, since it's non-activating) so
-        // the webview receives mouseMoved and CSS :hover updates smoothly.
+        // the webview receives mouseMoved (CSS :hover) and key events (shortcuts).
         makeKey()
+        makeFirstResponder(webView)
     }
 
     func resize(toContentWidth width: CGFloat, height: CGFloat) {

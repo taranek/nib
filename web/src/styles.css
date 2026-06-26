@@ -44,7 +44,7 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --primary: oklch(0.62 0.16 130); /* lime (deepened for white text) */
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -59,7 +59,9 @@
 
   /* Extra semantic tokens (used by the hand-written card CSS). */
   --text-secondary: #3c4043;
-  --primary-hover: oklch(0.25 0 0);
+  --primary-hover: oklch(0.67 0.16 130);
+  --primary-soft: oklch(0.56 0.15 130);
+  --accent-hover: oklch(0.93 0 0);
   --border-strong: rgba(0, 0, 0, 0.18);
   --diff-del: #c0362c;
   --diff-ins: #1a7f37;
@@ -80,13 +82,14 @@
   --card-foreground: #f4f5f7;
   --popover: var(--color-bg-level-3);
   --popover-foreground: #f4f5f7;
-  --primary: #5b63d6; /* brand */
-  --primary-foreground: #ffffff;
+  --primary: oklch(0.62 0.18 255); /* blue */
+  --primary-foreground: oklch(0.97 0.03 255); /* almost-white, blue-tinted */
   --secondary: #1b1c20;
   --secondary-foreground: #f4f5f7;
   --muted: #1b1c20; /* tab track */
   --muted-foreground: #888d96; /* inactive tab text */
   --accent: #242530; /* raised */
+  --accent-hover: #313340; /* raised, on hover */
   --accent-foreground: #f4f5f7;
   --destructive: #e9605f;
   --border: #ffffff15; /* translucent hairlines */
@@ -94,7 +97,8 @@
   --ring: #7574ff;
 
   --text-secondary: #ced4df;
-  --primary-hover: #6b72e6;
+  --primary-hover: oklch(0.67 0.18 255);
+  --primary-soft: oklch(0.55 0.17 255);
   --border-strong: #ffffff26;
   --diff-del: #f47b84;
   --diff-ins: #54d98a;
@@ -124,7 +128,7 @@ body,
 /* Linear-style panel: flat dark surface, hairline translucent border, a soft
    outer ring + drop shadow, faint top highlight. */
 .card {
-  width: 340px;
+  width: 440px;
   border-radius: 12px;
   overflow: hidden;
   box-sizing: border-box;
@@ -136,14 +140,38 @@ body,
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-/* Card regions split by hairline borders (Linear-style header/content divide). */
+/* Card regions split by hairline borders (header/content divide). */
 .rw-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
 
+
 .rw-content {
   padding: 12px 14px;
+}
+
+/* Tab navigation hint — subtle, like a menu shortcut (muted glyphs + label). */
+.nav-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* Small uppercase caption for the hint label (distinct from the arrow icons). */
+.nav-hint__label {
+  font-family: "SF Pro Rounded", ui-rounded, "Segoe UI", system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
 }
 
 /* ── Settings surface ─────────────────────────────────────────────── */
@@ -342,28 +370,16 @@ body,
 
 .rewrite__row {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   border-top: 1px solid var(--border);
   padding: 10px 14px;
 }
 
-.rewrite__row .btn {
-  background: var(--primary); /* brand */
-}
-
-.rewrite__row .btn:hover {
-  background: var(--primary-hover);
-}
-
-.rewrite__row .btn--ghost {
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-}
-
-.rewrite__row .btn--ghost:hover {
-  color: var(--foreground);
-  border-color: var(--border-strong);
+/* Footer nav hint sits leftmost; buttons stay right. */
+.rewrite__row .nav-hint {
+  margin-right: auto;
 }
 
 .rewrite__body {
