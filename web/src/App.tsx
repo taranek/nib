@@ -62,7 +62,15 @@ export function App() {
   }, []);
 
   return (
-    <div className="wrap" ref={wrapRef}>
+    // The .wrap padding is the card's transparent shadow margin; clicking it (the
+    // shadow area around the card) counts as clicking outside → dismiss.
+    <div
+      className="wrap"
+      ref={wrapRef}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) send({ type: "dismiss" });
+      }}
+    >
       {/* Origin-aware entrance: the card's top-left is pinned to the anchor, so
           scaling from there makes it grow out of the trigger. Keyed on the card
           identity so it replays per new card, not on tab switches. */}
