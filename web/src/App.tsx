@@ -7,8 +7,10 @@ import {
 } from "react";
 import { type CardData, onSetCard, send } from "./bridge";
 import {
+  type ChatMsg,
   type RewriteState,
-  refine,
+  chatRefine,
+  refineSystem,
   useLanguage,
   useRewrite,
 } from "./useRewrite";
@@ -139,6 +141,9 @@ function RewriteBody({ card }: { card: CardData }) {
   const [attempts, setAttempts] = useState<Record<string, number>>({});
   // Per-style refinement: the latest feedback-revised text, and which is loading.
   const [refined, setRefined] = useState<Record<string, string>>({});
+  // Per-style refine conversation (user instructions + assistant results) so
+  // custom prompts accumulate; "Try again" replays the last turn for a variation.
+  const [chats, setChats] = useState<Record<string, ChatMsg[]>>({});
   const [refiningStyle, setRefiningStyle] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
   // The quick-filter chip whose edit is currently applied (for the active state).
@@ -163,17 +168,6 @@ function RewriteBody({ card }: { card: CardData }) {
     card.ready,
   );
   const needsLang = (id: string) => id === "rephrase";
-
-  // "Try again" re-runs the active tab with a fresh attempt (varied output) and
-  // drops any refinement so the fresh result shows.
-  const retry = useCallback(() => {
-    setActiveChip(null);
-    setRefined((p) => {
-      const { [current]: _, ...rest } = p;
-      return rest;
-    });
-    setAttempts((p) => ({ ...p, [current]: (p[current] ?? 0) + 1 }));
-  }, [current]);
 
   // Move between tabs by `dir` (wraps).
   const cycle = useCallback(
@@ -220,26 +214,68 @@ function RewriteBody({ card }: { card: CardData }) {
 
   // Refine the currently-shown text with an instruction (from the composer or a
   // quick-filter chip).
-  const runInstruction = useCallback(
-    (instruction: string, base: string | undefined) => {
-      if (!instruction.trim() || !base || refiningStyle) return;
-      const style = current;
+  // Send a refine conversation and store the new turn + result.
+  const sendRefine = useCallback(
+    (style: string, convo: ChatMsg[]) => {
       setRefiningStyle(style);
-      refine(base, instruction, card.llmUrl, language).then((out) => {
+      const full: ChatMsg[] = [
+        { role: "system", content: refineSystem(language) },
+        ...convo,
+      ];
+      chatRefine(full, card.llmUrl).then((out) => {
         setRefiningStyle((s) => (s === style ? null : s));
-        if (out) setRefined((p) => ({ ...p, [style]: out }));
+        if (!out) return;
+        setChats((p) => ({
+          ...p,
+          [style]: [...convo, { role: "assistant", content: out }],
+        }));
+        setRefined((p) => ({ ...p, [style]: out }));
       });
     },
-    [refiningStyle, current, card.llmUrl, language],
+    [card.llmUrl, language],
   );
 
-  // Composer feedback iterates on the currently-shown text…
+  // Apply an instruction. `reset` (chips) starts a fresh conversation from the
+  // original; otherwise it continues the existing one (custom prompts accumulate).
+  const runInstruction = useCallback(
+    (instruction: string, base: string | undefined, reset: boolean) => {
+      if (!instruction.trim() || refiningStyle) return;
+      const style = current;
+      const prior = reset ? [] : (chats[style] ?? []);
+      const userMsg: ChatMsg =
+        prior.length === 0
+          ? {
+              role: "user",
+              content: `Here is the text:\n${base ?? ""}\n\nInstruction: ${instruction}`,
+            }
+          : { role: "user", content: instruction };
+      if (prior.length === 0 && !base) return;
+      sendRefine(style, [...prior, userMsg]);
+    },
+    [refiningStyle, current, chats, sendRefine],
+  );
+
+  // "Try again": if a conversation exists, replay its last user turn for a fresh
+  // variation; otherwise regenerate the base tab with variation.
+  const retry = useCallback(() => {
+    const convo = chats[current];
+    if (convo?.length) {
+      const last = convo[convo.length - 1];
+      const upToUser = last.role === "assistant" ? convo.slice(0, -1) : convo;
+      sendRefine(current, upToUser);
+      return;
+    }
+    setActiveChip(null);
+    setAttempts((p) => ({ ...p, [current]: (p[current] ?? 0) + 1 }));
+  }, [current, chats, sendRefine]);
+
+  // Composer feedback continues the conversation (accumulates on prior results).
   const submitFeedback = useCallback(() => {
     const instruction = feedback.trim();
     if (!instruction) return;
     setFeedback("");
     setActiveChip(null); // custom feedback → no chip is "active"
-    runInstruction(instruction, refined[current] ?? activeRes?.text);
+    runInstruction(instruction, refined[current] ?? activeRes?.text, false);
   }, [feedback, runInstruction, refined, activeRes, current]);
 
   // Keyboard: Tab accepts the active proposal, Esc dismisses. Ignored while the
@@ -356,7 +392,8 @@ function RewriteBody({ card }: { card: CardData }) {
               disabled={refining}
               onClick={() => {
                 setActiveChip(c.label);
-                runInstruction(c.instruction, card.original); // from the original
+                // chips start a fresh conversation from the original
+                runInstruction(c.instruction, card.original, true);
               }}
             >
               {c.label}

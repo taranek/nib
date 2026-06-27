@@ -110,32 +110,34 @@ async function fetchRewrite(
   }
 }
 
-/** Refine `text` per the user's free-form instruction (e.g. "make it more
- *  concise", "question what X means"). Used by the feedback box to iterate. */
-export async function refine(
-  text: string,
-  instruction: string,
-  llmUrl: string,
-  language: string | null,
-): Promise<string | null> {
-  let system =
-    "Revise the user's text according to their instruction and return only the " +
-    "revised text. Keep the meaning and language unless the instruction says " +
-    "otherwise." +
+export type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
+
+/** System prompt for the refine conversation — edits accumulate across turns. */
+export function refineSystem(language: string | null): string {
+  let s =
+    "You revise the user's text step by step. Apply each new instruction ON TOP " +
+    "of your previous result, keeping all earlier changes plus the original " +
+    "meaning and language unless told otherwise." +
     KEEP_TERMS +
-    " Put the result in the 'rewrite' field.";
+    " Each turn, return the COMPLETE revised text in the 'rewrite' field.";
   if (language) {
-    system += ` The text is written in ${language}; keep the result in ${language} unless the instruction asks otherwise.`;
+    s += ` The text is written in ${language}; keep results in ${language} unless asked otherwise.`;
   }
+  return s;
+}
+
+/** Run a refine conversation (system + alternating user/assistant turns) so the
+ *  model has the full history of instructions and its own prior results. */
+export async function chatRefine(
+  messages: ChatMsg[],
+  llmUrl: string,
+): Promise<string | null> {
   try {
     const res = await fetch(llmUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: `Text:\n${text}\n\nInstruction: ${instruction}` },
-        ],
+        messages,
         temperature: 0.4,
         max_tokens: 1024,
         response_format: SCHEMA,
