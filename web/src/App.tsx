@@ -7,6 +7,7 @@ import {
 } from "react";
 import { type CardData, onSetCard, send } from "./bridge";
 import { type RewriteState, useRewrite } from "./useRewrite";
+import { looksEnglish } from "./lang";
 import {
   Tabs,
   TabsContent,
@@ -17,6 +18,7 @@ import {
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
 import { motion } from "motion/react";
+import { Check } from "lucide-react";
 
 // Sample so the card is useful when opened in a plain browser too.
 const SAMPLE: CardData = {
@@ -118,9 +120,22 @@ function RewriteBody({ card }: { card: CardData }) {
     [],
   );
 
-  // Keyboard: ←/→ and Tab/⇧Tab cycle the style tabs.
+  // Language detection is a free client-side heuristic (zero tokens) — no LLM
+  // call. When the text isn't English the English-only Grammar/Rephrase/Shorten
+  // tools are meaningless, so show ONLY Translate; otherwise hide Translate.
+  const english = looksEnglish(card.original);
+  const visibleStyles = english
+    ? card.styles.filter((s) => s.id !== "translate")
+    : card.styles.filter((s) => s.id === "translate");
+  const visibleIds = visibleStyles.map((s) => s.id).join("|");
+
+  // The displayed tab: forced to Translate for non-English text, else the user's
+  // pick. (Reading `active` directly could point at a hidden English tab.)
+  const current = english ? active : "translate";
+
+  // Keyboard: ←/→ and Tab/⇧Tab cycle the (visible) style tabs.
   useEffect(() => {
-    const ids = card.styles.map((s) => s.id);
+    const ids = visibleIds.split("|");
     if (ids.length < 2) return;
     const onKey = (e: KeyboardEvent) => {
       const back = e.key === "ArrowLeft" || (e.key === "Tab" && e.shiftKey);
@@ -134,9 +149,9 @@ function RewriteBody({ card }: { card: CardData }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [card.styles]);
+  }, [visibleIds]);
 
-  const activeRes = results[active];
+  const activeRes = results[current];
   const canAccept =
     !!activeRes &&
     !activeRes.loading &&
@@ -172,31 +187,57 @@ function RewriteBody({ card }: { card: CardData }) {
 
   return (
     <>
-      <Tabs value={active} onValueChange={setActive} className="gap-0">
+      <Tabs value={current} onValueChange={setActive} className="gap-0">
         <div className="rw-head">
           <TabsList
             className="h-7 bg-transparent p-0"
             activeClassName="bg-accent shadow-none ring-1 ring-border"
           >
-            {card.styles.map((s) => (
-              <TabsTrigger
-                key={s.id}
-                value={s.id}
-                className="px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-              >
-                {s.label}
-              </TabsTrigger>
-            ))}
+            {visibleStyles.map((s) => {
+              const r = results[s.id];
+              const ready = !!r && !r.loading && !r.error;
+              const unchanged = ready && r.text.trim() === card.original.trim();
+              // Grammar "all good" only once we've confirmed the text is English
+              // (the English-only model leaves foreign text unchanged, which would
+              // otherwise read as a false "no errors").
+              const ok = s.id === "grammar" && unchanged;
+              // Grammar with changes → badge with the number of fixes (9+ max).
+              const errors =
+                s.id === "grammar" && ready && !unchanged
+                  ? countChanges(card.original, r.text)
+                  : 0;
+              return (
+                <TabsTrigger
+                  key={s.id}
+                  value={s.id}
+                  className="gap-1 px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {s.label}
+                  {ok && (
+                    <Check
+                      className="size-3 text-[var(--diff-ins)]"
+                      strokeWidth={3}
+                    />
+                  )}
+                  {errors > 0 && (
+                    <span className="tab-badge">
+                      {errors > 9 ? "9+" : errors}
+                    </span>
+                  )}
+                </TabsTrigger>
+              );
+            })}
           </TabsList>
         </div>
         <div className="rw-content">
           <TabsContents>
-            {card.styles.map((s) => (
+            {visibleStyles.map((s) => (
               <TabsContent key={s.id} value={s.id}>
                 <RewritePanel
                   style={s.id}
                   original={card.original}
                   llmUrl={card.llmUrl}
+                  enabled={s.id === current}
                   onResult={onResult}
                 />
               </TabsContent>
@@ -204,7 +245,11 @@ function RewriteBody({ card }: { card: CardData }) {
           </TabsContents>
         </div>
       </Tabs>
-      <Actions canAccept={canAccept} acceptText={activeRes?.text ?? ""} nav />
+      <Actions
+        canAccept={canAccept}
+        acceptText={activeRes?.text ?? ""}
+        nav={visibleStyles.length > 1}
+      />
     </>
   );
 }
@@ -213,14 +258,16 @@ function RewritePanel({
   style,
   original,
   llmUrl,
+  enabled,
   onResult,
 }: {
   style: string;
   original: string;
   llmUrl: string;
+  enabled: boolean;
   onResult: (id: string, s: RewriteState) => void;
 }) {
-  const st = useRewrite(style, original, llmUrl, true);
+  const st = useRewrite(style, original, llmUrl, enabled);
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
@@ -338,6 +385,23 @@ function diffWords(aStr: string, bStr: string): DiffTok[] {
   while (i < n) out.push({ text: a[i++], type: "del" });
   while (j < m) out.push({ text: b[j++], type: "ins" });
   return out;
+}
+
+
+/** Number of distinct edits between original and result (contiguous changed
+ *  runs count as one), used for the Grammar error badge. */
+function countChanges(original: string, result: string): number {
+  let count = 0;
+  let inChange = false;
+  for (const t of diffWords(original, result)) {
+    if (t.type === "equal") {
+      inChange = false;
+    } else if (!inChange) {
+      count++;
+      inChange = true;
+    }
+  }
+  return count;
 }
 
 function DiffText({ original, result }: { original: string; result: string }) {

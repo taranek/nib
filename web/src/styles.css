@@ -169,6 +169,23 @@ body,
   padding: 12px 14px;
 }
 
+/* Error count badge on the Grammar tab. */
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--destructive);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Tab navigation hint — subtle, like a menu shortcut (muted glyphs + label). */
 .nav-hint {
   display: inline-flex;
