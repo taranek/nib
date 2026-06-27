@@ -116,6 +116,14 @@ body,
   -webkit-font-smoothing: antialiased;
 }
 
+/* Squircle (smooth superellipse) corners everywhere a border-radius is used,
+   on engines that support `corner-shape`; ignored (plain round) elsewhere. */
+*,
+*::before,
+*::after {
+  corner-shape: squircle;
+}
+
 /* Respect the OS "Reduce motion" setting for CSS-driven motion (button
    hover/press transitions). Motion's JS animations are handled by the root
    MotionConfig reducedMotion="user". */
@@ -160,13 +168,13 @@ body,
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 8px;
   border-bottom: 1px solid var(--border);
 }
 
 
 .rw-content {
-  padding: 12px 14px;
+  padding: 12px 8px;
 }
 
 /* Error count badge on the Grammar tab. */
@@ -423,4 +431,108 @@ body,
 
 .rewrite__body {
   min-height: 22px;
+  padding-left: 8px; /* extra left inset on the proposal text */
+}
+
+/* Quick-filter chips above the composer (Rephrase only). */
+.rw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 8px 0;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--accent);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.chip:hover:not(:disabled):not(.chip--active) {
+  background: var(--accent-hover);
+  color: var(--foreground);
+}
+
+/* The chip whose edit is currently applied — inverted (filled) for contrast
+   (no hover change — it stays put). */
+.chip--active {
+  background: var(--foreground);
+  border-color: var(--foreground);
+  color: var(--background);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Footer: feedback input (Rephrase only) + send and accept, one row. */
+.rw-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px;
+}
+
+.rw-feedback__input {
+  flex: 1;
+  min-width: 0;
+  margin: 0 0 0 8px; /* match the proposal's left inset */
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 13px;
+}
+
+.rw-feedback__input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.rw-feedback__send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  background: var(--accent);
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.rw-feedback__send:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--foreground);
+}
+
+.rw-feedback__send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The footer send button matches the Accept button's height. */
+.rw-feedback__send--tall {
+  width: 28px;
+  height: 28px;
 }

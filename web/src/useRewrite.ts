@@ -110,6 +110,49 @@ async function fetchRewrite(
   }
 }
 
+/** Refine `text` per the user's free-form instruction (e.g. "make it more
+ *  concise", "question what X means"). Used by the feedback box to iterate. */
+export async function refine(
+  text: string,
+  instruction: string,
+  llmUrl: string,
+  language: string | null,
+): Promise<string | null> {
+  let system =
+    "Revise the user's text according to their instruction and return only the " +
+    "revised text. Keep the meaning and language unless the instruction says " +
+    "otherwise." +
+    KEEP_TERMS +
+    " Put the result in the 'rewrite' field.";
+  if (language) {
+    system += ` The text is written in ${language}; keep the result in ${language} unless the instruction asks otherwise.`;
+  }
+  try {
+    const res = await fetch(llmUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `Text:\n${text}\n\nInstruction: ${instruction}` },
+        ],
+        temperature: 0.4,
+        max_tokens: 1024,
+        response_format: SCHEMA,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    const parsed = JSON.parse(content.replace(/```json|```/g, "").trim());
+    const out = (parsed?.rewrite ?? "").trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Language detection ──────────────────────────────────────────────────────
 // A tiny LLM call (a few tokens) returning the language's English name. The model
 // detects more reliably than a client-side n-gram lib, and naming the language is

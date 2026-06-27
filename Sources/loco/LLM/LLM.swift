@@ -16,14 +16,13 @@ struct SentenceCorrection: Equatable, Sendable {
 
 /// The available ways to rewrite a selection.
 enum RewriteStyle: String, CaseIterable, Sendable {
-    case grammar, rephrase, shorten, translate
+    case grammar, rephrase, translate
 
     /// Label shown in the card's style picker.
     var label: String {
         switch self {
         case .grammar: return "Grammar"
         case .rephrase: return "Rephrase"
-        case .shorten: return "Shorten"
         case .translate: return "Translate"
         }
     }
@@ -40,9 +39,6 @@ enum RewriteStyle: String, CaseIterable, Sendable {
             return "Rephrase the user's text using different wording while keeping the "
                 + "same meaning and language, in clear, natural prose. Put the result "
                 + "in the 'rewrite' field."
-        case .shorten:
-            return "Make the user's text more concise: keep the same meaning and language "
-                + "but use fewer words. Put the result in the 'rewrite' field."
         case .translate:
             return "Translate the user's text into English. Detect the source language "
                 + "automatically and produce natural, fluent English that preserves the "

@@ -6,7 +6,12 @@ import {
   useState,
 } from "react";
 import { type CardData, onSetCard, send } from "./bridge";
-import { type RewriteState, useLanguage, useRewrite } from "./useRewrite";
+import {
+  type RewriteState,
+  refine,
+  useLanguage,
+  useRewrite,
+} from "./useRewrite";
 import {
   Tabs,
   TabsContent,
@@ -18,7 +23,15 @@ import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { motion } from "motion/react";
-import { Check, RefreshCw } from "lucide-react";
+import { ArrowUp, Check, Loader2, RefreshCw } from "lucide-react";
+
+// Quick-filter edits shown as chips above the composer (Rephrase tab).
+const CHIPS: { label: string; instruction: string }[] = [
+  { label: "Shorten", instruction: "Make it more concise." },
+  { label: "Expand", instruction: "Expand it with a bit more detail." },
+  { label: "More formal", instruction: "Make it more formal." },
+  { label: "Confident", instruction: "Make it sound more confident and assertive." },
+];
 
 // Sample so the card is useful when opened in a plain browser too.
 const SAMPLE: CardData = {
@@ -28,7 +41,6 @@ const SAMPLE: CardData = {
   styles: [
     { id: "grammar", label: "Grammar" },
     { id: "rephrase", label: "Rephrase" },
-    { id: "shorten", label: "Shorten" },
     { id: "translate", label: "Translate" },
   ],
   llmUrl: "http://127.0.0.1:18080/v1/chat/completions",
@@ -125,6 +137,12 @@ function RewriteBody({ card }: { card: CardData }) {
   const [results, setResults] = useState<Record<string, RewriteState>>({});
   // Per-style retry counter: bumping it re-runs that style with variation.
   const [attempts, setAttempts] = useState<Record<string, number>>({});
+  // Per-style refinement: the latest feedback-revised text, and which is loading.
+  const [refined, setRefined] = useState<Record<string, string>>({});
+  const [refiningStyle, setRefiningStyle] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState("");
+  // The quick-filter chip whose edit is currently applied (for the active state).
+  const [activeChip, setActiveChip] = useState<string | null>(null);
   const onResult = useCallback(
     (id: string, s: RewriteState) => setResults((p) => ({ ...p, [id]: s })),
     [],
@@ -144,54 +162,104 @@ function RewriteBody({ card }: { card: CardData }) {
     card.llmUrl,
     card.ready,
   );
-  const needsLang = (id: string) => id === "rephrase" || id === "shorten";
+  const needsLang = (id: string) => id === "rephrase";
 
-  // "Try again" re-runs the active tab with a fresh attempt (varied output).
-  const retry = useCallback(
-    () => setAttempts((p) => ({ ...p, [current]: (p[current] ?? 0) + 1 })),
-    [current],
-  );
+  // "Try again" re-runs the active tab with a fresh attempt (varied output) and
+  // drops any refinement so the fresh result shows.
+  const retry = useCallback(() => {
+    setActiveChip(null);
+    setRefined((p) => {
+      const { [current]: _, ...rest } = p;
+      return rest;
+    });
+    setAttempts((p) => ({ ...p, [current]: (p[current] ?? 0) + 1 }));
+  }, [current]);
 
-  // Keyboard: ←/→ cycle the style tabs. (Tab confirms — see below.)
-  useEffect(() => {
-    const ids = visibleIds.split("|");
-    if (ids.length < 2) return;
-    const onKey = (e: KeyboardEvent) => {
-      const back = e.key === "ArrowLeft";
-      const fwd = e.key === "ArrowRight";
-      if (!back && !fwd) return;
-      e.preventDefault();
+  // Move between tabs by `dir` (wraps).
+  const cycle = useCallback(
+    (dir: 1 | -1) => {
+      const ids = visibleIds.split("|");
+      if (ids.length < 2) return;
       setActive((cur) => {
         const i = Math.max(0, ids.indexOf(cur));
-        return ids[(i + (fwd ? 1 : -1) + ids.length) % ids.length];
+        return ids[(i + dir + ids.length) % ids.length];
       });
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [visibleIds]);
+    },
+    [visibleIds],
+  );
 
-  const activeRes = results[current];
-  const canAccept =
-    !!activeRes &&
-    !activeRes.loading &&
-    !activeRes.error &&
-    activeRes.text !== "" &&
-    activeRes.text.trim() !== card.original.trim();
-
-  // Keyboard: Tab accepts the active proposal, Esc dismisses.
+  // Keyboard: ←/→ cycle the style tabs (Tab confirms). Skipped while an input is
+  // focused — the composer handles its own arrows so it can cycle tabs too.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement)
+        return;
+      if (e.key === "ArrowLeft") {
         e.preventDefault();
-        send({ type: "dismiss" });
-      } else if (e.key === "Tab" && canAccept && activeRes) {
+        cycle(-1);
+      } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        send({ type: "applyRewrite", text: activeRes.text });
+        cycle(1);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [canAccept, activeRes]);
+  }, [cycle]);
+
+  const activeRes = results[current];
+  const refining = refiningStyle === current;
+  // What's currently shown/acceptable: the refinement if any, else the result.
+  const activeText = refined[current] ?? activeRes?.text ?? "";
+  const canAccept =
+    !refining &&
+    (refined[current] != null ||
+      (!!activeRes && !activeRes.loading && !activeRes.error)) &&
+    activeText !== "" &&
+    activeText.trim() !== card.original.trim();
+
+  // Refine the currently-shown text with an instruction (from the composer or a
+  // quick-filter chip).
+  const runInstruction = useCallback(
+    (instruction: string, base: string | undefined) => {
+      if (!instruction.trim() || !base || refiningStyle) return;
+      const style = current;
+      setRefiningStyle(style);
+      refine(base, instruction, card.llmUrl, language).then((out) => {
+        setRefiningStyle((s) => (s === style ? null : s));
+        if (out) setRefined((p) => ({ ...p, [style]: out }));
+      });
+    },
+    [refiningStyle, current, card.llmUrl, language],
+  );
+
+  // Composer feedback iterates on the currently-shown text…
+  const submitFeedback = useCallback(() => {
+    const instruction = feedback.trim();
+    if (!instruction) return;
+    setFeedback("");
+    setActiveChip(null); // custom feedback → no chip is "active"
+    runInstruction(instruction, refined[current] ?? activeRes?.text);
+  }, [feedback, runInstruction, refined, activeRes, current]);
+
+  // Keyboard: Tab accepts the active proposal, Esc dismisses. Ignored while the
+  // feedback input is focused (it has its own keys).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement)
+        return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        send({ type: "dismiss" });
+      } else if (e.key === "Tab" && canAccept) {
+        e.preventDefault();
+        send({ type: "applyRewrite", text: activeText });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canAccept, activeText]);
 
   if (!card.ready) {
     return (
@@ -247,6 +315,15 @@ function RewriteBody({ card }: { card: CardData }) {
               );
             })}
           </TabsList>
+          {current !== "grammar" && (
+            <button
+              className="rw-feedback__send rw-feedback__send--tall"
+              aria-label="Try again"
+              onClick={retry}
+            >
+              <RefreshCw className="size-3.5" />
+            </button>
+          )}
         </div>
         <div className="rw-content">
           <TabsContents>
@@ -261,6 +338,8 @@ function RewriteBody({ card }: { card: CardData }) {
                   }
                   language={language}
                   attempt={attempts[s.id] ?? 0}
+                  override={refined[s.id]}
+                  refining={refiningStyle === s.id}
                   onResult={onResult}
                 />
               </TabsContent>
@@ -268,12 +347,70 @@ function RewriteBody({ card }: { card: CardData }) {
           </TabsContents>
         </div>
       </Tabs>
-      <Actions
-        canAccept={canAccept}
-        acceptText={activeRes?.text ?? ""}
-        nav={visibleStyles.length > 1}
-        onRetry={current === "grammar" ? undefined : retry}
-      />
+      {current === "rephrase" && (
+        <div className="rw-chips">
+          {CHIPS.map((c) => (
+            <button
+              key={c.label}
+              className={`chip${activeChip === c.label ? " chip--active" : ""}`}
+              disabled={refining}
+              onClick={() => {
+                setActiveChip(c.label);
+                runInstruction(c.instruction, card.original); // from the original
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="rw-footer">
+        {current === "rephrase" && (
+          <>
+            <input
+              className="rw-feedback__input"
+              placeholder="Tell the model what to change…"
+              value={feedback}
+              disabled={refining}
+              autoFocus
+              onChange={(e) => setFeedback(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitFeedback();
+                } else if (e.key === "ArrowLeft") {
+                  // Keep tab-cycling working even though the composer is focused.
+                  e.preventDefault();
+                  cycle(-1);
+                } else if (e.key === "ArrowRight") {
+                  e.preventDefault();
+                  cycle(1);
+                }
+              }}
+            />
+            <button
+              className="rw-feedback__send rw-feedback__send--tall"
+              aria-label="Send feedback"
+              disabled={refining || !feedback.trim()}
+              onClick={submitFeedback}
+            >
+              {refining ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <ArrowUp className="size-3.5" />
+              )}
+            </button>
+          </>
+        )}
+        <Button
+          variant="brand"
+          disabled={!canAccept}
+          onClick={() => send({ type: "applyRewrite", text: activeText })}
+        >
+          Accept
+          <Kbd variant="outline" className="-me-1 ms-0.5 border-white/20 text-[10px] text-[var(--primary-foreground)] group-hover:text-white">TAB</Kbd>
+        </Button>
+      </div>
     </>
   );
 }
@@ -285,6 +422,8 @@ function RewritePanel({
   enabled,
   language,
   attempt,
+  override,
+  refining,
   onResult,
 }: {
   style: string;
@@ -293,12 +432,32 @@ function RewritePanel({
   enabled: boolean;
   language: string | null;
   attempt: number;
+  override?: string;
+  refining?: boolean;
   onResult: (id: string, s: RewriteState) => void;
 }) {
   const st = useRewrite(style, original, llmUrl, enabled, language, attempt);
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
+
+  // A feedback refinement is in flight or applied → show it instead of `st`.
+  if (refining)
+    return (
+      <div className="rewrite__body">
+        <TextSkeleton text={override ?? st.text ?? original} />
+      </div>
+    );
+  if (override != null)
+    return (
+      <div className="rewrite__body">
+        {style === "translate" ? (
+          <div className="rewrite">{override}</div>
+        ) : (
+          <DiffText original={original} result={override} />
+        )}
+      </div>
+    );
 
   if (st.loading)
     return (
