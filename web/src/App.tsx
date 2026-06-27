@@ -47,6 +47,7 @@ const SAMPLE: CardData = {
   ],
   llmUrl: "http://127.0.0.1:18080/v1/chat/completions",
   ready: true,
+  targetLanguage: "English",
 };
 
 export function App() {
@@ -374,6 +375,7 @@ function RewriteBody({ card }: { card: CardData }) {
                   }
                   language={language}
                   attempt={attempts[s.id] ?? 0}
+                  target={card.targetLanguage}
                   override={refined[s.id]}
                   refining={refiningStyle === s.id}
                   onResult={onResult}
@@ -459,6 +461,7 @@ function RewritePanel({
   enabled,
   language,
   attempt,
+  target,
   override,
   refining,
   onResult,
@@ -469,11 +472,20 @@ function RewritePanel({
   enabled: boolean;
   language: string | null;
   attempt: number;
+  target: string;
   override?: string;
   refining?: boolean;
   onResult: (id: string, s: RewriteState) => void;
 }) {
-  const st = useRewrite(style, original, llmUrl, enabled, language, attempt);
+  const st = useRewrite(
+    style,
+    original,
+    llmUrl,
+    enabled,
+    language,
+    attempt,
+    target,
+  );
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
@@ -516,7 +528,7 @@ function RewritePanel({
       <div className="rewrite__body">
         {st.text.trim() === original.trim() ? (
           <div className="rewrite rewrite--ok">
-            ✓ Already in English — nothing to translate.
+            ✓ Already in {target} — nothing to translate.
           </div>
         ) : (
           <div className="rewrite">{st.text}</div>

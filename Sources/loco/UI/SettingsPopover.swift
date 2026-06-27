@@ -9,7 +9,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
     private(set) var webView: WKWebView!
     var onMessage: (([String: Any]) -> Void)?
 
-    private static let size = NSSize(width: 300, height: 360)
+    private static let size = NSSize(width: 380, height: 420)
 
     init(url: URL) {
         super.init()
@@ -50,12 +50,14 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
     func close() { popover.close() }
 
     /// Push state into the settings UI.
-    func setState(enabled: Bool, accessibilityTrusted: Bool, llmStatus: String, model: String) {
+    func setState(enabled: Bool, accessibilityTrusted: Bool, llmStatus: String,
+                  model: String, targetLanguage: String) {
         let payload: [String: Any] = [
             "enabled": enabled,
             "accessibilityTrusted": accessibilityTrusted,
             "llmStatus": llmStatus,
             "model": model,
+            "targetLanguage": targetLanguage,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }

@@ -110,6 +110,11 @@ enum LLMPaths {
     /// Path to a GGUF model, seeding loco's dir with a symlink to an existing
     /// model if present (avoids duplicating multi-GB files).
     static func resolveModel() -> String? {
+        // A model the user explicitly picked in Settings takes priority.
+        if let saved = UserDefaults.standard.string(forKey: "modelPath"),
+           FileManager.default.fileExists(atPath: saved) {
+            return saved
+        }
         if let env = ProcessInfo.processInfo.environment["LOCO_MODEL"] { return env }
 
         let fm = FileManager.default
@@ -250,6 +255,14 @@ final class LLMServer {
         if owns { process?.terminate() }   // never kill a server we merely attached to
         process = nil
         status = .stopped
+    }
+
+    /// Stop the current server and start fresh (e.g. after the model changed). If
+    /// we own the process, killing it frees the port so a new one spawns with the
+    /// newly-resolved model.
+    func restart() {
+        stop()
+        start()
     }
 
     private func pollUntilReady() async {

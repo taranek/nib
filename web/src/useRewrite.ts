@@ -66,10 +66,20 @@ async function fetchRewrite(
   llmUrl: string,
   language: string | null,
   attempt: number,
+  target: string,
 ): Promise<string | null> {
   let instruction = INSTRUCTIONS[style] ?? INSTRUCTIONS.grammar;
+  // Translate goes to the user's chosen target language.
+  if (style === "translate") {
+    instruction =
+      `Translate the user's text into ${target}. Detect the source language ` +
+      `automatically and produce natural, fluent ${target} that preserves the ` +
+      `meaning and tone. If the text is already in ${target}, return it unchanged.` +
+      KEEP_TERMS +
+      " Put the result in the 'rewrite' field.";
+  }
   // Grammar/Rephrase/Shorten respond in the text's own language; reinforce the
-  // detected one so a small model doesn't drift to English. (Translate is fixed.)
+  // detected one so a small model doesn't drift to English.
   if (style !== "translate" && language) {
     instruction +=
       ` The text is written in ${language}. Write the result in ${language} — ` +
@@ -263,8 +273,9 @@ export function useRewrite(
   enabled: boolean,
   language: string | null,
   attempt: number,
+  target: string,
 ): RewriteState {
-  const key = `${style}|${text}|${attempt}`;
+  const key = `${style}|${text}|${attempt}|${target}`;
   const [state, setState] = useState<RewriteState>(() =>
     cache.has(key)
       ? { loading: false, text: cache.get(key)!, error: false }
@@ -279,7 +290,7 @@ export function useRewrite(
     }
     let cancelled = false;
     setState({ loading: true, text: "", error: false });
-    fetchRewrite(style, text, llmUrl, language, attempt).then((result) => {
+    fetchRewrite(style, text, llmUrl, language, attempt, target).then((result) => {
       if (cancelled) return;
       if (result != null) {
         cache.set(key, result);
@@ -291,7 +302,7 @@ export function useRewrite(
     return () => {
       cancelled = true;
     };
-  }, [key, style, text, llmUrl, enabled, language, attempt]);
+  }, [key, style, text, llmUrl, enabled, language, attempt, target]);
 
   return state;
 }

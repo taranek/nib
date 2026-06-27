@@ -25,6 +25,8 @@ export interface CardData {
   llmUrl: string;
   /** Whether the local model is ready. */
   ready: boolean;
+  /** Target language for the Translate tab (default "English"). */
+  targetLanguage: string;
 }
 
 export interface SettingsState {
@@ -34,6 +36,8 @@ export interface SettingsState {
   llmStatus: string;
   /** The loaded GGUF model's filename. */
   model: string;
+  /** Default target language for translations. */
+  targetLanguage: string;
 }
 
 type OutboundMessage =
@@ -42,7 +46,9 @@ type OutboundMessage =
   | { type: "dismiss" }
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
+  | { type: "setTargetLanguage"; value: string }
   | { type: "openAccessibility" }
+  | { type: "chooseModel" }
   | { type: "quit" };
 
 interface WebkitBridge {

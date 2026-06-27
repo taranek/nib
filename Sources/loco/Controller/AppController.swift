@@ -1,6 +1,7 @@
 import Cocoa
 import ApplicationServices
 import Carbon.HIToolbox
+import UniformTypeIdentifiers
 import WebKit
 
 // MARK: - Controller
@@ -23,6 +24,8 @@ final class AppController: NSObject {
     private var statusItem: NSStatusItem?
     private var settingsPopover: SettingsPopover?
     private var enabled = true
+    // Default target language for the Translate tab (persisted).
+    private var targetLanguage = UserDefaults.standard.string(forKey: "targetLanguage") ?? "English"
 
     // The field + flagged words the UI currently targets.
     private var activeElement: AXUIElement?
@@ -481,6 +484,7 @@ final class AppController: NSObject {
             "styles": [],
             "llmUrl": "",
             "ready": true,
+            "targetLanguage": targetLanguage,
         ])
         popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
     }
@@ -609,6 +613,7 @@ final class AppController: NSObject {
             "styles": Self.styleList,
             "llmUrl": llmServer.chatURL.absoluteString,
             "ready": llmReady,
+            "targetLanguage": targetLanguage,
         ])
         popoverPanel.present(anchor: NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2))
     }
@@ -718,9 +723,38 @@ final class AppController: NSObject {
             }
             button.toolTip = "loco — writing suggestions"
             button.target = self
-            button.action = #selector(openSettings)
+            button.action = #selector(statusItemClicked)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         statusItem = item
+    }
+
+    /// Left-click opens settings; right-click (or control-click) shows a menu.
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let isRightClick = event?.type == .rightMouseUp
+            || (event?.modifierFlags.contains(.control) ?? false)
+        if isRightClick {
+            showStatusMenu()
+        } else {
+            openSettings()
+        }
+    }
+
+    private func showStatusMenu() {
+        guard let button = statusItem?.button else { return }
+        let menu = NSMenu()
+        let quit = NSMenuItem(title: "Quit loco",
+                              action: #selector(quitFromMenu), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: 0, y: button.bounds.maxY + 4), in: button)
+    }
+
+    @objc private func quitFromMenu() {
+        llmServer.stop()
+        NSApp.terminate(nil)
     }
 
     @objc private func openSettings() {
@@ -764,12 +798,37 @@ final class AppController: NSObject {
         return comps?.url ?? base
     }
 
+    /// Let the user pick a .gguf model; persist it and reload the LLM server.
+    private func chooseModel() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a GGUF model"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if let gguf = UTType(filenameExtension: "gguf") {
+            panel.allowedContentTypes = [gguf]
+        }
+        // Open in the folder of the current model (resolving symlinks to the real file).
+        if let current = LLMPaths.resolveModel() {
+            panel.directoryURL = URL(fileURLWithPath: current)
+                .resolvingSymlinksInPath()
+                .deletingLastPathComponent()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        UserDefaults.standard.set(url.path, forKey: "modelPath")
+        llmReady = false
+        llmServer.restart()
+        pushSettingsState()
+    }
+
     /// Push current state (enabled + accessibility + LLM) into the settings UI.
     private func pushSettingsState() {
         settingsPopover?.setState(enabled: enabled,
                                   accessibilityTrusted: AXIsProcessTrusted(),
                                   llmStatus: llmStatusString(),
-                                  model: LLMPaths.modelName() ?? "—")
+                                  model: LLMPaths.modelName() ?? "—",
+                                  targetLanguage: targetLanguage)
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -785,10 +844,17 @@ final class AppController: NSObject {
             } else {
                 clearOverlay()
             }
+        case "setTargetLanguage":
+            if let value = body["value"] as? String, !value.isEmpty {
+                targetLanguage = value
+                UserDefaults.standard.set(value, forKey: "targetLanguage")
+            }
         case "openAccessibility":
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                 NSWorkspace.shared.open(url)
             }
+        case "chooseModel":
+            chooseModel()
         case "quit":
             llmServer.stop()
             NSApp.terminate(nil)
