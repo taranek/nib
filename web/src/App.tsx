@@ -7,7 +7,6 @@ import {
 } from "react";
 import { type CardData, onSetCard, send } from "./bridge";
 import { type RewriteState, useRewrite } from "./useRewrite";
-import { looksEnglish } from "./lang";
 import {
   Tabs,
   TabsContent,
@@ -121,20 +120,13 @@ function RewriteBody({ card }: { card: CardData }) {
     [],
   );
 
-  // Language detection is a free client-side heuristic (zero tokens) — no LLM
-  // call. When the text isn't English the English-only Grammar/Rephrase/Shorten
-  // tools are meaningless, so show ONLY Translate; otherwise hide Translate.
-  const english = looksEnglish(card.original);
-  const visibleStyles = english
-    ? card.styles.filter((s) => s.id !== "translate")
-    : card.styles.filter((s) => s.id === "translate");
+  // All styles are always available (Translate included); the active tab is the
+  // user's pick. Tabs lazy-fetch, so Translate only runs when opened.
+  const visibleStyles = card.styles;
   const visibleIds = visibleStyles.map((s) => s.id).join("|");
+  const current = active;
 
-  // The displayed tab: forced to Translate for non-English text, else the user's
-  // pick. (Reading `active` directly could point at a hidden English tab.)
-  const current = english ? active : "translate";
-
-  // Keyboard: ←/→ cycle the (visible) style tabs. (Tab confirms — see below.)
+  // Keyboard: ←/→ cycle the style tabs. (Tab confirms — see below.)
   useEffect(() => {
     const ids = visibleIds.split("|");
     if (ids.length < 2) return;
