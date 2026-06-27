@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/motion-tabs";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { motion } from "motion/react";
 import { Check } from "lucide-react";
 
@@ -87,13 +88,13 @@ export function App() {
 function GrammarBody({ card }: { card: CardData }) {
   const canAccept = card.result.trim() !== card.original.trim() && !!card.result;
 
-  // Keyboard: Enter accepts the correction, Esc dismisses.
+  // Keyboard: Tab accepts the correction, Esc dismisses.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         send({ type: "dismiss" });
-      } else if (e.key === "Enter" && canAccept) {
+      } else if (e.key === "Tab" && canAccept) {
         e.preventDefault();
         send({ type: "applyRewrite", text: card.result });
       }
@@ -133,13 +134,13 @@ function RewriteBody({ card }: { card: CardData }) {
   // pick. (Reading `active` directly could point at a hidden English tab.)
   const current = english ? active : "translate";
 
-  // Keyboard: ←/→ and Tab/⇧Tab cycle the (visible) style tabs.
+  // Keyboard: ←/→ cycle the (visible) style tabs. (Tab confirms — see below.)
   useEffect(() => {
     const ids = visibleIds.split("|");
     if (ids.length < 2) return;
     const onKey = (e: KeyboardEvent) => {
-      const back = e.key === "ArrowLeft" || (e.key === "Tab" && e.shiftKey);
-      const fwd = e.key === "ArrowRight" || (e.key === "Tab" && !e.shiftKey);
+      const back = e.key === "ArrowLeft";
+      const fwd = e.key === "ArrowRight";
       if (!back && !fwd) return;
       e.preventDefault();
       setActive((cur) => {
@@ -159,13 +160,13 @@ function RewriteBody({ card }: { card: CardData }) {
     activeRes.text !== "" &&
     activeRes.text.trim() !== card.original.trim();
 
-  // Keyboard: Enter accepts the active proposal, Esc dismisses.
+  // Keyboard: Tab accepts the active proposal, Esc dismisses.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         send({ type: "dismiss" });
-      } else if (e.key === "Enter" && canAccept && activeRes) {
+      } else if (e.key === "Tab" && canAccept && activeRes) {
         e.preventDefault();
         send({ type: "applyRewrite", text: activeRes.text });
       }
@@ -275,7 +276,7 @@ function RewritePanel({
   if (st.loading)
     return (
       <div className="rewrite__body">
-        <div className="rewrite rewrite--loading">Working…</div>
+        <TextSkeleton text={original} />
       </div>
     );
   if (st.error)
@@ -342,7 +343,7 @@ function Actions({
           onClick={() => send({ type: "applyRewrite", text: acceptText })}
         >
           Accept
-          <Kbd variant="outline" className="-me-1 ms-0.5 border-white/20 text-[var(--primary-foreground)] group-hover:text-white">⏎</Kbd>
+          <Kbd variant="outline" className="-me-1 ms-0.5 border-white/20 text-[10px] text-[var(--primary-foreground)] group-hover:text-white">TAB</Kbd>
         </Button>
       )}
     </div>
@@ -402,6 +403,23 @@ function countChanges(original: string, result: string): number {
     }
   }
   return count;
+}
+
+/** Placeholder shaped like the text being processed: one pulsing bar per word,
+ *  roughly sized to the word's length, wrapping like the real sentence. */
+function TextSkeleton({ text }: { text: string }) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  return (
+    <div className="skeleton" aria-hidden="true">
+      {words.map((w, i) => (
+        <Skeleton
+          key={i}
+          className="h-[0.82em] rounded"
+          style={{ width: `${Math.min(14, Math.max(1.5, w.length))}ch` }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function DiffText({ original, result }: { original: string; result: string }) {

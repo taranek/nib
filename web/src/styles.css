@@ -379,6 +379,16 @@ body,
   font-style: italic;
 }
 
+/* Word-shaped skeleton (matches .rewrite metrics so the bars sit on lines). */
+.skeleton {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55em 7px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
 /* Inline diff: removed words struck-through red, added words green. */
 .d--equal {
   color: var(--text-secondary);
