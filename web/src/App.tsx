@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { type CardData, onSetCard, send } from "./bridge";
-import { type RewriteState, useRewrite } from "./useRewrite";
+import { type RewriteState, useLanguage, useRewrite } from "./useRewrite";
 import {
   Tabs,
   TabsContent,
@@ -17,9 +17,8 @@ import {
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { detectLanguageName } from "./lang";
 import { motion } from "motion/react";
-import { Check } from "lucide-react";
+import { Check, RefreshCw } from "lucide-react";
 
 // Sample so the card is useful when opened in a plain browser too.
 const SAMPLE: CardData = {
@@ -116,6 +115,8 @@ function GrammarBody({ card }: { card: CardData }) {
 function RewriteBody({ card }: { card: CardData }) {
   const [active, setActive] = useState(card.styles[0]?.id ?? "grammar");
   const [results, setResults] = useState<Record<string, RewriteState>>({});
+  // Per-style retry counter: bumping it re-runs that style with variation.
+  const [attempts, setAttempts] = useState<Record<string, number>>({});
   const onResult = useCallback(
     (id: string, s: RewriteState) => setResults((p) => ({ ...p, [id]: s })),
     [],
@@ -127,9 +128,21 @@ function RewriteBody({ card }: { card: CardData }) {
   const visibleIds = visibleStyles.map((s) => s.id).join("|");
   const current = active;
 
-  // Detect the text's language so Grammar/Rephrase/Shorten reply in it (e.g.
-  // Polish in → Polish out). Free, sync, zero tokens.
-  const language = detectLanguageName(card.original);
+  // Detect the text's language (tiny cached LLM call) so Grammar/Rephrase/Shorten
+  // reply in it (e.g. Polish in → Polish out). Rephrase/Shorten wait for it (they
+  // translate to English without an explicit language); Grammar/Translate don't.
+  const { loading: langLoading, lang: language } = useLanguage(
+    card.original,
+    card.llmUrl,
+    card.ready,
+  );
+  const needsLang = (id: string) => id === "rephrase" || id === "shorten";
+
+  // "Try again" re-runs the active tab with a fresh attempt (varied output).
+  const retry = useCallback(
+    () => setAttempts((p) => ({ ...p, [current]: (p[current] ?? 0) + 1 })),
+    [current],
+  );
 
   // Keyboard: ←/→ cycle the style tabs. (Tab confirms — see below.)
   useEffect(() => {
@@ -235,8 +248,11 @@ function RewriteBody({ card }: { card: CardData }) {
                   style={s.id}
                   original={card.original}
                   llmUrl={card.llmUrl}
-                  enabled={s.id === current}
+                  enabled={
+                    s.id === current && (!needsLang(s.id) || !langLoading)
+                  }
                   language={language}
+                  attempt={attempts[s.id] ?? 0}
                   onResult={onResult}
                 />
               </TabsContent>
@@ -248,6 +264,7 @@ function RewriteBody({ card }: { card: CardData }) {
         canAccept={canAccept}
         acceptText={activeRes?.text ?? ""}
         nav={visibleStyles.length > 1}
+        onRetry={current === "grammar" ? undefined : retry}
       />
     </>
   );
@@ -259,6 +276,7 @@ function RewritePanel({
   llmUrl,
   enabled,
   language,
+  attempt,
   onResult,
 }: {
   style: string;
@@ -266,9 +284,10 @@ function RewritePanel({
   llmUrl: string;
   enabled: boolean;
   language: string | null;
+  attempt: number;
   onResult: (id: string, s: RewriteState) => void;
 }) {
-  const st = useRewrite(style, original, llmUrl, enabled, language);
+  const st = useRewrite(style, original, llmUrl, enabled, language, attempt);
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
@@ -317,10 +336,12 @@ function Actions({
   canAccept,
   acceptText,
   nav = false,
+  onRetry,
 }: {
   canAccept: boolean;
   acceptText: string;
   nav?: boolean;
+  onRetry?: () => void;
 }) {
   return (
     <div className="rewrite__row">
@@ -333,19 +354,25 @@ function Actions({
           <span className="nav-hint__label">switch modes</span>
         </span>
       )}
-      <Button onClick={() => send({ type: "dismiss" })}>
-        {canAccept ? "Dismiss" : "Close"}
-        <Kbd variant="outline" className="-me-1 ms-0.5 text-[10px]">ESC</Kbd>
-      </Button>
-      {canAccept && (
-        <Button
-          variant="brand"
-          onClick={() => send({ type: "applyRewrite", text: acceptText })}
-        >
-          Accept
-          <Kbd variant="outline" className="-me-1 ms-0.5 border-white/20 text-[10px] text-[var(--primary-foreground)] group-hover:text-white">TAB</Kbd>
+      {onRetry ? (
+        <Button onClick={onRetry}>
+          <RefreshCw className="size-3.5" />
+          Try again
+        </Button>
+      ) : (
+        <Button onClick={() => send({ type: "dismiss" })}>
+          {canAccept ? "Dismiss" : "Close"}
+          <Kbd variant="outline" className="-me-1 ms-0.5 text-[10px]">ESC</Kbd>
         </Button>
       )}
+      <Button
+        variant="brand"
+        disabled={!canAccept}
+        onClick={() => send({ type: "applyRewrite", text: acceptText })}
+      >
+        Accept
+        <Kbd variant="outline" className="-me-1 ms-0.5 border-white/20 text-[10px] text-[var(--primary-foreground)] group-hover:text-white">TAB</Kbd>
+      </Button>
     </div>
   );
 }
@@ -414,7 +441,7 @@ function TextSkeleton({ text }: { text: string }) {
       {words.map((w, i) => (
         <Skeleton
           key={i}
-          className="h-[0.82em] rounded"
+          className="me-[7px] inline-block h-[0.82em] rounded align-middle"
           style={{ width: `${Math.min(14, Math.max(1.5, w.length))}ch` }}
         />
       ))}

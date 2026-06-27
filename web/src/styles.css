@@ -379,12 +379,10 @@ body,
   font-style: italic;
 }
 
-/* Word-shaped skeleton (matches .rewrite metrics so the bars sit on lines). */
+/* Word-shaped skeleton — normal inline flow with the text's own line-height, so
+   each skeleton line is exactly as tall as a real text line (no height jump when
+   the result replaces it). The bars are inline-block (see App.tsx). */
 .skeleton {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.55em 7px;
   font-size: 15px;
   line-height: 1.45;
 }
