@@ -38,12 +38,11 @@ enum RewriteStyle: String, CaseIterable, Sendable {
                 + "unchanged. Put the result in the 'rewrite' field."
         case .rephrase:
             return "Rephrase the user's text using different wording while keeping the "
-                + "same meaning and language, in clear natural English. Put the result "
+                + "same meaning and language, in clear, natural prose. Put the result "
                 + "in the 'rewrite' field."
         case .shorten:
             return "Make the user's text more concise: keep the same meaning and language "
-                + "but use fewer words, in clear natural English. Put the result in the "
-                + "'rewrite' field."
+                + "but use fewer words. Put the result in the 'rewrite' field."
         case .translate:
             return "Translate the user's text into English. Detect the source language "
                 + "automatically and produce natural, fluent English that preserves the "

@@ -17,6 +17,7 @@ import {
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { detectLanguageName } from "./lang";
 import { motion } from "motion/react";
 import { Check } from "lucide-react";
 
@@ -126,6 +127,10 @@ function RewriteBody({ card }: { card: CardData }) {
   const visibleIds = visibleStyles.map((s) => s.id).join("|");
   const current = active;
 
+  // Detect the text's language so Grammar/Rephrase/Shorten reply in it (e.g.
+  // Polish in → Polish out). Free, sync, zero tokens.
+  const language = detectLanguageName(card.original);
+
   // Keyboard: ←/→ cycle the style tabs. (Tab confirms — see below.)
   useEffect(() => {
     const ids = visibleIds.split("|");
@@ -231,6 +236,7 @@ function RewriteBody({ card }: { card: CardData }) {
                   original={card.original}
                   llmUrl={card.llmUrl}
                   enabled={s.id === current}
+                  language={language}
                   onResult={onResult}
                 />
               </TabsContent>
@@ -252,15 +258,17 @@ function RewritePanel({
   original,
   llmUrl,
   enabled,
+  language,
   onResult,
 }: {
   style: string;
   original: string;
   llmUrl: string;
   enabled: boolean;
+  language: string | null;
   onResult: (id: string, s: RewriteState) => void;
 }) {
-  const st = useRewrite(style, original, llmUrl, enabled);
+  const st = useRewrite(style, original, llmUrl, enabled, language);
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);

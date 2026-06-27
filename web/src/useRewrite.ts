@@ -17,12 +17,12 @@ const INSTRUCTIONS: Record<string, string> = {
     " Put the result in the 'rewrite' field.",
   rephrase:
     "Rephrase the user's text using different wording while keeping the same " +
-    "meaning and language, in clear natural English." +
+    "meaning and language, in clear, natural prose." +
     KEEP_TERMS +
     " Put the result in the 'rewrite' field.",
   shorten:
-    "Make the user's text more concise: keep the same meaning and language but use " +
-    "fewer words, in clear natural English." +
+    "Make the user's text more concise: keep the same meaning and language but " +
+    "use fewer words." +
     KEEP_TERMS +
     " Put the result in the 'rewrite' field.",
   translate:
@@ -54,8 +54,14 @@ async function fetchRewrite(
   style: string,
   text: string,
   llmUrl: string,
+  language: string | null,
 ): Promise<string | null> {
-  const instruction = INSTRUCTIONS[style] ?? INSTRUCTIONS.grammar;
+  let instruction = INSTRUCTIONS[style] ?? INSTRUCTIONS.grammar;
+  // Grammar/Rephrase/Shorten respond in the text's own language; reinforce the
+  // detected one so a small model doesn't drift to English. (Translate is fixed.)
+  if (style !== "translate" && language) {
+    instruction += ` The text is written in ${language}; respond in ${language}.`;
+  }
   try {
     const res = await fetch(llmUrl, {
       method: "POST",
@@ -95,6 +101,7 @@ export function useRewrite(
   text: string,
   llmUrl: string,
   enabled: boolean,
+  language: string | null,
 ): RewriteState {
   const key = `${style}|${text}`;
   const [state, setState] = useState<RewriteState>(() =>
@@ -111,7 +118,7 @@ export function useRewrite(
     }
     let cancelled = false;
     setState({ loading: true, text: "", error: false });
-    fetchRewrite(style, text, llmUrl).then((result) => {
+    fetchRewrite(style, text, llmUrl, language).then((result) => {
       if (cancelled) return;
       if (result != null) {
         cache.set(key, result);
@@ -123,7 +130,7 @@ export function useRewrite(
     return () => {
       cancelled = true;
     };
-  }, [key, style, text, llmUrl, enabled]);
+  }, [key, style, text, llmUrl, enabled, language]);
 
   return state;
 }
