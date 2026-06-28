@@ -775,16 +775,23 @@ final class AppController: NSObject {
 
     /// Where the React UI comes from. Resolution order:
     ///   1. LOCO_WEB_URL (e.g. http://localhost:5173 for live web dev)
-    ///   2. the built web/dist (works with no dev server — the default)
-    ///   3. localhost:5173 as a last resort
+    ///   2. the app bundle's Resources/web (the shipped app)
+    ///   3. the built web/dist next to the repo (dev, run from the project root)
+    ///   4. localhost:5173 as a last resort
     private static func webURL() -> URL {
         if let raw = ProcessInfo.processInfo.environment["LOCO_WEB_URL"],
            let url = URL(string: raw) {
             return url
         }
-        let dist = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let fm = FileManager.default
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("web/index.html"),
+           fm.fileExists(atPath: bundled.path) {
+            return bundled
+        }
+        let dist = URL(fileURLWithPath: fm.currentDirectoryPath)
             .appendingPathComponent("web/dist/index.html")
-        if FileManager.default.fileExists(atPath: dist.path) {
+        if fm.fileExists(atPath: dist.path) {
             return dist
         }
         return URL(string: "http://localhost:5173")!

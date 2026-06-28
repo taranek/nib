@@ -13,5 +13,8 @@ xcuserdata/
 web/node_modules/
 web/dist/
 
+# Packaged app output
+release/
+
 # macOS
 .DS_Store

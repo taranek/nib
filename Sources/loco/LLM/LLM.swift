@@ -82,54 +82,35 @@ enum LLMPaths {
     static var binDir: URL { supportDir.appendingPathComponent("bin", isDirectory: true) }
     static var modelsDir: URL { supportDir.appendingPathComponent("models", isDirectory: true) }
 
-    /// Known locations to seed from on first run (so a working binary/model we
-    /// already have on disk isn't re-downloaded or rebuilt). Best-effort.
-    private static let seedBinary = URL(fileURLWithPath:
-        "/Users/tomasztaranek/code/electron-llm/vendor/llama.cpp/build/bin/llama-server")
-    private static let seedModelsDir = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("electron-llm/models", isDirectory: true)
-
-    /// Path to the llama-server binary, seeding loco's copy if needed.
+    /// Path to the llama-server binary:
+    ///   1. LOCO_LLAMA_SERVER override (dev)
+    ///   2. bundled in the app (Resources/bin/llama-server) — the shipped app
+    ///   3. a copy in loco's support dir (dev / manual install)
     static func resolveBinary() -> String? {
         if let env = ProcessInfo.processInfo.environment["LOCO_LLAMA_SERVER"] { return env }
 
         let fm = FileManager.default
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("bin/llama-server").path,
+           fm.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
         let dest = binDir.appendingPathComponent("llama-server")
         if fm.isExecutableFile(atPath: dest.path) { return dest.path }
-
-        // Seed by copying the known-good binary into loco's own dir.
-        if fm.fileExists(atPath: seedBinary.path) {
-            try? fm.createDirectory(at: binDir, withIntermediateDirectories: true)
-            try? fm.copyItem(at: seedBinary, to: dest)
-            if fm.isExecutableFile(atPath: dest.path) { return dest.path }
-        }
         return nil
     }
 
-    /// Path to a GGUF model, seeding loco's dir with a symlink to an existing
-    /// model if present (avoids duplicating multi-GB files).
+    /// Path to a GGUF model. The user provides one (Settings → Change, or by
+    /// dropping a .gguf into the models dir); nil until then.
     static func resolveModel() -> String? {
-        // A model the user explicitly picked in Settings takes priority.
         if let saved = UserDefaults.standard.string(forKey: "modelPath"),
            FileManager.default.fileExists(atPath: saved) {
             return saved
         }
         if let env = ProcessInfo.processInfo.environment["LOCO_MODEL"] { return env }
-
-        let fm = FileManager.default
-        try? fm.createDirectory(at: modelsDir, withIntermediateDirectories: true)
-
-        // Already have a model in loco's dir?
-        if let existing = firstGGUF(in: modelsDir) { return existing }
-
-        // Seed: symlink any GGUF we can find in the known models dir.
-        if let seed = firstGGUF(in: seedModelsDir) {
-            let link = modelsDir.appendingPathComponent(URL(fileURLWithPath: seed).lastPathComponent)
-            try? fm.createSymbolicLink(atPath: link.path, withDestinationPath: seed)
-            if fm.fileExists(atPath: link.path) { return link.path }
-        }
-        return nil
+        try? FileManager.default.createDirectory(
+            at: modelsDir, withIntermediateDirectories: true)
+        return firstGGUF(in: modelsDir)
     }
 
     static func modelName() -> String? {
