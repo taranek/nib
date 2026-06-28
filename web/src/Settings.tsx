@@ -1,14 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
 import { type SettingsState, onSetSettings, send } from "./bridge";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Select } from "@/components/ui/select";
+import { Toggle } from "@/components/ui/toggle";
+import { Pill } from "@/components/ui/pill";
+import { StatusDot } from "@/components/ui/status-dot";
 
 const LANGUAGES = [
   "English",
@@ -24,6 +20,14 @@ const LANGUAGES = [
 ];
 
 const inWebView = Boolean(window.webkit?.messageHandlers?.loco);
+
+const SECTION = "flex flex-col gap-2.5 border-t border-border pt-3.5";
+const ROW = "flex items-center justify-between gap-3";
+const FIELD = "flex min-w-0 flex-col gap-0.5";
+const LABEL = "inline-flex items-center gap-[7px] text-[14px] text-foreground";
+const HINT = "text-[12px] text-muted-foreground [overflow-wrap:anywhere]";
+const CARD_SHADOW =
+  "shadow-[0_6px_16px_rgba(0,0,0,0.4),0_1px_4px_rgba(0,0,0,0.3),inset_0_1px_0_rgba(255,255,255,0.05)]";
 
 export function Settings() {
   const [state, setState] = useState<SettingsState>({
@@ -59,121 +63,97 @@ export function Settings() {
   }, []);
 
   return (
-    <div className="wrap" ref={wrapRef}>
-      <div className="settings">
-      <header className="settings__head">
-        <span className="settings__logo">loco</span>
-        <span className="settings__sub">Writing suggestions, over any app.</span>
-      </header>
+    <div className="w-max p-6" ref={wrapRef}>
+      <div
+        className={`box-border flex w-[380px] flex-col gap-3.5 overflow-hidden rounded-[12px] border border-border bg-card p-4 text-[13px] text-[var(--text-secondary)] ${CARD_SHADOW}`}
+      >
+        <header className="flex flex-col gap-0.5">
+          <span className="text-[18px] font-bold tracking-[-0.02em] text-foreground">
+            loco
+          </span>
+          <span className="text-[12px] text-muted-foreground">
+            Writing suggestions, over any app.
+          </span>
+        </header>
 
-      <section className="settings__section">
-        <div className="settings__row">
-          <div className="settings__field">
-            <span className="settings__row-label">Suggestions</span>
-            <span className="settings__hint">
-              Grammar &amp; rewrite help as you type.
-            </span>
-          </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
+        <section className={SECTION}>
+          <div className={ROW}>
+            <div className={FIELD}>
+              <span className={LABEL}>Suggestions</span>
+              <span className={HINT}>Grammar &amp; rewrite help as you type.</span>
+            </div>
+            <Toggle
               checked={state.enabled}
-              onChange={(e) => {
-                const value = e.target.checked;
+              onCheckedChange={(value) => {
                 setState((s) => ({ ...s, enabled: value }));
                 send({ type: "setEnabled", value });
               }}
             />
-            <span className="toggle__track" />
-          </label>
-        </div>
-      </section>
-
-      <section className="settings__section">
-        <div className="settings__row">
-          <div className="settings__field">
-            <span className="settings__row-label">Translate to</span>
-            <span className="settings__hint">
-              Translate suggestions render in this language.
-            </span>
           </div>
-          <DropdownMenu modal={false}>
-            <DropdownMenuTrigger asChild>
-              <button className="select-trigger">
-                {state.targetLanguage}
-                <ChevronDown className="size-3.5 opacity-60" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="max-h-(--radix-dropdown-menu-content-available-height) min-w-40 overflow-y-auto"
+        </section>
+
+        <section className={SECTION}>
+          <div className={ROW}>
+            <div className={FIELD}>
+              <span className={LABEL}>Translate to</span>
+              <span className={HINT}>
+                Translate suggestions render in this language.
+              </span>
+            </div>
+            <Select
+              value={state.targetLanguage}
+              options={LANGUAGES}
+              onValueChange={(value) => {
+                setState((s) => ({ ...s, targetLanguage: value }));
+                send({ type: "setTargetLanguage", value });
+              }}
+            />
+          </div>
+        </section>
+
+        <section className={SECTION}>
+          <div className={ROW}>
+            <div className={FIELD}>
+              <span className={LABEL}>
+                <StatusDot ok={llmReady} />
+                Local AI
+              </span>
+              <Pill title={state.model}>
+                {llmReady ? state.model : state.llmStatus}
+              </Pill>
+            </div>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => send({ type: "chooseModel" })}
             >
-              <DropdownMenuRadioGroup
-                value={state.targetLanguage}
-                onValueChange={(value) => {
-                  setState((s) => ({ ...s, targetLanguage: value }));
-                  send({ type: "setTargetLanguage", value });
-                }}
-              >
-                {LANGUAGES.map((lang) => (
-                  <DropdownMenuRadioItem key={lang} value={lang}>
-                    {lang}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </section>
-
-      <section className="settings__section">
-        <div className="settings__row">
-          <div className="settings__field">
-            <span className="settings__row-label">
-              <span className={"status__dot " + (llmReady ? "is-ok" : "is-warn")} />
-              Local AI
-            </span>
-            <span className="pill" title={state.model}>
-              {llmReady ? state.model : state.llmStatus}
-            </span>
+              Change
+            </Button>
           </div>
-          <Button
-            size="sm"
-            variant="default"
-            onClick={() => send({ type: "chooseModel" })}
-          >
-            Change
-          </Button>
-        </div>
-      </section>
+        </section>
 
-      <section className="settings__section">
-        <div className="settings__row">
-          <div className="settings__field">
-            <span className="settings__row-label">
-              <span
-                className={
-                  "status__dot " +
-                  (state.accessibilityTrusted ? "is-ok" : "is-warn")
-                }
-              />
-              Accessibility
-            </span>
-            <span className="settings__hint">
-              {state.accessibilityTrusted
-                ? "Access granted."
-                : "Required to read & edit text in other apps."}
-            </span>
+        <section className={SECTION}>
+          <div className={ROW}>
+            <div className={FIELD}>
+              <span className={LABEL}>
+                <StatusDot ok={state.accessibilityTrusted} />
+                Accessibility
+              </span>
+              <span className={HINT}>
+                {state.accessibilityTrusted
+                  ? "Access granted."
+                  : "Required to read & edit text in other apps."}
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant={state.accessibilityTrusted ? "default" : "brand"}
+              onClick={() => send({ type: "openAccessibility" })}
+            >
+              Open
+            </Button>
           </div>
-          <Button
-            size="sm"
-            variant={state.accessibilityTrusted ? "default" : "brand"}
-            onClick={() => send({ type: "openAccessibility" })}
-          >
-            Open
-          </Button>
-        </div>
-      </section>
+        </section>
       </div>
     </div>
   );

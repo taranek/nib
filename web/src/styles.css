@@ -1,6 +1,4 @@
-/* Tailwind with preflight, but everything in @layers — our hand-written CSS is
-   unlayered (higher priority), so it still wins any conflict with preflight,
-   while shadcn components get the button/box-sizing reset they assume. */
+/* Tailwind with preflight, all in @layers so shadcn components get their resets. */
 @layer theme, base, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/preflight.css" layer(base);
@@ -8,16 +6,15 @@
 /* enter/exit keyframe utilities (animate-in/zoom/slide) for Radix popovers */
 @import "tw-animate-css";
 
-/* Default any `border` utility to the theme hairline (shadcn convention) so
-   components like the dropdown match the card instead of defaulting to white. */
+/* Default any `border` utility to the theme hairline (shadcn convention). */
 @layer base {
   * {
     border-color: var(--border);
   }
 }
 
-/* shadcn theme tokens (oklch). Mapped so Tailwind utilities like bg-muted,
-   text-foreground, etc. resolve. The card is dark → document carries `.dark`. */
+/* shadcn theme tokens (oklch). Mapped so Tailwind utilities like bg-card,
+   text-foreground, etc. resolve. Both surfaces are dark → document carries `.dark`. */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -43,6 +40,7 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* Light tokens (the card/settings run dark via `.dark`; these are the fallback). */
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
@@ -54,7 +52,7 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.62 0.16 130); /* lime (deepened for white text) */
+  --primary: oklch(0.62 0.16 130);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -67,9 +65,8 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
 
-  /* Extra semantic tokens (used by the hand-written card CSS). */
+  /* Extra semantic tokens used across the UI. */
   --text-secondary: #3c4043;
-  --primary-hover: oklch(0.67 0.16 130);
   --primary-soft: oklch(0.56 0.15 130);
   --accent-hover: oklch(0.93 0 0);
   --border-strong: rgba(0, 0, 0, 0.18);
@@ -77,7 +74,7 @@
   --diff-ins: #1a7f37;
 }
 
-/* Dark tokens — a refined dark surface with translucent hairlines. */
+/* Dark — the surface both the card and settings actually use. */
 .dark {
   /* Background levels (darkest → lightest). */
   --color-bg-level-0: #08090a;
@@ -99,7 +96,6 @@
   --muted: #1b1c20; /* tab track */
   --muted-foreground: #888d96; /* inactive tab text */
   --accent: #242530; /* raised */
-  --accent-hover: #313340; /* raised, on hover */
   --accent-foreground: #f4f5f7;
   --destructive: #e9605f;
   --border: #ffffff15; /* translucent hairlines */
@@ -107,16 +103,15 @@
   --ring: #7574ff;
 
   --text-secondary: #ced4df;
-  --primary-hover: oklch(0.67 0.18 255);
-  --primary-soft: oklch(0.55 0.17 255);
+  --primary-soft: oklch(0.55 0.17 255); /* brand, slightly dimmed */
+  --accent-hover: #313340; /* raised, on hover */
   --border-strong: #ffffff26;
   --diff-del: #f47b84;
   --diff-ins: #54d98a;
 }
 
-/* Transparent background so the native window shows the page's own card +
-   shadow with rounded corners. overflow:hidden prevents any document scroll
-   (the native panel is sized exactly to .wrap). */
+/* Transparent background so the native window shows the page's own card + shadow
+   with rounded corners. overflow:hidden prevents any document scroll. */
 html,
 body,
 #root {
@@ -126,17 +121,15 @@ body,
   -webkit-font-smoothing: antialiased;
 }
 
-/* Squircle (smooth superellipse) corners everywhere a border-radius is used,
-   on engines that support `corner-shape`; ignored (plain round) elsewhere. */
+/* Squircle corners wherever a border-radius is used (engines that support it). */
 *,
 *::before,
 *::after {
   corner-shape: squircle;
 }
 
-/* Respect the OS "Reduce motion" setting for CSS-driven motion (button
-   hover/press transitions). Motion's JS animations are handled by the root
-   MotionConfig reducedMotion="user". */
+/* Respect "Reduce motion" for CSS-driven motion (Motion's JS animations are
+   handled by the root MotionConfig reducedMotion="user"). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -145,460 +138,4 @@ body,
     animation-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-}
-
-/* Transparent margin so the card's soft CSS shadow has room (the native window
-   shadow is disabled). Must match PopoverPanel.shadowMargin. */
-.wrap {
-  width: max-content;
-  padding: 24px;
-}
-
-/* The floating suggestion/rewrite card. Refined dark surface (it sits over any
-   app, so dark reads consistently) with a Linear-style layered background: a
-   soft top highlight + a faint cool tint, fading into a near-black gradient. */
-/* Linear-style panel: flat dark surface, hairline translucent border, a soft
-   outer ring + drop shadow, faint top highlight. */
-.card {
-  width: 440px;
-  border-radius: 12px;
-  overflow: hidden;
-  box-sizing: border-box;
-  color: var(--text-secondary);
-  background: var(--card);
-  box-shadow:
-    0 6px 16px rgba(0, 0, 0, 0.4),
-    0 1px 4px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-}
-
-/* Card regions split by hairline borders (header/content divide). */
-.rw-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-
-.rw-content {
-  padding: 12px 8px;
-}
-
-/* Error count badge on the Grammar tab. */
-.tab-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--destructive);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Tab navigation hint — subtle, like a menu shortcut (muted glyphs + label). */
-.nav-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex: none;
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
-/* Small uppercase caption for the hint label (distinct from the arrow icons). */
-.nav-hint__label {
-  font-family: "SF Pro Rounded", ui-rounded, "Segoe UI", system-ui, sans-serif;
-  font-size: 9px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-}
-
-/* ── Settings surface (matches the rewrite card's dark theme) ──────── */
-
-/* The settings card — same chrome as the rewrite card (rounded, soft CSS shadow,
-   flat dark surface), shown in a borderless panel with no arrow. */
-.settings {
-  box-sizing: border-box;
-  width: 380px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--card);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 13px;
-  box-shadow:
-    0 6px 16px rgba(0, 0, 0, 0.4),
-    0 1px 4px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-}
-
-.settings__head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings__logo {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--foreground);
-}
-
-.settings__sub {
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-
-.settings__section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-/* iOS-style toggle, themed with the brand color. */
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.toggle input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.toggle__track {
-  position: relative;
-  width: 38px;
-  height: 22px;
-  border-radius: 11px;
-  background: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--border);
-  transition: background 0.18s ease;
-  flex: none;
-}
-
-.toggle__track::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  transition: transform 0.18s ease;
-}
-
-.toggle input:checked + .toggle__track {
-  background: var(--primary);
-  box-shadow: none;
-}
-
-.toggle input:checked + .toggle__track::after {
-  transform: translateX(16px);
-}
-
-.toggle__label {
-  font-size: 14px;
-  color: var(--foreground);
-}
-
-/* Field (title + description) on the left, control on the right. */
-.settings__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.settings__field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.settings__row-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 14px;
-  color: var(--foreground);
-}
-
-.settings__hint {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  overflow-wrap: anywhere;
-}
-
-/* Static pill (e.g. the model name) matching the composer chips. */
-.pill {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  max-width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 9px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  background: var(--accent);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Controls on the right of a row keep their size; the field flexes. */
-.settings__row .toggle,
-.settings__row .status {
-  flex: none;
-}
-
-.settings__row .status {
-  white-space: nowrap;
-}
-
-/* Compact select-style trigger for the language dropdown (min width, on the right). */
-.select-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--accent);
-  color: var(--foreground);
-  font-size: 13px;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease;
-}
-
-.select-trigger:hover {
-  background: var(--accent-hover);
-  border-color: var(--border-strong);
-}
-
-.status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.status__dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  flex: none;
-}
-
-.status__dot.is-ok {
-  background: var(--diff-ins);
-}
-
-.status__dot.is-warn {
-  background: #e0a64a;
-}
-
-.settings__meta {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  padding-left: 17px;
-  font-variant-numeric: tabular-nums;
-  word-break: break-all;
-}
-
-.settings__foot {
-  margin-top: auto;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-/* Rephrase / grammar card body (always on the dark card surface) */
-.rewrite {
-  font-size: 15px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-}
-
-.rewrite--loading {
-  color: var(--muted-foreground);
-  font-style: italic;
-}
-
-/* Word-shaped skeleton — normal inline flow with the text's own line-height, so
-   each skeleton line is exactly as tall as a real text line (no height jump when
-   the result replaces it). The bars are inline-block (see App.tsx). */
-.skeleton {
-  font-size: 15px;
-  line-height: 1.45;
-}
-
-/* Inline diff: removed words struck-through red, added words green. */
-.d--equal {
-  color: var(--text-secondary);
-}
-
-.d--del {
-  color: var(--diff-del);
-  text-decoration: line-through;
-}
-
-.d--ins {
-  color: var(--diff-ins);
-  font-weight: 600;
-}
-
-.rewrite--ok {
-  color: var(--diff-ins);
-  font-size: 14px;
-}
-
-.rewrite__row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  border-top: 1px solid var(--border);
-  padding: 10px 14px;
-}
-
-/* Footer nav hint sits leftmost; buttons stay right. */
-.rewrite__row .nav-hint {
-  margin-right: auto;
-}
-
-.rewrite__body {
-  min-height: 22px;
-  padding-left: 8px; /* extra left inset on the proposal text */
-}
-
-/* Quick-filter chips above the composer (Rephrase only). */
-.rw-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 8px 0 12px;
-}
-
-.chip {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 9px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  background: var(--accent);
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
-}
-
-.chip:hover:not(:disabled):not(.chip--active) {
-  background: var(--accent-hover);
-  color: var(--foreground);
-}
-
-/* The chip whose edit is currently applied — inverted (filled) for contrast
-   (no hover change — it stays put). */
-.chip--active {
-  background: var(--foreground);
-  border-color: var(--foreground);
-  color: var(--background);
-}
-
-.chip:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
-
-.chip:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* Footer: feedback input (Rephrase only) + send and accept, one row. */
-.rw-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 8px;
-}
-
-.rw-feedback__input {
-  flex: 1;
-  min-width: 0;
-  margin: 0 0 0 8px; /* match the proposal's left inset */
-  padding: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--foreground);
-  font-size: 13px;
-}
-
-.rw-feedback__input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.rw-feedback__send {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  color: var(--text-secondary);
-  background: var(--accent);
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
-}
-
-.rw-feedback__send:hover:not(:disabled) {
-  background: var(--accent-hover);
-  color: var(--foreground);
-}
-
-.rw-feedback__send:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-/* The footer send button matches the Accept button's height. */
-.rw-feedback__send--tall {
-  width: 28px;
-  height: 28px;
 }
