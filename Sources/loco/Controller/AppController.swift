@@ -150,6 +150,12 @@ final class AppController: NSObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+
+        // First-run onboarding: if Accessibility isn't granted or no model is set
+        // up yet, open Settings so the user is guided through it.
+        if !AXIsProcessTrusted() || LLMPaths.resolveModel() == nil {
+            openSettings()
+        }
     }
 
     // MARK: - LLM lifecycle

@@ -54,7 +54,10 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
             anchor = win.convertToScreen(button.convert(button.bounds, to: nil))
         }
         reposition()
-        panel.makeKeyAndOrderFront(nil)
+        // Accessory (background) app: orderFrontRegardless shows the panel without
+        // activating the app; makeKey then routes keyboard/input to it.
+        panel.orderFrontRegardless()
+        panel.makeKey()
         installClickMonitor()
     }
 
