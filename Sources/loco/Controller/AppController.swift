@@ -836,6 +836,11 @@ final class AppController: NSObject {
         switch type {
         case "ready":
             pushSettingsState()
+        case "resize":
+            if let width = (body["width"] as? NSNumber)?.doubleValue,
+               let height = (body["height"] as? NSNumber)?.doubleValue {
+                settingsPopover?.resize(toContentWidth: CGFloat(width), height: CGFloat(height))
+            }
         case "setEnabled":
             enabled = (body["value"] as? NSNumber)?.boolValue ?? true
             if enabled {

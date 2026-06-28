@@ -225,17 +225,25 @@ body,
 
 /* ── Settings surface (matches the rewrite card's dark theme) ──────── */
 
+/* The settings card — same chrome as the rewrite card (rounded, soft CSS shadow,
+   flat dark surface), shown in a borderless panel with no arrow. */
 .settings {
   box-sizing: border-box;
-  width: 100%;
-  min-height: 100vh;
+  width: 380px;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  border-radius: 12px;
+  overflow: hidden;
   background: var(--card);
+  border: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 13px;
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.4),
+    0 1px 4px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .settings__head {

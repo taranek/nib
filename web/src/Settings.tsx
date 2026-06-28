@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { type SettingsState, onSetSettings, send } from "./bridge";
 import { Button } from "@/components/ui/button";
@@ -35,14 +35,32 @@ export function Settings() {
   });
 
   const llmReady = state.llmStatus.toLowerCase() === "ready";
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     onSetSettings(setState);
     send({ type: "ready" });
   }, []);
 
+  // Report the card size so the native panel fits it exactly.
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const report = () =>
+      send({
+        type: "resize",
+        width: Math.ceil(el.offsetWidth),
+        height: Math.ceil(el.offsetHeight),
+      });
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
-    <div className="settings">
+    <div className="wrap" ref={wrapRef}>
+      <div className="settings">
       <header className="settings__head">
         <span className="settings__logo">loco</span>
         <span className="settings__sub">Writing suggestions, over any app.</span>
@@ -156,6 +174,7 @@ export function Settings() {
           </Button>
         </div>
       </section>
+      </div>
     </div>
   );
 }
