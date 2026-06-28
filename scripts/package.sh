@@ -105,13 +105,24 @@ codesign --force -s - "$APP"
 echo "▸ Zipping…"
 ( cd "$OUT" && ditto -c -k --keepParent "$APP_NAME.app" "$APP_NAME.zip" )
 
+echo "▸ Building DMG…"
+STAGE="$OUT/dmg"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"   # drag-to-install target
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO \
+  "$OUT/$APP_NAME.dmg" >/dev/null
+rm -rf "$STAGE"
+
 cat <<DONE
 
-✓ Built $APP  (and $OUT/$APP_NAME.zip)
+✓ Built $APP
+  $OUT/$APP_NAME.dmg   (drag-to-install)
+  $OUT/$APP_NAME.zip
 
-Share the zip. On the recipient's Mac (unsigned, so Gatekeeper will warn):
-  1. Unzip, move $APP_NAME.app to /Applications.
-  2. First launch: right-click → Open (or: xattr -dr com.apple.quarantine $APP_NAME.app).
+Share the DMG. On the recipient's Mac (unsigned, so Gatekeeper will warn):
+  1. Open the DMG, drag $APP_NAME into Applications.
+  2. First launch: right-click → Open (or: xattr -dr com.apple.quarantine /Applications/$APP_NAME.app).
   3. Grant Accessibility when prompted (Settings → Open).
   4. Download a .gguf model and pick it in $APP_NAME's Settings → Change.
 DONE
