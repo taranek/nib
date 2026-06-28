@@ -18,7 +18,7 @@ function Chip({
         "disabled:cursor-default disabled:opacity-50",
         active
           ? "border-foreground bg-foreground text-background"
-          : "border-border bg-accent text-[var(--text-secondary)] enabled:hover:bg-[var(--accent-hover)] enabled:hover:text-foreground",
+          : "border-border bg-accent text-text-secondary enabled:hover:bg-accent-hover enabled:hover:text-foreground",
         className,
       )}
       {...props}

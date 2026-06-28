@@ -50,9 +50,9 @@ const CHIPS: { label: string; instruction: string }[] = [
 
 const CONTENT = "px-2 py-3";
 const BODY = "min-h-[22px] pl-2";
-const RESULT = "text-[15px] leading-[1.45] text-[var(--text-secondary)]";
+const RESULT = "text-[15px] leading-[1.45] text-text-secondary";
 const TAB_KBD =
-  "-me-1 ms-0.5 border-white/20 text-[10px] text-[var(--primary-foreground)] group-hover:text-white";
+  "-me-1 ms-0.5 border-white/20 text-[10px] text-primary-foreground group-hover:text-white";
 
 export function CardContent({ card }: { card: CardData }) {
   return card.mode === "grammar" ? (
@@ -296,7 +296,7 @@ function RewriteBody({ card }: { card: CardData }) {
                   {s.label}
                   {ok && (
                     <Check
-                      className="size-3 text-[var(--diff-ins)]"
+                      className="size-3 text-diff-ins"
                       strokeWidth={3}
                     />
                   )}
@@ -470,7 +470,7 @@ function RewritePanel({
     return (
       <div className={BODY}>
         {st.text.trim() === original.trim() ? (
-          <div className="text-[14px] text-[var(--diff-ins)]">
+          <div className="text-[14px] text-diff-ins">
             ✓ Already in {target} — nothing to translate.
           </div>
         ) : (
@@ -481,7 +481,7 @@ function RewritePanel({
   if (st.text.trim() === original.trim())
     return (
       <div className={BODY}>
-        <div className="text-[14px] text-[var(--diff-ins)]">
+        <div className="text-[14px] text-diff-ins">
           ✓ Looks good — no changes needed.
         </div>
       </div>

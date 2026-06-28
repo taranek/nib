@@ -65,7 +65,7 @@ export function Settings() {
   return (
     <div className="w-max p-6" ref={wrapRef}>
       <div
-        className={`box-border flex w-[380px] flex-col gap-3.5 overflow-hidden rounded-[12px] border border-border bg-card p-4 text-[13px] text-[var(--text-secondary)] ${CARD_SHADOW}`}
+        className={`box-border flex w-[380px] flex-col gap-3.5 overflow-hidden rounded-[12px] border border-border bg-card p-4 text-[13px] text-text-secondary ${CARD_SHADOW}`}
       >
         <header className="flex flex-col gap-0.5">
           <span className="text-[18px] font-bold tracking-[-0.02em] text-foreground">

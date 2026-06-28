@@ -34,6 +34,14 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  /* Extra semantic colours so utilities (text-secondary, bg-accent-hover, …)
+     resolve instead of needing [var(--…)] arbitrary classes. */
+  --color-text-secondary: var(--text-secondary);
+  --color-accent-hover: var(--accent-hover);
+  --color-primary-soft: var(--primary-soft);
+  --color-border-strong: var(--border-strong);
+  --color-diff-del: var(--diff-del);
+  --color-diff-ins: var(--diff-ins);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

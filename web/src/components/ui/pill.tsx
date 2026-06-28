@@ -9,7 +9,7 @@ function Pill({ className, ...props }: React.ComponentProps<"span">) {
       data-slot="pill"
       className={cn(
         "inline-flex max-w-full items-center self-start overflow-hidden text-ellipsis whitespace-nowrap",
-        "rounded-full border border-border bg-accent px-[9px] py-0.5 text-[11px] text-[var(--text-secondary)]",
+        "rounded-full border border-border bg-accent px-[9px] py-0.5 text-[11px] text-text-secondary",
         className,
       )}
       {...props}
