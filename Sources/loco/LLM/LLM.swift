@@ -76,7 +76,7 @@ actor GrammarCache {
 enum LLMPaths {
     static var supportDir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("loco", isDirectory: true)
+        return base.appendingPathComponent("Notavo", isDirectory: true)
     }
 
     static var binDir: URL { supportDir.appendingPathComponent("bin", isDirectory: true) }

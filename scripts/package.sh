@@ -13,8 +13,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_NAME="loco"
-BUNDLE_ID="com.loco.app"
+APP_NAME="Notavo"
+PRODUCT="loco"          # the SPM product/binary name
+BUNDLE_ID="com.notavo.app"
 VERSION="${LOCO_VERSION:-0.1.0}"
 OUT="release"
 APP="$OUT/$APP_NAME.app"
@@ -26,14 +27,14 @@ LLAMA_SRC="${LOCO_LLAMA_SERVER:-$HOME/Library/Application Support/loco/bin/llama
 echo "▸ Building web…"
 ( cd web && npm run build )
 
-echo "▸ Building loco (release)…"
+echo "▸ Building ${PRODUCT} (release)…"
 swift build -c release
 
 echo "▸ Assembling ${APP}…"
-rm -rf "$APP"
+rm -rf "$OUT"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources/web" "$CONTENTS/Resources/bin"
 
-cp .build/release/"$APP_NAME" "$CONTENTS/MacOS/$APP_NAME"
+cp .build/release/"$PRODUCT" "$CONTENTS/MacOS/$APP_NAME"
 cp -R web/dist/. "$CONTENTS/Resources/web/"
 
 # llama-server + its sibling dylibs (llama.cpp ships libllama/libggml*.dylib).
@@ -109,8 +110,8 @@ cat <<DONE
 ✓ Built $APP  (and $OUT/$APP_NAME.zip)
 
 Share the zip. On the recipient's Mac (unsigned, so Gatekeeper will warn):
-  1. Unzip, move loco.app to /Applications.
-  2. First launch: right-click → Open (or: xattr -dr com.apple.quarantine loco.app).
+  1. Unzip, move $APP_NAME.app to /Applications.
+  2. First launch: right-click → Open (or: xattr -dr com.apple.quarantine $APP_NAME.app).
   3. Grant Accessibility when prompted (Settings → Open).
-  4. Download a .gguf model and pick it in loco's Settings → Change.
+  4. Download a .gguf model and pick it in $APP_NAME's Settings → Change.
 DONE

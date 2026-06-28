@@ -127,7 +127,7 @@ final class AppController: NSObject {
         setupStatusItem()
         startLLM()
 
-        print("✅ loco running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
+        print("✅ Notavo running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
         print("   Card UI from: \(Self.webURL().absoluteString)\n")
 
         // Hover detection over the click-through overlay: a global mouse monitor
@@ -715,13 +715,13 @@ final class AppController: NSObject {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            if let image = NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "loco") {
+            if let image = NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "Notavo") {
                 image.isTemplate = true
                 button.image = image
             } else {
-                button.title = "loco"
+                button.title = "Notavo"
             }
-            button.toolTip = "loco — writing suggestions"
+            button.toolTip = "Notavo — writing suggestions"
             button.target = self
             button.action = #selector(statusItemClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -744,7 +744,7 @@ final class AppController: NSObject {
     private func showStatusMenu() {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
-        let quit = NSMenuItem(title: "Quit loco",
+        let quit = NSMenuItem(title: "Quit Notavo",
                               action: #selector(quitFromMenu), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)

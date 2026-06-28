@@ -69,7 +69,7 @@ export function Settings() {
       >
         <header className="flex flex-col gap-0.5">
           <span className="text-[18px] font-bold tracking-[-0.02em] text-foreground">
-            loco
+            Notavo
           </span>
           <span className="text-[12px] text-muted-foreground">
             Writing suggestions, over any app.
