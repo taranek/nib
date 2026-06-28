@@ -62,7 +62,7 @@ export function App() {
           per new card, not on tab switches. */}
       <motion.div
         key={`${card.mode}|${card.original}`}
-        className={`w-[440px] overflow-hidden rounded-[12px] bg-card text-text-secondary ${CARD_SHADOW}`}
+        className={`w-[440px] overflow-hidden rounded-[12px] bg-card text-subtle ${CARD_SHADOW}`}
         style={{ transformOrigin: "top left" }}
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}

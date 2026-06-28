@@ -50,7 +50,7 @@ const CHIPS: { label: string; instruction: string }[] = [
 
 const CONTENT = "px-2 py-3";
 const BODY = "min-h-[22px] pl-2";
-const RESULT = "text-[15px] leading-[1.45] text-text-secondary";
+const RESULT = "text-[15px] leading-[1.45] text-subtle";
 const TAB_KBD =
   "-me-1 ms-0.5 border-white/20 text-[10px] text-primary-foreground group-hover:text-white";
 

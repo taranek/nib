@@ -1,7 +1,7 @@
 import { diffWords } from "@/lib/diff";
 
 const TONE = {
-  equal: "text-text-secondary",
+  equal: "text-subtle",
   del: "text-diff-del line-through",
   ins: "text-diff-ins font-semibold",
 } as const;
@@ -15,7 +15,7 @@ export function DiffText({
   result: string;
 }) {
   return (
-    <div className="text-[15px] leading-[1.45] text-text-secondary">
+    <div className="text-[15px] leading-[1.45] text-subtle">
       {diffWords(original, result).map((t, i) => (
         <span key={i}>
           <span className={TONE[t.type]}>{t.text}</span>{" "}

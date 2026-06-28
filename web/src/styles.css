@@ -34,12 +34,12 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  /* Extra semantic colours so utilities (text-secondary, bg-accent-hover, …)
+  /* Extra semantic colours so utilities (text-subtle, bg-accent-hover, …)
      resolve instead of needing [var(--…)] arbitrary classes. */
-  --color-text-secondary: var(--text-secondary);
+  --color-subtle: var(--subtle);
   --color-accent-hover: var(--accent-hover);
   --color-primary-soft: var(--primary-soft);
-  --color-border-strong: var(--border-strong);
+  --color-hairline-strong: var(--hairline-strong);
   --color-diff-del: var(--diff-del);
   --color-diff-ins: var(--diff-ins);
   --radius-sm: calc(var(--radius) - 4px);
@@ -74,10 +74,10 @@
   --ring: oklch(0.708 0 0);
 
   /* Extra semantic tokens used across the UI. */
-  --text-secondary: #3c4043;
+  --subtle: #3c4043;
   --primary-soft: oklch(0.56 0.15 130);
   --accent-hover: oklch(0.93 0 0);
-  --border-strong: rgba(0, 0, 0, 0.18);
+  --hairline-strong: rgba(0, 0, 0, 0.18);
   --diff-del: #c0362c;
   --diff-ins: #1a7f37;
 }
@@ -110,10 +110,10 @@
   --input: #ffffff15;
   --ring: #7574ff;
 
-  --text-secondary: #ced4df;
+  --subtle: #ced4df;
   --primary-soft: oklch(0.55 0.17 255); /* brand, slightly dimmed */
   --accent-hover: #313340; /* raised, on hover */
-  --border-strong: #ffffff26;
+  --hairline-strong: #ffffff26;
   --diff-del: #f47b84;
   --diff-ins: #54d98a;
 }

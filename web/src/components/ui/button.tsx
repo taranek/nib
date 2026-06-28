@@ -10,7 +10,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
   // slightly dimmed and brightens to white on hover. Ring is inset so it doesn't
   // add to the button's footprint.
   default:
-    "bg-accent text-text-secondary ring-1 ring-inset ring-border hover:bg-accent-hover hover:text-foreground hover:ring-white/20",
+    "bg-accent text-subtle ring-1 ring-inset ring-border hover:bg-accent-hover hover:text-foreground hover:ring-white/20",
   // Brand, but a touch less prominent than full primary (lifts to it on hover).
   brand:
     "group bg-primary-soft text-primary-foreground ring-1 ring-inset ring-white/10 hover:bg-primary hover:text-white",

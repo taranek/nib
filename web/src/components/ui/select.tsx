@@ -21,7 +21,7 @@ function Select({
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button className="inline-flex h-7 flex-none cursor-pointer items-center gap-1.5 rounded-md border border-border bg-accent px-2.5 text-[13px] text-foreground transition-[background-color,border-color] duration-150 hover:border-border-strong hover:bg-accent-hover">
+        <button className="inline-flex h-7 flex-none cursor-pointer items-center gap-1.5 rounded-md border border-border bg-accent px-2.5 text-[13px] text-foreground transition-[background-color,border-color] duration-150 hover:border-hairline-strong hover:bg-accent-hover">
           {value}
           <ChevronDown className="size-3.5 opacity-60" />
         </button>

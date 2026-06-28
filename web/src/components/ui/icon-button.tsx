@@ -9,7 +9,7 @@ function IconButton({ className, ...props }: React.ComponentProps<"button">) {
       data-slot="icon-button"
       className={cn(
         "inline-flex size-7 flex-none cursor-pointer items-center justify-center rounded-md",
-        "bg-accent text-text-secondary transition-[background-color,color] duration-150",
+        "bg-accent text-subtle transition-[background-color,color] duration-150",
         "enabled:hover:bg-accent-hover enabled:hover:text-foreground",
         "disabled:cursor-default disabled:opacity-40",
         "[&_svg]:pointer-events-none [&_svg]:shrink-0",
