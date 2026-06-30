@@ -27,6 +27,11 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
         let config = WKWebViewConfiguration()
         let userContent = WKUserContentController()
         userContent.add(self, name: "loco")
+        // Mark this webview as the settings surface before any page script runs
+        // (more reliable than a file:// URL #settings fragment with loadFileURL).
+        userContent.addUserScript(WKUserScript(
+            source: "window.__locoSettings = true;",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = userContent
         if url.isFileURL {
             config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
@@ -53,17 +58,23 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
         if let win = button.window {
             anchor = win.convertToScreen(button.convert(button.bounds, to: nil))
         }
+        // Settings is a focusable surface (unlike the rewrite card, it doesn't need
+        // to preserve another app's text focus). An LSUIElement build runs as
+        // .accessory and never activates, so its panel stays behind the foreground
+        // app even with orderFrontRegardless. Become a regular app while Settings is
+        // open so we can activate and show it on top; revert on close.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         reposition()
-        // Accessory (background) app: orderFrontRegardless shows the panel without
-        // activating the app; makeKey then routes keyboard/input to it.
-        panel.orderFrontRegardless()
-        panel.makeKey()
+        panel.makeKeyAndOrderFront(nil)
         installClickMonitor()
     }
 
     func close() {
         removeClickMonitor()
         panel.orderOut(nil)
+        // Back to a background (menu-bar-only) app.
+        NSApp.setActivationPolicy(.accessory)
     }
 
     /// Size the panel to the web content (card + transparent margin) and reposition.

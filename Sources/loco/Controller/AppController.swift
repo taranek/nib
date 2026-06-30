@@ -23,6 +23,9 @@ final class AppController: NSObject {
     // Menu bar presence + the settings popover it opens.
     private var statusItem: NSStatusItem?
     private var settingsPopover: SettingsPopover?
+    // Last Accessibility-trust value pushed to settings, so we re-push live when
+    // the user grants/revokes it while the panel is open.
+    private var lastSettingsTrusted: Bool?
     private var enabled = true
     // Default target language for the Translate tab (persisted).
     private var targetLanguage = UserDefaults.standard.string(forKey: "targetLanguage") ?? "English"
@@ -125,6 +128,13 @@ final class AppController: NSObject {
         popoverPanel.onMessage = { [weak self] body in self?.handleWebMessage(body) }
 
         setupStatusItem()
+
+        // Pre-create the settings popover so its web UI preloads before the first
+        // open (otherwise the panel shows empty on launch).
+        let popover = SettingsPopover(url: Self.webURL())
+        popover.onMessage = { [weak self] body in self?.handleSettingsMessage(body) }
+        settingsPopover = popover
+
         startLLM()
 
         print("✅ Notavo running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
@@ -152,9 +162,12 @@ final class AppController: NSObject {
         }
 
         // First-run onboarding: if Accessibility isn't granted or no model is set
-        // up yet, open Settings so the user is guided through it.
+        // up yet, open Settings so the user is guided through it. Deferred so the
+        // status-item button has a window (for positioning) and the web has loaded.
         if !AXIsProcessTrusted() || LLMPaths.resolveModel() == nil {
-            openSettings()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.openSettings()
+            }
         }
     }
 
@@ -269,7 +282,14 @@ final class AppController: NSObject {
 
         // Skip detection while our own UI is in front — nothing to correct there,
         // and not redrawing the full-screen overlay keeps the popover smooth.
-        if settingsPopover?.isShown == true || frontmostIsSelf() {
+        if settingsPopover?.isShown == true {
+            // Keep the Accessibility state live while Settings is open (the user may
+            // have just granted/revoked it in System Settings).
+            if AXIsProcessTrusted() != lastSettingsTrusted { pushSettingsState() }
+            clearIfNeeded()
+            return
+        }
+        if frontmostIsSelf() {
             clearIfNeeded()
             return
         }
@@ -549,16 +569,23 @@ final class AppController: NSObject {
         var text: String?
         var selRect: CGRect?
         var nativeRange: NSRange?
+        // Write-back route: the browser DOM path (needs Automation) when it
+        // succeeds, otherwise native AX write-back (set below to nil on fallback).
+        var writeAppName = appName
 
         if let appName, let sel = browser.selection(appName: appName) {
             // Multi-line selection → rephrase the whole sentence(s) it sits in.
             text = (sel.multiline && !sel.sentence.isEmpty) ? sel.sentence : sel.text
             selRect = CGRect(x: fieldBox.minX + sel.x, y: fieldBox.maxY - sel.y - sel.height,
                              width: sel.width, height: sel.height)
-        } else if appName == nil, let t = AX.string(element, kAXSelectedTextAttribute),
+        } else if let t = AX.string(element, kAXSelectedTextAttribute),
                   !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let cf = AX.selectedRange(element) {
+            // AX fallback — works for native fields AND browsers that don't grant
+            // Automation / aren't contentEditable. Write back via AX (native route).
+            writeAppName = nil
             selRect = AX.bounds(of: cf, in: element).map(toCocoa)
+                ?? CGRect(x: fieldBox.minX, y: fieldBox.minY, width: 1, height: fieldBox.height)
             let selRange = NSRange(location: cf.location, length: cf.length)
             if t.contains("\n") {
                 // Multi-line: expand to whole sentence(s).
@@ -579,7 +606,7 @@ final class AppController: NSObject {
         }
 
         rephraseText = target
-        rephraseAppName = appName
+        rephraseAppName = writeAppName
         rephraseElement = element
         rephraseRange = nativeRange
 
@@ -766,7 +793,7 @@ final class AppController: NSObject {
     @objc private func openSettings() {
         guard let button = statusItem?.button else { return }
         if settingsPopover == nil {
-            let popover = SettingsPopover(url: Self.settingsURL())
+            let popover = SettingsPopover(url: Self.webURL())
             popover.onMessage = { [weak self] body in self?.handleSettingsMessage(body) }
             settingsPopover = popover
         }
@@ -803,14 +830,6 @@ final class AppController: NSObject {
         return URL(string: "http://localhost:5173")!
     }
 
-    /// The web UI in settings mode (same bundle, `#settings` hash).
-    private static func settingsURL() -> URL {
-        let base = webURL()
-        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
-        comps?.fragment = "settings"
-        return comps?.url ?? base
-    }
-
     /// Let the user pick a .gguf model; persist it and reload the LLM server.
     private func chooseModel() {
         let panel = NSOpenPanel()
@@ -837,8 +856,10 @@ final class AppController: NSObject {
 
     /// Push current state (enabled + accessibility + LLM) into the settings UI.
     private func pushSettingsState() {
+        let trusted = AXIsProcessTrusted()
+        lastSettingsTrusted = trusted
         settingsPopover?.setState(enabled: enabled,
-                                  accessibilityTrusted: AXIsProcessTrusted(),
+                                  accessibilityTrusted: trusted,
                                   llmStatus: llmStatusString(),
                                   model: LLMPaths.modelName() ?? "—",
                                   targetLanguage: targetLanguage)

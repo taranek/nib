@@ -90,17 +90,28 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Notavo reads and rewrites your selected text in the active browser tab.</string>
 $ICON_LINE
 </dict>
 </plist>
 PLIST
 
-echo "▸ Ad-hoc signing (so it runs on Apple Silicon)…"
+# Prefer a stable code-signing identity (Apple Development / Developer ID) so the
+# Accessibility (TCC) grant persists across rebuilds — ad-hoc changes identity
+# every build, forcing a re-grant. Override with LOCO_SIGN_ID, or set it to "-"
+# to force ad-hoc.
+SIGN_ID="${LOCO_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application|Apple Development/{print $2; exit}')}"
+SIGN_ID="${SIGN_ID:--}"
+if [[ "$SIGN_ID" == "-" ]]; then
+  echo "▸ Ad-hoc signing (no stable identity found)…"
+else
+  echo "▸ Signing with identity $SIGN_ID …"
+fi
 for f in "$CONTENTS"/Resources/bin/*.dylib "$CONTENTS/Resources/bin/llama-server"; do
-  [[ -e "$f" ]] && codesign --force -s - "$f"
+  [[ -e "$f" ]] && codesign --force -s "$SIGN_ID" "$f"
 done
-codesign --force -s - "$CONTENTS/MacOS/$APP_NAME"
-codesign --force -s - "$APP"
+codesign --force -s "$SIGN_ID" "$CONTENTS/MacOS/$APP_NAME"
+codesign --force -s "$SIGN_ID" "$APP"
 
 echo "▸ Zipping…"
 ( cd "$OUT" && ditto -c -k --keepParent "$APP_NAME.app" "$APP_NAME.zip" )

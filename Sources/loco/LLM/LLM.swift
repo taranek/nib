@@ -186,6 +186,11 @@ final class LLMServer {
             return
         }
 
+        // Reclaim the port from any llama-server we orphaned in a previous run
+        // (e.g. after a crash/force-quit), otherwise the new one can't bind it and
+        // exits immediately.
+        killStaleServers()
+
         status = .starting
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
@@ -206,6 +211,15 @@ final class LLMServer {
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty { return }
+            // Tee llama-server output to a log file so model-load failures are
+            // diagnosable even when the app is launched via Finder/`open` (no
+            // stdout). Tail it with: tail -f /tmp/notavo-llama.log
+            let url = URL(fileURLWithPath: "/tmp/notavo-llama.log")
+            if let h = try? FileHandle(forWritingTo: url) {
+                h.seekToEndOfFile(); h.write(data); try? h.close()
+            } else {
+                try? data.write(to: url)
+            }
             if ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil,
                let s = String(data: data, encoding: .utf8) {
                 FileHandle.standardError.write(Data("[llama] \(s)".utf8))
@@ -219,6 +233,10 @@ final class LLMServer {
                 }
             }
         }
+
+        // Start each run's log fresh.
+        try? Data("▶ llama-server -m \(model) --port \(port)\n".utf8)
+            .write(to: URL(fileURLWithPath: "/tmp/notavo-llama.log"))
 
         do {
             try p.run()
@@ -238,12 +256,31 @@ final class LLMServer {
         status = .stopped
     }
 
-    /// Stop the current server and start fresh (e.g. after the model changed). If
-    /// we own the process, killing it frees the port so a new one spawns with the
-    /// newly-resolved model.
+    /// SIGKILL any llama-server bound to our port (orphans from a crash, or the one
+    /// we just terminated). SIGKILL releases the socket immediately so a fresh
+    /// spawn can bind it.
+    private func killStaleServers() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        task.arguments = ["-9", "-f", "llama-server.*--port \(port)"]
+        try? task.run()
+        task.waitUntilExit()
+        usleep(250_000)   // give the kernel a moment to release the port
+    }
+
+    /// Stop the current server and start a fresh one with the newly-resolved model.
+    /// Forces a respawn (never re-attaches to a still-running server, which could be
+    /// serving the old model).
     func restart() {
-        stop()
-        start()
+        let old = owns ? process : nil
+        process = nil
+        owns = false
+        status = .starting
+        Task.detached {
+            old?.terminate()
+            old?.waitUntilExit()
+            await MainActor.run { self.spawn() }
+        }
     }
 
     private func pollUntilReady() async {
