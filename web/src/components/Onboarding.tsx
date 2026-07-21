@@ -57,9 +57,10 @@ export function Onboarding({ state }: { state: SettingsState }) {
       )}
     >
       <ShaderBackground className="pointer-events-none absolute inset-0 h-full w-full" />
-      {/* Darken the shader under the setup steps so text stays legible. */}
+      {/* Darken the shader on every post-intro phase so text stays legible and
+          the background is consistent across steps. */}
       <AnimatePresence>
-        {phase === "setup" && (
+        {phase !== "intro" && (
           <motion.div
             key="scrim"
             className="pointer-events-none absolute inset-0 bg-card/70"
