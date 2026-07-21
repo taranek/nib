@@ -34,8 +34,16 @@ leaves your Mac.
 ## Install
 
 Grab `Nib.dmg` from [Releases](https://github.com/taranek/nib/releases), drag
-**Nib** into Applications. The build isn't notarized yet, so on first launch:
-right-click → Open (or `xattr -dr com.apple.quarantine /Applications/Nib.app`).
+**Nib** into Applications.
+
+The build isn't notarized yet, so first launch shows *"Apple could not verify
+'Nib' is free of malware"*. To open it anyway:
+
+1. In the dialog, click **Done** (not "Move to Trash").
+2. **System Settings → Privacy & Security**, scroll down to *"Nib" was blocked*
+   → **Open Anyway**, then confirm.
+
+Or from a terminal: `xattr -dr com.apple.quarantine /Applications/Nib.app`
 
 ## Development
 

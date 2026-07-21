@@ -125,6 +125,19 @@ hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO \
   "$OUT/$APP_NAME.dmg" >/dev/null
 rm -rf "$STAGE"
 
+# Optional notarization — removes the Gatekeeper "could not verify" dialog.
+# Needs a Developer ID Application signing identity (set LOCO_SIGN_ID or let the
+# auto-pick find it) plus a stored notarytool profile:
+#   xcrun notarytool store-credentials nib --apple-id you@example.com \
+#     --team-id TEAMID --password <app-specific password>
+# Then run:  LOCO_NOTARY_PROFILE=nib scripts/package.sh
+if [[ -n "${LOCO_NOTARY_PROFILE:-}" ]]; then
+  echo "▸ Notarizing (this can take a few minutes)…"
+  xcrun notarytool submit "$OUT/$APP_NAME.dmg" \
+    --keychain-profile "$LOCO_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$OUT/$APP_NAME.dmg"
+fi
+
 cat <<DONE
 
 ✓ Built $APP
