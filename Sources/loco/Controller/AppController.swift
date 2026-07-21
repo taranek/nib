@@ -524,8 +524,9 @@ final class AppController: NSObject {
             "original": word.original,
             "result": word.corrected,
             "styles": [],
-            "llmUrl": "",
-            "ready": true,
+            // The card fetches a friendly "why" explanation for the fix.
+            "llmUrl": llmServer.chatURL.absoluteString,
+            "ready": llmReady,
             "targetLanguage": targetLanguage,
         ])
         popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
@@ -732,8 +733,8 @@ final class AppController: NSObject {
             "original": original,
             "result": corrected,
             "styles": [],
-            "llmUrl": "",
-            "ready": true,
+            "llmUrl": llmServer.chatURL.absoluteString,
+            "ready": llmReady,
             "targetLanguage": targetLanguage,
         ])
         popoverPanel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)

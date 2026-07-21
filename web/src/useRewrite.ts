@@ -259,6 +259,209 @@ export function useLanguage(
   return state;
 }
 
+// ── Fix explanations ────────────────────────────────────────────────────────
+// A small LLM call that names the grammar rule behind a correction in a
+// user-friendly way; a second on-demand call produces example pairs for it.
+
+export interface Explanation {
+  /** Short rule name, e.g. "Their vs. they're". */
+  rule: string;
+  /** One friendly sentence on why the fix is right. */
+  explanation: string;
+}
+
+const EXPLAIN_SCHEMA = {
+  type: "json_schema",
+  json_schema: {
+    name: "explain",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        rule: { type: "string" },
+        explanation: { type: "string" },
+      },
+      required: ["rule", "explanation"],
+    },
+  },
+};
+
+const explainCache = new Map<string, Explanation | null>();
+
+async function fetchExplanation(
+  original: string,
+  corrected: string,
+  llmUrl: string,
+): Promise<Explanation | null> {
+  try {
+    const res = await fetch(llmUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You explain grammar corrections in a friendly, non-technical way. " +
+              "Given an original text and its correction, name the main rule " +
+              "behind the change in the 'rule' field (2-5 words, e.g. " +
+              "\"Their vs. they're\" or \"Subject-verb agreement\") and give one " +
+              "plain-language sentence (under 20 words) on why the correction is " +
+              "right in the 'explanation' field. If there are several changes, " +
+              "explain the most important one. Answer in the text's own language.",
+          },
+          {
+            role: "user",
+            content: `Original: ${original}\nCorrected: ${corrected}`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 128,
+        response_format: EXPLAIN_SCHEMA,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    const parsed = JSON.parse(content.replace(/```json|```/g, "").trim());
+    const rule = String(parsed?.rule ?? "").trim();
+    const explanation = String(parsed?.explanation ?? "").trim();
+    return rule && explanation ? { rule, explanation } : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ExplanationState {
+  loading: boolean;
+  expl: Explanation | null;
+}
+
+/** Fetch (and cache) a friendly explanation of an original → corrected fix. */
+export function useExplanation(
+  original: string,
+  corrected: string,
+  llmUrl: string,
+  enabled: boolean,
+): ExplanationState {
+  const key = `${original}|${corrected}`;
+  const [state, setState] = useState<ExplanationState>(() =>
+    explainCache.has(key)
+      ? { loading: false, expl: explainCache.get(key)! }
+      : { loading: true, expl: null },
+  );
+
+  useEffect(() => {
+    if (!enabled || !original || !corrected || !llmUrl) return;
+    if (explainCache.has(key)) {
+      setState({ loading: false, expl: explainCache.get(key)! });
+      return;
+    }
+    let cancelled = false;
+    setState({ loading: true, expl: null });
+    fetchExplanation(original, corrected, llmUrl).then((expl) => {
+      if (cancelled) return;
+      explainCache.set(key, expl);
+      setState({ loading: false, expl });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, original, corrected, llmUrl, enabled]);
+
+  return state;
+}
+
+export interface ExamplePair {
+  wrong: string;
+  right: string;
+}
+
+const EXAMPLES_SCHEMA = {
+  type: "json_schema",
+  json_schema: {
+    name: "examples",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        examples: {
+          type: "array",
+          minItems: 2,
+          maxItems: 3,
+          items: {
+            type: "object",
+            properties: {
+              wrong: { type: "string" },
+              right: { type: "string" },
+            },
+            required: ["wrong", "right"],
+          },
+        },
+      },
+      required: ["examples"],
+    },
+  },
+};
+
+const examplesCache = new Map<string, ExamplePair[] | null>();
+
+/** Fetch (and cache) short wrong → right example pairs illustrating a rule. */
+export async function fetchExamples(
+  expl: Explanation,
+  original: string,
+  llmUrl: string,
+): Promise<ExamplePair[] | null> {
+  const key = `${expl.rule}|${original}`;
+  if (examplesCache.has(key)) return examplesCache.get(key)!;
+  try {
+    const res = await fetch(llmUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You teach grammar with tiny examples. Given a rule, produce 2 " +
+              "short, DIFFERENT example sentence pairs showing it: 'wrong' " +
+              "(incorrect) and 'right' (corrected). Keep each sentence under 8 " +
+              "words and don't reuse the user's own sentence. Answer in the " +
+              "same language as the user's sentence.",
+          },
+          {
+            role: "user",
+            content:
+              `Rule: ${expl.rule} — ${expl.explanation}\n` +
+              `The user's sentence was: ${original}`,
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 192,
+        response_format: EXAMPLES_SCHEMA,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const content: string | undefined = data?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    const parsed = JSON.parse(content.replace(/```json|```/g, "").trim());
+    const list = Array.isArray(parsed?.examples) ? parsed.examples : [];
+    const examples: ExamplePair[] = list
+      .map((e: { wrong?: unknown; right?: unknown }) => ({
+        wrong: String(e?.wrong ?? "").trim(),
+        right: String(e?.right ?? "").trim(),
+      }))
+      .filter((e: ExamplePair) => e.wrong && e.right);
+    const out = examples.length ? examples : null;
+    examplesCache.set(key, out);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 export interface RewriteState {
   loading: boolean;
   text: string;
