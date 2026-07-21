@@ -4,12 +4,12 @@ import { type CardData, send } from "@/bridge";
 import {
   type ChatMsg,
   type ExamplePair,
-  type Explanation,
+  type FixDetail,
   type RewriteState,
   chatRefine,
   fetchExamples,
   refineSystem,
-  useExplanation,
+  useFixExplanations,
   useLanguage,
   useRewrite,
 } from "@/useRewrite";
@@ -69,8 +69,8 @@ export function CardContent({ card }: { card: CardData }) {
 function GrammarBody({ card }: { card: CardData }) {
   const canAccept = card.result.trim() !== card.original.trim() && !!card.result;
 
-  // Friendly "why" for the fix, from the local LLM (cached per fix).
-  const { expl } = useExplanation(
+  // Friendly "why" for every change in the fix, from the local LLM (cached).
+  const { fixes } = useFixExplanations(
     card.original,
     card.result,
     card.llmUrl,
@@ -96,12 +96,8 @@ function GrammarBody({ card }: { card: CardData }) {
     <>
       <div className={CONTENT}>
         <DiffText original={card.original} result={card.result} />
-        {expl && (
-          <FixExplanation
-            expl={expl}
-            original={card.original}
-            llmUrl={card.llmUrl}
-          />
+        {fixes && fixes.length > 0 && (
+          <FixExplanations fixes={fixes} llmUrl={card.llmUrl} />
         )}
       </div>
       <div className="flex items-center justify-end gap-2 p-2">
@@ -120,17 +116,25 @@ function GrammarBody({ card }: { card: CardData }) {
   );
 }
 
-/** The friendly "why" under a grammar fix: rule name + one-liner, with
- *  wrong → right example pairs fetched on demand. */
-function FixExplanation({
-  expl,
-  original,
+/** The friendly "why" under a grammar fix — one row per change, so multi-fix
+ *  corrections are fully covered, each with on-demand examples. */
+function FixExplanations({
+  fixes,
   llmUrl,
 }: {
-  expl: Explanation;
-  original: string;
+  fixes: FixDetail[];
   llmUrl: string;
 }) {
+  return (
+    <div className="mt-2.5 ml-2 flex flex-col gap-2 rounded-md border border-border bg-white/[0.04] px-2.5 py-2 text-[12px] leading-relaxed">
+      {fixes.map((f, i) => (
+        <FixRow key={`${f.from}|${f.to}|${i}`} fix={f} llmUrl={llmUrl} />
+      ))}
+    </div>
+  );
+}
+
+function FixRow({ fix, llmUrl }: { fix: FixDetail; llmUrl: string }) {
   // null = not requested yet; [] = requested but failed.
   const [examples, setExamples] = useState<ExamplePair[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -138,46 +142,51 @@ function FixExplanation({
   const show = () => {
     if (loading || examples) return;
     setLoading(true);
-    fetchExamples(expl, original, llmUrl).then((ex) => {
+    fetchExamples(fix, llmUrl).then((ex) => {
       setLoading(false);
       setExamples(ex ?? []);
     });
   };
 
   return (
-    <div className="mt-2.5 ml-2 rounded-md border border-border bg-white/[0.04] px-2.5 py-2 text-[12px] leading-relaxed">
-      <div className="flex items-start gap-1.5">
-        <Lightbulb className="mt-[3px] size-3.5 flex-none text-[#f7c948]" />
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">{expl.rule}.</span>{" "}
-          <span className="text-muted-foreground">{expl.explanation}</span>
-          {examples == null && (
-            <button
-              onClick={show}
-              disabled={loading}
-              className="ml-1.5 inline-flex cursor-pointer items-center gap-1 text-[#6eb1f7] underline-offset-2 hover:underline disabled:cursor-default disabled:opacity-70"
-            >
-              {loading && <Loader2 className="size-3 animate-spin" />}
-              {loading ? "Loading…" : "See examples"}
-            </button>
-          )}
-          {examples && examples.length > 0 && (
-            <ul className="mt-1.5 flex flex-col gap-1">
-              {examples.map((e, i) => (
-                <li key={i}>
-                  <span className="text-diff-del line-through">{e.wrong}</span>
-                  <span className="mx-1.5 text-muted-foreground">→</span>
-                  <span className="text-diff-ins">{e.right}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {examples && examples.length === 0 && (
-            <span className="ml-1.5 text-muted-foreground italic">
-              Couldn't load examples.
-            </span>
-          )}
-        </div>
+    <div className="flex items-start gap-1.5">
+      <Lightbulb className="mt-[3px] size-3.5 flex-none text-[#f7c948]" />
+      <div className="min-w-0">
+        {fix.from && (
+          <span className="text-diff-del line-through">{fix.from}</span>
+        )}
+        {fix.from && fix.to && (
+          <span className="mx-1 text-muted-foreground">→</span>
+        )}
+        {fix.to && <span className="text-diff-ins">{fix.to}</span>}
+        <span className="ml-1.5 font-medium text-foreground">{fix.rule}.</span>{" "}
+        <span className="text-muted-foreground">{fix.explanation}</span>
+        {examples == null && (
+          <button
+            onClick={show}
+            disabled={loading}
+            className="ml-1.5 inline-flex cursor-pointer items-center gap-1 text-[#6eb1f7] underline-offset-2 hover:underline disabled:cursor-default disabled:opacity-70"
+          >
+            {loading && <Loader2 className="size-3 animate-spin" />}
+            {loading ? "Loading…" : "See examples"}
+          </button>
+        )}
+        {examples && examples.length > 0 && (
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {examples.map((e, i) => (
+              <li key={i}>
+                <span className="text-diff-del line-through">{e.wrong}</span>
+                <span className="mx-1.5 text-muted-foreground">→</span>
+                <span className="text-diff-ins">{e.right}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {examples && examples.length === 0 && (
+          <span className="ml-1.5 text-muted-foreground italic">
+            Couldn't load examples.
+          </span>
+        )}
       </div>
     </div>
   );

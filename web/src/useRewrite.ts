@@ -260,39 +260,73 @@ export function useLanguage(
 }
 
 // ── Fix explanations ────────────────────────────────────────────────────────
-// A small LLM call that names the grammar rule behind a correction in a
-// user-friendly way; a second on-demand call produces example pairs for it.
+// The changed word pairs are computed client-side (ground truth, from the same
+// diff the card displays), then one LLM call explains EVERY change — one entry
+// per pair, so multi-fix corrections are fully covered. A second on-demand call
+// produces example pairs for one rule.
 
-export interface Explanation {
-  /** Short rule name, e.g. "Their vs. they're". */
+import { changedPairs } from "@/lib/diff";
+
+/** One explained change: what changed plus the friendly why. */
+export interface FixDetail {
+  /** The changed run in the original ("" for pure insertions). */
+  from: string;
+  /** What it became ("" for pure removals). */
+  to: string;
+  /** Short rule name, e.g. "Sentence capitalization". */
   rule: string;
   /** One friendly sentence on why the fix is right. */
   explanation: string;
 }
 
-const EXPLAIN_SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    name: "explain",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: {
-        rule: { type: "string" },
-        explanation: { type: "string" },
+// Explaining more changes than this clutters the card (and strains the model).
+const MAX_EXPLAINED = 4;
+
+// Exactly one {rule, explanation} entry per change, enforced by the schema.
+function explainSchema(count: number) {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "explain",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          fixes: {
+            type: "array",
+            minItems: count,
+            maxItems: count,
+            items: {
+              type: "object",
+              properties: {
+                rule: { type: "string" },
+                explanation: { type: "string" },
+              },
+              required: ["rule", "explanation"],
+            },
+          },
+        },
+        required: ["fixes"],
       },
-      required: ["rule", "explanation"],
     },
-  },
-};
+  };
+}
 
-const explainCache = new Map<string, Explanation | null>();
+const explainCache = new Map<string, FixDetail[] | null>();
 
-async function fetchExplanation(
+async function fetchFixExplanations(
   original: string,
   corrected: string,
   llmUrl: string,
-): Promise<Explanation | null> {
+): Promise<FixDetail[] | null> {
+  const pairs = changedPairs(original, corrected).slice(0, MAX_EXPLAINED);
+  if (!pairs.length) return null;
+  const changeList = pairs
+    .map(
+      (p, i) =>
+        `${i + 1}. "${p.from || "(nothing)"}" → "${p.to || "(removed)"}"`,
+    )
+    .join("\n");
   try {
     const res = await fetch(llmUrl, {
       method: "POST",
@@ -302,22 +336,26 @@ async function fetchExplanation(
           {
             role: "system",
             content:
-              "You explain grammar corrections in a friendly, non-technical way. " +
-              "Given an original text and its correction, name the main rule " +
-              "behind the change in the 'rule' field (2-5 words, e.g. " +
-              "\"Their vs. they're\" or \"Subject-verb agreement\") and give one " +
-              "plain-language sentence (under 20 words) on why the correction is " +
-              "right in the 'explanation' field. If there are several changes, " +
-              "explain the most important one. Answer in the text's own language.",
+              "You explain grammar corrections in a friendly, non-technical " +
+              "way. The user lists every change made to their sentence. For " +
+              "EACH change, in the same order, name the rule behind it in the " +
+              "'rule' field (2-5 words, e.g. \"Sentence capitalization\" or " +
+              "\"Verb form after 'can'\") and give one plain-language sentence " +
+              "(under 18 words) on why the correction is right in the " +
+              "'explanation' field. Describe the rule the change actually " +
+              "demonstrates — don't generalize beyond it. Answer in the " +
+              "sentence's own language.",
           },
           {
             role: "user",
-            content: `Original: ${original}\nCorrected: ${corrected}`,
+            content:
+              `Sentence: ${original}\nCorrected: ${corrected}\n` +
+              `Changes:\n${changeList}`,
           },
         ],
         temperature: 0,
-        max_tokens: 128,
-        response_format: EXPLAIN_SCHEMA,
+        max_tokens: 128 * pairs.length,
+        response_format: explainSchema(pairs.length),
       }),
     });
     if (!res.ok) return null;
@@ -325,45 +363,51 @@ async function fetchExplanation(
     const content: string | undefined = data?.choices?.[0]?.message?.content;
     if (!content) return null;
     const parsed = JSON.parse(content.replace(/```json|```/g, "").trim());
-    const rule = String(parsed?.rule ?? "").trim();
-    const explanation = String(parsed?.explanation ?? "").trim();
-    return rule && explanation ? { rule, explanation } : null;
+    const list = Array.isArray(parsed?.fixes) ? parsed.fixes : [];
+    const fixes: FixDetail[] = pairs.flatMap((p, i) => {
+      const rule = String(list[i]?.rule ?? "").trim();
+      const explanation = String(list[i]?.explanation ?? "").trim();
+      return rule && explanation
+        ? [{ from: p.from, to: p.to, rule, explanation }]
+        : [];
+    });
+    return fixes.length ? fixes : null;
   } catch {
     return null;
   }
 }
 
-export interface ExplanationState {
+export interface FixExplanationsState {
   loading: boolean;
-  expl: Explanation | null;
+  fixes: FixDetail[] | null;
 }
 
-/** Fetch (and cache) a friendly explanation of an original → corrected fix. */
-export function useExplanation(
+/** Fetch (and cache) a friendly explanation for every change in a fix. */
+export function useFixExplanations(
   original: string,
   corrected: string,
   llmUrl: string,
   enabled: boolean,
-): ExplanationState {
+): FixExplanationsState {
   const key = `${original}|${corrected}`;
-  const [state, setState] = useState<ExplanationState>(() =>
+  const [state, setState] = useState<FixExplanationsState>(() =>
     explainCache.has(key)
-      ? { loading: false, expl: explainCache.get(key)! }
-      : { loading: true, expl: null },
+      ? { loading: false, fixes: explainCache.get(key)! }
+      : { loading: true, fixes: null },
   );
 
   useEffect(() => {
     if (!enabled || !original || !corrected || !llmUrl) return;
     if (explainCache.has(key)) {
-      setState({ loading: false, expl: explainCache.get(key)! });
+      setState({ loading: false, fixes: explainCache.get(key)! });
       return;
     }
     let cancelled = false;
-    setState({ loading: true, expl: null });
-    fetchExplanation(original, corrected, llmUrl).then((expl) => {
+    setState({ loading: true, fixes: null });
+    fetchFixExplanations(original, corrected, llmUrl).then((fixes) => {
       if (cancelled) return;
-      explainCache.set(key, expl);
-      setState({ loading: false, expl });
+      explainCache.set(key, fixes);
+      setState({ loading: false, fixes });
     });
     return () => {
       cancelled = true;
@@ -407,13 +451,12 @@ const EXAMPLES_SCHEMA = {
 
 const examplesCache = new Map<string, ExamplePair[] | null>();
 
-/** Fetch (and cache) short wrong → right example pairs illustrating a rule. */
+/** Fetch (and cache) short wrong → right example pairs illustrating one fix. */
 export async function fetchExamples(
-  expl: Explanation,
-  original: string,
+  fix: FixDetail,
   llmUrl: string,
 ): Promise<ExamplePair[] | null> {
-  const key = `${expl.rule}|${original}`;
+  const key = `${fix.rule}|${fix.from}|${fix.to}`;
   if (examplesCache.has(key)) return examplesCache.get(key)!;
   try {
     const res = await fetch(llmUrl, {
@@ -424,17 +467,18 @@ export async function fetchExamples(
           {
             role: "system",
             content:
-              "You teach grammar with tiny examples. Given a rule, produce 2 " +
-              "short, DIFFERENT example sentence pairs showing it: 'wrong' " +
-              "(incorrect) and 'right' (corrected). Keep each sentence under 8 " +
-              "words and don't reuse the user's own sentence. Answer in the " +
-              "same language as the user's sentence.",
+              "You teach grammar with tiny examples. Given a rule and the " +
+              "user's mistake, produce 2 short, DIFFERENT example sentence " +
+              "pairs showing the SAME rule: 'wrong' (incorrect) and 'right' " +
+              "(corrected). Keep each sentence under 8 words and don't reuse " +
+              "the user's own words. Answer in the same language as the " +
+              "user's mistake.",
           },
           {
             role: "user",
             content:
-              `Rule: ${expl.rule} — ${expl.explanation}\n` +
-              `The user's sentence was: ${original}`,
+              `Rule: ${fix.rule} — ${fix.explanation}\n` +
+              `The user's mistake: "${fix.from}" → "${fix.to}"`,
           },
         ],
         temperature: 0.3,

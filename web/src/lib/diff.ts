@@ -38,6 +38,29 @@ export function diffWords(aStr: string, bStr: string): DiffTok[] {
   return out;
 }
 
+/** Contiguous changed runs as (from → to) pairs, e.g. "found" → "find".
+ *  Pure insertions/removals have an empty `from`/`to`. */
+export function changedPairs(
+  original: string,
+  result: string,
+): { from: string; to: string }[] {
+  const pairs: { from: string; to: string }[] = [];
+  let del: string[] = [];
+  let ins: string[] = [];
+  const flush = () => {
+    if (del.length || ins.length)
+      pairs.push({ from: del.join(" "), to: ins.join(" ") });
+    del = [];
+    ins = [];
+  };
+  for (const t of diffWords(original, result)) {
+    if (t.type === "equal") flush();
+    else (t.type === "del" ? del : ins).push(t.text);
+  }
+  flush();
+  return pairs;
+}
+
 /** Number of distinct edits between original and result (contiguous changed
  *  runs count as one), used for the Grammar error badge. */
 export function countChanges(original: string, result: string): number {
