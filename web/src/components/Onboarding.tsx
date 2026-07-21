@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, RefreshCw, RotateCcw, X } from "lucide-react";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/bridge";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Pill } from "@/components/ui/pill";
 import { NotavoN } from "./NotavoN";
 import { ShaderBackground } from "./ShaderBackground";
@@ -118,6 +119,8 @@ export function Onboarding({ state }: { state: SettingsState }) {
         </AnimatePresence>
       </div>
 
+      {phase !== "intro" && <Stepper phase={phase} />}
+
       {DEV && (
         <button
           onClick={() => {
@@ -131,6 +134,86 @@ export function Onboarding({ state }: { state: SettingsState }) {
         </button>
       )}
     </div>
+  );
+}
+
+// Bright keycap styling — the default Kbd is too muted against the dark card.
+const KEYCAP =
+  "h-[20px] min-w-[20px] border border-white/25 bg-white/15 text-[12px] text-foreground " +
+  "shadow-[inset_0_1px_0_rgba(255,255,255,0.15),0_1px_2px_rgba(0,0,0,0.4)]";
+
+/** The rephrase shortcut as two separate keycaps: ⌘ + `. */
+function Shortcut() {
+  return (
+    <KbdGroup className="mx-0.5 align-middle">
+      <Kbd variant="outline" className={KEYCAP}>
+        ⌘
+      </Kbd>
+      <Kbd variant="outline" className={KEYCAP}>
+        `
+      </Kbd>
+    </KbdGroup>
+  );
+}
+
+// The named stages shown in the bottom stepper (the intro hero is unlabelled).
+const STAGES = [
+  { key: "setup", label: "Set up" },
+  { key: "sandbox", label: "Try it" },
+  { key: "done", label: "Finish" },
+];
+
+/** Compact bottom stepper: done stages get a green check, the current one is
+ *  highlighted, upcoming ones are dimmed — so the user can see what's next. */
+function Stepper({ phase }: { phase: string }) {
+  const idx = STAGES.findIndex((s) => s.key === phase);
+  if (idx < 0) return null;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: EASE }}
+      className="relative z-10 flex items-center justify-center gap-2 pb-0.5"
+    >
+      {STAGES.map((s, i) => (
+        <Fragment key={s.key}>
+          {i > 0 && (
+            <div
+              className={cn(
+                "h-px w-7 transition-colors duration-300",
+                i <= idx ? "bg-white/35" : "bg-white/12",
+              )}
+            />
+          )}
+          <div className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "inline-flex size-[15px] items-center justify-center rounded-full text-[9px] font-semibold transition-colors duration-300",
+                i < idx
+                  ? "bg-diff-ins text-background"
+                  : i === idx
+                    ? "bg-white text-background"
+                    : "border border-white/25 text-white/40",
+              )}
+            >
+              {i < idx ? <Check className="size-2.5" strokeWidth={3.5} /> : i + 1}
+            </span>
+            <span
+              className={cn(
+                "text-[11px] transition-colors duration-300",
+                i === idx
+                  ? "text-foreground"
+                  : i < idx
+                    ? "text-white/60"
+                    : "text-white/40",
+              )}
+            >
+              {s.label}
+            </span>
+          </div>
+        </Fragment>
+      ))}
+    </motion.div>
   );
 }
 
@@ -499,8 +582,7 @@ function Setup({ state }: { state: SettingsState }) {
         variants={item}
         className="mt-auto border-t border-border pt-3.5 text-[12px] text-muted-foreground"
       >
-        Select text in any app, then press{" "}
-        <span className="text-foreground">⌘`</span>.
+        Select text in any app, then press <Shortcut />.
       </motion.p>
     </motion.div>
   );
@@ -559,7 +641,12 @@ function Sandbox({ onNext }: { onNext: () => void }) {
             done={done.s1}
             active={step === 1}
             title="Rephrase on demand"
-            hint="Select the text you want, then hover the pill or press ⌘`."
+            hint={
+              <>
+                Select the text you want, then hover the pill or press{" "}
+                <Shortcut />.
+              </>
+            }
           >
             <RephraseField />
           </SubStep>
@@ -594,7 +681,7 @@ function SubStep({
   done: boolean;
   active: boolean;
   title: string;
-  hint: string;
+  hint: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -775,9 +862,8 @@ function Done({ onFinish }: { onFinish: () => void }) {
         variants={item}
         className="mt-2 max-w-[280px] text-[13px] leading-relaxed text-white/65"
       >
-        Select text in any app and press{" "}
-        <span className="text-foreground">⌘`</span> to check grammar or rewrite
-        it.
+        Select text in any app and press <Shortcut /> to check grammar or
+        rewrite it.
       </motion.p>
       <motion.div variants={item} className="mt-6">
         <Button size="md" variant="brand" onClick={onFinish}>
