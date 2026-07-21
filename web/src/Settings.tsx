@@ -8,6 +8,7 @@ import { StatusDot } from "@/components/ui/status-dot";
 import { Onboarding } from "@/components/Onboarding";
 import { ModelCatalog } from "@/components/ModelCatalog";
 import { CardHeader } from "@/components/CardHeader";
+import { Power } from "lucide-react";
 
 const LANGUAGES = [
   "English",
@@ -192,6 +193,16 @@ export function Settings() {
                 Open
               </Button>
             </div>
+          </section>
+
+          <section className={SECTION}>
+            <button
+              onClick={() => send({ type: "quit" })}
+              className="inline-flex cursor-pointer items-center gap-1.5 self-start rounded-md text-[13px] text-muted-foreground transition-colors hover:text-diff-del"
+            >
+              <Power className="size-3.5" />
+              Quit Nib
+            </button>
           </section>
         </div>
       )}
