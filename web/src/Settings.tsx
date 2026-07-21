@@ -43,6 +43,7 @@ export function Settings() {
     // Start in onboarding; Swift pushes the real flag immediately (and a plain
     // browser / `npm run dev` stays here so the flow is previewable).
     onboardingCompleted: false,
+    explainFixes: true,
   });
 
   const llmReady = state.llmStatus.toLowerCase() === "ready";
@@ -131,6 +132,24 @@ export function Settings() {
                 onCheckedChange={(value) => {
                   setState((s) => ({ ...s, enabled: value }));
                   send({ type: "setEnabled", value });
+                }}
+              />
+            </div>
+          </section>
+
+          <section className={SECTION}>
+            <div className={ROW}>
+              <div className={FIELD}>
+                <span className={LABEL}>Explain fixes</span>
+                <span className={HINT}>
+                  Show the grammar rule behind each fix, with examples.
+                </span>
+              </div>
+              <Toggle
+                checked={state.explainFixes}
+                onCheckedChange={(value) => {
+                  setState((s) => ({ ...s, explainFixes: value }));
+                  send({ type: "setExplainFixes", value });
                 }}
               />
             </div>

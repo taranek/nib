@@ -27,6 +27,8 @@ export interface CardData {
   ready: boolean;
   /** Target language for the Translate tab (default "English"). */
   targetLanguage: string;
+  /** Whether to show the per-change rule explainers under grammar fixes. */
+  explainFixes: boolean;
 }
 
 export interface SettingsState {
@@ -40,6 +42,8 @@ export interface SettingsState {
   targetLanguage: string;
   /** Whether first-run onboarding has been completed (drives which view shows). */
   onboardingCompleted: boolean;
+  /** Whether to show the per-change rule explainers under grammar fixes. */
+  explainFixes: boolean;
 }
 
 type OutboundMessage =
@@ -49,6 +53,7 @@ type OutboundMessage =
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }
+  | { type: "setExplainFixes"; value: boolean }
   | { type: "openAccessibility" }
   | { type: "chooseModel" }
   // Download a catalog model from Hugging Face (id from the curated list).

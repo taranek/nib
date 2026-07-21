@@ -74,7 +74,7 @@ function GrammarBody({ card }: { card: CardData }) {
     card.original,
     card.result,
     card.llmUrl,
-    canAccept && card.ready && !!card.llmUrl,
+    canAccept && card.ready && !!card.llmUrl && card.explainFixes,
   );
 
   // Keyboard: Tab accepts the correction, Esc dismisses.
@@ -96,7 +96,7 @@ function GrammarBody({ card }: { card: CardData }) {
     <>
       <div className={CONTENT}>
         <DiffText original={card.original} result={card.result} />
-        {fixes && fixes.length > 0 && (
+        {card.explainFixes && fixes && fixes.length > 0 && (
           <FixExplanations fixes={fixes} llmUrl={card.llmUrl} />
         )}
       </div>
@@ -415,6 +415,7 @@ function RewriteBody({ card }: { card: CardData }) {
                   style={s.id}
                   original={card.original}
                   llmUrl={card.llmUrl}
+                  explain={card.explainFixes}
                   enabled={
                     s.id === current && (!needsLang(s.id) || !langLoading)
                   }
@@ -504,6 +505,7 @@ function RewritePanel({
   style,
   original,
   llmUrl,
+  explain,
   enabled,
   language,
   attempt,
@@ -515,6 +517,7 @@ function RewritePanel({
   style: string;
   original: string;
   llmUrl: string;
+  explain: boolean;
   enabled: boolean;
   language: string | null;
   attempt: number;
@@ -535,7 +538,7 @@ function RewritePanel({
     original,
     st.text,
     llmUrl,
-    isGrammar && corrected && override == null,
+    isGrammar && explain && corrected && override == null,
   );
 
   if (refining)
@@ -591,7 +594,7 @@ function RewritePanel({
   return (
     <div className={BODY}>
       <DiffText original={original} result={st.text} />
-      {isGrammar && fixes && fixes.length > 0 && (
+      {isGrammar && explain && fixes && fixes.length > 0 && (
         <FixExplanations fixes={fixes} llmUrl={llmUrl} />
       )}
     </div>

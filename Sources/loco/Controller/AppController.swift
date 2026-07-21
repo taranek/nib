@@ -29,6 +29,8 @@ final class AppController: NSObject {
     private var enabled = true
     // Default target language for the Translate tab (persisted).
     private var targetLanguage = UserDefaults.standard.string(forKey: "targetLanguage") ?? "English"
+    /// Show the per-change rule explainers under grammar fixes (Settings toggle).
+    private var explainFixes = UserDefaults.standard.object(forKey: "explainFixes") as? Bool ?? true
 
     // The field + flagged words the UI currently targets.
     private var activeElement: AXUIElement?
@@ -528,6 +530,7 @@ final class AppController: NSObject {
             "llmUrl": llmServer.chatURL.absoluteString,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
+            "explainFixes": explainFixes,
         ])
         popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
     }
@@ -666,6 +669,7 @@ final class AppController: NSObject {
             "llmUrl": llmServer.chatURL.absoluteString,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
+            "explainFixes": explainFixes,
         ])
         popoverPanel.present(anchor: NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2))
     }
@@ -736,6 +740,7 @@ final class AppController: NSObject {
             "llmUrl": llmServer.chatURL.absoluteString,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
+            "explainFixes": explainFixes,
         ])
         popoverPanel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         popoverPanel.present(anchor: NSPoint(x: rect.minX, y: rect.minY - 6))
@@ -1049,7 +1054,8 @@ final class AppController: NSObject {
                                   llmStatus: llmStatusString(),
                                   model: LLMPaths.modelName() ?? "—",
                                   targetLanguage: targetLanguage,
-                                  onboardingCompleted: LLMPaths.onboardingCompleted())
+                                  onboardingCompleted: LLMPaths.onboardingCompleted(),
+                                  explainFixes: explainFixes)
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -1075,6 +1081,9 @@ final class AppController: NSObject {
                 targetLanguage = value
                 UserDefaults.standard.set(value, forKey: "targetLanguage")
             }
+        case "setExplainFixes":
+            explainFixes = (body["value"] as? NSNumber)?.boolValue ?? true
+            UserDefaults.standard.set(explainFixes, forKey: "explainFixes")
         case "sandbox":
             // The sandbox reads/writes its own textarea through the webview DOM
             // (JS), not AX — WebKit doesn't expose our own webview's text to AX.
