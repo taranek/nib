@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, RefreshCw, RotateCcw, X } from "lucide-react";
+import { Check, RefreshCw, RotateCcw } from "lucide-react";
+import { CardHeader } from "./CardHeader";
 import { type SettingsState, onSandboxApplied, send } from "@/bridge";
 import { ModelCatalog } from "./ModelCatalog";
 import { cn } from "@/lib/utils";
@@ -78,27 +79,8 @@ export function Onboarding({ state }: { state: SettingsState }) {
         onMouseDown={() => send({ type: "dragWindow" })}
       />
 
-      {/* Top bar: brand (left) + close (right), persistent across phases.
-          Mousedown (not on a button) hands off to a native window drag. */}
-      <div
-        className="relative z-20 flex cursor-default items-center justify-between"
-        onMouseDown={(e) => {
-          if (!(e.target as HTMLElement).closest("button")) {
-            send({ type: "dragWindow" });
-          }
-        }}
-      >
-        <span className="text-[14px] font-semibold tracking-[-0.01em] text-white/90">
-          Notavo
-        </span>
-        <button
-          aria-label="Close"
-          onClick={() => send({ type: "closeSettings" })}
-          className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-        >
-          <X className="size-4" />
-        </button>
-      </div>
+      {/* Top bar: brand (left) + close (right), persistent across phases. */}
+      <CardHeader draggable />
 
       <div className="relative z-10 flex flex-1 flex-col">
         <AnimatePresence mode="wait">

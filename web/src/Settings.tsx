@@ -7,7 +7,7 @@ import { Pill } from "@/components/ui/pill";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Onboarding } from "@/components/Onboarding";
 import { ModelCatalog } from "@/components/ModelCatalog";
-import { X } from "lucide-react";
+import { CardHeader } from "@/components/CardHeader";
 
 const LANGUAGES = [
   "English",
@@ -98,36 +98,9 @@ export function Settings() {
         <div
           className={`relative box-border flex w-[380px] flex-col gap-3.5 overflow-hidden rounded-[12px] border border-border bg-card p-4 text-[13px] text-subtle ${CARD_SHADOW}`}
         >
-          {/* Drag strip pinned to the card's top edge (covers the padding); the
-              header is positioned above it and handles its own drags. */}
-          <div
-            className="absolute inset-x-0 top-0 h-12"
-            onMouseDown={() => send({ type: "dragWindow" })}
-          />
-          <header
-            className="relative flex items-start justify-between gap-3"
-            onMouseDown={(e) => {
-              if (!(e.target as HTMLElement).closest("button")) {
-                send({ type: "dragWindow" });
-              }
-            }}
-          >
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[18px] font-bold tracking-[-0.02em] text-foreground">
-                Notavo
-              </span>
-              <span className="text-[12px] text-muted-foreground">
-                Writing help in any app.
-              </span>
-            </div>
-            <button
-              aria-label="Close"
-              onClick={() => send({ type: "closeSettings" })}
-              className="-mt-0.5 -mr-1 inline-flex size-7 flex-none cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <X className="size-4" />
-            </button>
-          </header>
+          {/* Same top bar as onboarding (not draggable — settings stays
+              anchored under the menu-bar icon). */}
+          <CardHeader />
 
           <section className={SECTION}>
             <div className={ROW}>

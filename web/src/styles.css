@@ -11,6 +11,19 @@
   * {
     border-color: var(--border);
   }
+
+  /* Native-app feel: UI chrome isn't text-selectable on any screen. Editable
+     fields (and the card's diff/result text) opt back in below. */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  input,
+  textarea,
+  [contenteditable="true"] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
 }
 
 /* shadcn theme tokens (oklch). Mapped so Tailwind utilities like bg-card,
