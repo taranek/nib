@@ -76,7 +76,15 @@ actor GrammarCache {
 enum LLMPaths {
     static var supportDir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("Notavo", isDirectory: true)
+        let dir = base.appendingPathComponent("Nib", isDirectory: true)
+        // One-time migration from the pre-rename dir so downloaded models and
+        // onboarding state carry over (the loco→Notavo rename lost them).
+        let fm = FileManager.default
+        let old = base.appendingPathComponent("Notavo", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path), fm.fileExists(atPath: old.path) {
+            try? fm.moveItem(at: old, to: dir)
+        }
+        return dir
     }
 
     static var binDir: URL { supportDir.appendingPathComponent("bin", isDirectory: true) }
@@ -237,8 +245,8 @@ final class LLMServer {
             if data.isEmpty { return }
             // Tee llama-server output to a log file so model-load failures are
             // diagnosable even when the app is launched via Finder/`open` (no
-            // stdout). Tail it with: tail -f /tmp/notavo-llama.log
-            let url = URL(fileURLWithPath: "/tmp/notavo-llama.log")
+            // stdout). Tail it with: tail -f /tmp/nib-llama.log
+            let url = URL(fileURLWithPath: "/tmp/nib-llama.log")
             if let h = try? FileHandle(forWritingTo: url) {
                 h.seekToEndOfFile(); h.write(data); try? h.close()
             } else {
@@ -260,7 +268,7 @@ final class LLMServer {
 
         // Start each run's log fresh.
         try? Data("▶ llama-server -m \(model) --port \(port)\n".utf8)
-            .write(to: URL(fileURLWithPath: "/tmp/notavo-llama.log"))
+            .write(to: URL(fileURLWithPath: "/tmp/nib-llama.log"))
 
         do {
             try p.run()

@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Pill } from "@/components/ui/pill";
-import { NotavoN } from "./NotavoN";
+import { NibN } from "./NibN";
 import { ShaderBackground } from "./ShaderBackground";
 
 const CARD_SHADOW =
@@ -254,7 +254,7 @@ function Word({ d, stage }: { d: { w: string; r: string }; stage: number }) {
 }
 
 /** Types a tagline with a typo, flags it (red squiggle), corrects it (green),
- *  then settles it back to white — a live demo of what Notavo does. */
+ *  then settles it back to white — a live demo of what Nib does. */
 function TypewriterFix({ onDone }: { onDone: () => void }) {
   const wrong = DEMO.map((d) => d.w).join(" ");
   const [started, setStarted] = useState(false);
@@ -325,7 +325,7 @@ function Intro({ onStart }: { onStart: () => void }) {
           animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
           transition={{ duration: 0.85, ease: EASE }}
         >
-          <NotavoN className="size-24 text-white [filter:drop-shadow(0_0_26px_rgba(40,133,239,0.45))]" />
+          <NibN className="size-24 text-white [filter:drop-shadow(0_0_26px_rgba(40,133,239,0.45))]" />
         </motion.div>
 
         {/* Fixed box so the typewriter doesn't reflow the column as it types. */}
@@ -497,7 +497,7 @@ function Sandbox({ onNext }: { onNext: () => void }) {
           Try it out
         </span>
         <span className="text-[12px] text-muted-foreground">
-          Two ways Notavo fixes your writing.
+          Two ways Nib fixes your writing.
         </span>
       </motion.header>
 
@@ -646,7 +646,7 @@ function RephraseField() {
             onMouseEnter={() => send({ type: "sandboxRephrase" })}
             onClick={() => send({ type: "sandboxRephrase" })}
             style={{ top: pillTop }}
-            aria-label="Rephrase with Notavo"
+            aria-label="Rephrase with Nib"
             className="absolute left-1.5 z-10 flex size-[20px] -translate-y-1/2 cursor-pointer items-center justify-center rounded-full bg-[#2885ef] text-white shadow-[0_2px_8px_rgba(40,133,239,0.5)] ring-1 ring-white/20 transition-transform hover:scale-110"
           >
             <RefreshCw className="size-3" strokeWidth={2.5} />
@@ -698,7 +698,7 @@ function GrammarField() {
   );
 }
 
-/** Final onboarding screen: a confirming checkmark + how to start using Notavo. */
+/** Final onboarding screen: a confirming checkmark + how to start using Nib. */
 function Done({ onFinish }: { onFinish: () => void }) {
   return (
     <motion.div

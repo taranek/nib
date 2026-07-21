@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Relaunch Notavo in a fresh first-run state so the full onboarding replays:
+# Relaunch Nib in a fresh first-run state so the full onboarding replays:
 #   • resets the onboarding-completed flag (state.json)
 #   • clears the saved model path (the model file itself is untouched)
 #   • restarts the app against the Vite dev server (starting Vite if needed)
@@ -11,7 +11,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 printf '{\n  "onboardingCompleted" : false,\n  "completedAt" : null\n}\n' \
-  > "$HOME/Library/Application Support/Notavo/state.json"
+  > "$HOME/Library/Application Support/Nib/state.json"
 defaults delete loco modelPath 2>/dev/null
 
 pkill -f "debug/loco" 2>/dev/null
@@ -29,4 +29,4 @@ if [[ ! -x .build/debug/loco ]]; then
 fi
 
 LOCO_WEB_URL="http://localhost:5173" nohup ./.build/debug/loco > /tmp/loco-run.log 2>&1 &
-echo "✅ Notavo relaunched — onboarding will open centered."
+echo "✅ Nib relaunched — onboarding will open centered."

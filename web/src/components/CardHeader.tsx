@@ -24,7 +24,7 @@ export function CardHeader({ draggable = false }: { draggable?: boolean }) {
           "text-[14px] font-semibold tracking-[-0.01em] text-foreground/90",
         )}
       >
-        Notavo
+        Nib
       </span>
       <button
         aria-label="Close"

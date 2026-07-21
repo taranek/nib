@@ -148,7 +148,7 @@ final class AppController: NSObject {
 
         startLLM()
 
-        print("✅ Notavo running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
+        print("✅ Nib running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
         print("   Card UI from: \(Self.webURL().absoluteString)\n")
 
         // Hover detection over the click-through overlay: a global mouse monitor
@@ -230,7 +230,7 @@ final class AppController: NSObject {
         axObserver = nil
         observedElement = nil
 
-        // Never observe our own process: when Notavo is frontmost (onboarding
+        // Never observe our own process: when Nib is frontmost (onboarding
         // sandbox), self-AX queries into our WKWebViews are brokered through our
         // own main thread — every focus change (e.g. arrow keys in the card)
         // stalls until the AX timeout, freezing the UI.
@@ -839,13 +839,13 @@ final class AppController: NSObject {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            if let image = NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "Notavo") {
+            if let image = NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "Nib") {
                 image.isTemplate = true
                 button.image = image
             } else {
-                button.title = "Notavo"
+                button.title = "Nib"
             }
-            button.toolTip = "Notavo — writing suggestions"
+            button.toolTip = "Nib — writing suggestions"
             button.target = self
             button.action = #selector(statusItemClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -868,7 +868,7 @@ final class AppController: NSObject {
     private func showStatusMenu() {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
-        let quit = NSMenuItem(title: "Quit Notavo",
+        let quit = NSMenuItem(title: "Quit Nib",
                               action: #selector(quitFromMenu), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)

@@ -13,9 +13,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_NAME="Notavo"
+APP_NAME="Nib"
 PRODUCT="loco"          # the SPM product/binary name
-BUNDLE_ID="com.notavo.app"
+BUNDLE_ID="com.nib.app"
 VERSION="${LOCO_VERSION:-0.1.0}"
 OUT="release"
 APP="$OUT/$APP_NAME.app"
@@ -90,7 +90,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>Notavo reads and rewrites your selected text in the active browser tab.</string>
+  <key>NSAppleEventsUsageDescription</key><string>Nib reads and rewrites your selected text in the active browser tab.</string>
 $ICON_LINE
 </dict>
 </plist>
