@@ -57,8 +57,15 @@ void main(){
 `;
 
 /** Animated GLSL gradient background (falls back to transparent if WebGL is
- *  unavailable; renders a single static frame under "reduce motion"). */
-export function ShaderBackground({ className }: { className?: string }) {
+ *  unavailable; renders a single static frame under "reduce motion" or when
+ *  `paused` — e.g. while the sandbox card needs the GPU for inference). */
+export function ShaderBackground({
+  className,
+  paused = false,
+}: {
+  className?: string;
+  paused?: boolean;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -108,20 +115,25 @@ export function ShaderBackground({ className }: { className?: string }) {
     };
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) {
+    if (reduce || paused) {
       draw(8);
       return;
     }
 
+    // ~30fps is plenty for a slow aurora and halves the GPU load (which the
+    // local LLM competes for).
     let raf = 0;
+    let last = 0;
     const start = performance.now();
-    const loop = () => {
-      draw((performance.now() - start) / 1000);
+    const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
+      if (now - last < 33) return;
+      last = now;
+      draw((now - start) / 1000);
     };
-    loop();
+    raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [paused]);
 
   return <canvas ref={ref} className={className} />;
 }
