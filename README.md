@@ -1,75 +1,102 @@
-# loco
+# Nib
 
-Mac-first proof-of-concept for a Grammarly-style overlay: read the focused text
-field of **any** app via the macOS Accessibility API, and draw inline geometry
-through a transparent, click-through, always-on-top window.
+A local-first writing assistant for macOS. Nib lives in the menu bar, watches
+the text field you're typing in — in **any** app — and offers grammar fixes and
+rewrites powered entirely by a **local LLM** (llama.cpp). Your text never
+leaves your Mac.
 
-This PoC deliberately proves only the riskiest part — **cross-app text + per-word
-screen geometry + a non-intrusive overlay**. There is no NLP/suggestion engine
-yet; red bars stand in for where real squiggles would go.
+> Internal code name: `loco` — the Swift package, binary, and `LOCO_*` env vars
+> keep that name; everything user-facing is **Nib**.
 
-## Run
+## What it does
 
-The popover UI is a React app rendered in a `WKWebView`, so it runs as two
-processes during development:
+- **Inline grammar checking** — mistakes get a squiggle right in the app you're
+  typing in (via the macOS Accessibility API + a transparent, click-through
+  overlay). Hover a squiggle for the fix.
+- **Explained fixes** — each correction names the grammar rule in plain words
+  ("Verb form after 'can'"), with wrong → right examples on demand. Toggleable
+  in Settings.
+- **Rewrite card** — select text anywhere and press <kbd>⌘</kbd><kbd>`</kbd>
+  (or hover the pill) for Rephrase / Shorten / Translate tabs, quick-edit chips,
+  and a composer for custom instructions.
+- **Local models** — pick from a curated catalog (Gemma 4 E2B recommended,
+  Qwen 2.5 3B, Llama 3.2 3B) downloaded straight from Hugging Face, or supply
+  your own `.gguf`. Served by a bundled `llama-server`.
+- **First-run onboarding** — guided setup (Accessibility → model) plus a
+  hands-on sandbox to try both interactions before using them for real.
+
+## Requirements
+
+- macOS 13+, Apple Silicon (the bundled `llama-server` is arm64)
+- ~3 GB disk for a model (downloaded on first run, not bundled)
+- Accessibility permission (prompted on first launch)
+
+## Install
+
+Grab `Nib.dmg` from [Releases](https://github.com/taranek/nib/releases), drag
+**Nib** into Applications. The build isn't notarized yet, so on first launch:
+right-click → Open (or `xattr -dr com.apple.quarantine /Applications/Nib.app`).
+
+## Development
+
+The UI is a React app rendered in `WKWebView`s; the host is a Swift menu-bar
+agent. One command runs both with hot reload:
 
 ```sh
-# 1. Panel UI (React) — terminal A
-cd web && npm install && npm run dev      # serves http://localhost:5173
-
-# 2. Native overlay agent — terminal B
-swift run loco
+./dev.sh        # Vite (HMR) + Swift rebuild-on-save + llama-server kept warm
 ```
 
-The Swift host loads the panel from `http://localhost:5173` by default. Point it
-elsewhere (e.g. a production build) with `LOCO_WEB_URL`:
+Or by hand:
 
 ```sh
-cd web && npm run build
-LOCO_WEB_URL="file://$PWD/web/dist/index.html" swift run loco
+cd web && npm install && npm run dev    # terminal A — http://localhost:5173
+swift run loco                          # terminal B — the native agent
 ```
 
-First launch triggers an Accessibility permission prompt:
+First launch prompts for Accessibility: **System Settings → Privacy &
+Security → Accessibility**, enable the binary (or your terminal — macOS often
+attributes CLI tools to their parent), then re-run.
 
-1. **System Settings → Privacy & Security → Accessibility**
-2. Enable the entry for the binary (or for your terminal app, e.g. Terminal/iTerm —
-   macOS often attributes CLI tools to their parent).
-3. Re-run `swift run loco`.
+### Environment overrides
 
-Then click into a text field anywhere (Notes, Safari address bar, TextEdit, a
-native `NSTextField`) and type. You should see:
-
-- a **blue box** outlining the focused element, and
-- **red bars** under each word, positioned by `AXBoundsForRange`.
-
-## What it demonstrates
-
-| Capability | Where |
+| Variable | Purpose |
 |---|---|
-| Find the system-wide focused element | `AX.focusedElement()` |
-| Read its text value & role | `AX.string(_:_:)` |
-| Element frame in screen coords | `AX.frame(_:)` |
-| **Per-range pixel geometry** | `AX.bounds(of:in:)` → `AXBoundsForRange` |
-| Transparent / click-through / top window | `OverlayWindow` |
-| AX (top-left) → AppKit (bottom-left) coord flip | `AppController.toCocoa(_:)` |
+| `LOCO_WEB_URL` | Where the web UI loads from (default: bundled `Resources/web`, dev.sh sets `http://localhost:5173`) |
+| `LOCO_MODEL` | Path to a `.gguf` model (overrides the saved/downloaded one) |
+| `LOCO_LLAMA_SERVER` | Path to a `llama-server` binary |
+| `LOCO_DEBUG` | Verbose logging |
 
-## Known PoC limitations (by design)
+### Useful scripts
 
-- **Single screen.** `toCocoa` flips against the primary screen height only;
-  multi-monitor needs per-screen mapping.
-- **Polling, not events.** Samples focus at ~8 Hz. Production should use an
-  `AXObserver` per-app for focus/value/selection notifications.
-- **Coverage is uneven.** Native Cocoa controls expose text + bounds well.
-  Electron, custom-drawn editors, and many cross-platform apps expose little —
-  `AXBoundsForRange` returns nil and only the field box (or nothing) shows. This
-  is the real-world ceiling of the AX approach and must be handled with graceful
-  degradation (panel-only suggestions).
+```sh
+./scripts/fresh-onboarding.sh   # relaunch in a fresh first-run state (replays onboarding)
+./scripts/package.sh            # build release/Nib.app + drag-to-install DMG + zip
+```
 
-## Next steps
+App data lives in `~/Library/Application Support/Nib/` (`bin/llama-server`,
+`models/*.gguf`, `state.json` for the onboarding flag).
 
-1. Swap polling for `AXObserver` focus/value/selection notifications.
-2. Add multi-monitor coordinate mapping.
-3. Make a sub-region of the overlay interactive (drop `ignoresMouseEvents` for a
-   suggestion card; keep it for the underlines).
-4. Wire a debounced WebSocket client to a server-side NLP/LLM service; map
-   returned ranges back through `AX.bounds(of:in:)`.
+## Architecture
+
+| Piece | Where |
+|---|---|
+| Controller: focus watching, detection, cards, settings | `Sources/loco/Controller/AppController.swift` |
+| Accessibility helpers (`AXBoundsForRange`, web-area checks) | `Sources/loco/Accessibility/AX.swift` |
+| Click-through overlay (squiggles + pill) | `Sources/loco/Overlay/` |
+| llama-server lifecycle + paths | `Sources/loco/LLM/LLM.swift` |
+| Card + settings/onboarding panels (`WKWebView` hosts) | `Sources/loco/UI/` |
+| React UI: card, settings, onboarding, model catalog | `web/src/` |
+| Swift ⇄ JS contract | `web/src/bridge.ts` |
+
+Detection is event-driven (`AXObserver` for focus/value/selection, workspace
+notifications for app switches) with a slow safety poll. Browser page content
+is read via the DOM bridge or AX fallback; browser chrome (address bar) is
+excluded by requiring an `AXWebArea` ancestor.
+
+## Known limitations
+
+- Single-screen coordinate mapping; multi-monitor needs per-screen flips.
+- AX coverage is uneven: native Cocoa and major browsers work well; custom-drawn
+  editors may expose no per-word geometry (degrades to the ⌘` card only).
+- Unsigned-for-distribution: no Developer ID / notarization yet, so Gatekeeper
+  warns on first launch.
