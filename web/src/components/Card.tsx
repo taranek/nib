@@ -159,7 +159,8 @@ function FixRow({ fix, llmUrl }: { fix: FixDetail; llmUrl: string }) {
           <span className="mx-1 text-muted-foreground">→</span>
         )}
         {fix.to && <span className="text-diff-ins">{fix.to}</span>}
-        <span className="ml-1.5 font-medium text-foreground">{fix.rule}.</span>{" "}
+        <span className="mx-1.5 text-muted-foreground">·</span>
+        <span className="font-medium text-foreground">{fix.rule}.</span>{" "}
         <span className="text-muted-foreground">{fix.explanation}</span>
         {examples == null && (
           <button

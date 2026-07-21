@@ -468,17 +468,19 @@ export async function fetchExamples(
             role: "system",
             content:
               "You teach grammar with tiny examples. Given a rule and the " +
-              "user's mistake, produce 2 short, DIFFERENT example sentence " +
-              "pairs showing the SAME rule: 'wrong' (incorrect) and 'right' " +
-              "(corrected). Keep each sentence under 8 words and don't reuse " +
-              "the user's own words. Answer in the same language as the " +
-              "user's mistake.",
+              "user's mistake, write 2 DIFFERENT short sentences that make " +
+              "the SAME mistake. In each pair, 'wrong' is the sentence " +
+              "CONTAINING the mistake and 'right' is that same sentence " +
+              "corrected — never the other way around. Keep each sentence " +
+              "under 8 words. Answer in the same language as the mistake.",
           },
           {
             role: "user",
             content:
               `Rule: ${fix.rule} — ${fix.explanation}\n` +
-              `The user's mistake: "${fix.from}" → "${fix.to}"`,
+              `The user wrote "${fix.from}" (incorrect); it was corrected to ` +
+              `"${fix.to}". So every 'wrong' sentence must use a "${fix.from}"-` +
+              `style form, and every 'right' sentence its "${fix.to}"-style fix.`,
           },
         ],
         temperature: 0.3,
@@ -492,12 +494,22 @@ export async function fetchExamples(
     if (!content) return null;
     const parsed = JSON.parse(content.replace(/```json|```/g, "").trim());
     const list = Array.isArray(parsed?.examples) ? parsed.examples : [];
+    // Small models sometimes swap the fields. The user's mistake tells us the
+    // intended direction — the 'wrong' sentence should carry the `from` form
+    // and 'right' the `to` form; flip any pair that has it backwards.
+    const has = (s: string, w: string) =>
+      !!w && s.toLowerCase().includes(w.toLowerCase());
     const examples: ExamplePair[] = list
       .map((e: { wrong?: unknown; right?: unknown }) => ({
         wrong: String(e?.wrong ?? "").trim(),
         right: String(e?.right ?? "").trim(),
       }))
-      .filter((e: ExamplePair) => e.wrong && e.right);
+      .map((e: ExamplePair) =>
+        has(e.wrong, fix.to) && has(e.right, fix.from) && !has(e.wrong, fix.from)
+          ? { wrong: e.right, right: e.wrong }
+          : e,
+      )
+      .filter((e: ExamplePair) => e.wrong && e.right && e.wrong !== e.right);
     const out = examples.length ? examples : null;
     examplesCache.set(key, out);
     return out;
