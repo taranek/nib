@@ -230,7 +230,12 @@ final class AppController: NSObject {
         axObserver = nil
         observedElement = nil
 
-        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
+        // Never observe our own process: when Notavo is frontmost (onboarding
+        // sandbox), self-AX queries into our WKWebViews are brokered through our
+        // own main thread — every focus change (e.g. arrow keys in the card)
+        // stalls until the AX timeout, freezing the UI.
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              pid != ProcessInfo.processInfo.processIdentifier else { return }
 
         let callback: AXObserverCallback = { _, _, notification, refcon in
             guard let refcon else { return }
