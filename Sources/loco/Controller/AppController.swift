@@ -331,6 +331,10 @@ final class AppController: NSObject {
         // Only act on editable surfaces (browser tab, or a native text control).
         guard appName != nil || editableRoles.contains(role) else { clearIfNeeded(); return }
 
+        // Skip browser chrome (address bar, in-page search, …): only page
+        // content — anything under an AXWebArea — is prose worth checking.
+        if appName != nil, !AX.isInWebArea(element) { clearIfNeeded(); return }
+
         // Re-evaluate only when the text or the field's frame changes.
         let signature = "\(role)|\(NSStringFromRect(axFrame))|\(value.hashValue)"
         if signature == lastSignature { return }
@@ -591,6 +595,9 @@ final class AppController: NSObject {
         }
         let fieldBox = toCocoa(axFrame)
         let appName = browserAppName(for: element)
+
+        // No rephrase pill on browser chrome (address bar etc.) either.
+        if appName != nil, !AX.isInWebArea(element) { hidePill(); return }
 
         var text: String?
         var selRect: CGRect?

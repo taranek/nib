@@ -26,6 +26,21 @@ enum AX {
         copy(element, attribute) as? String
     }
 
+    /// Whether the element sits inside web page content (an AXWebArea ancestor)
+    /// rather than browser chrome like the address bar. Locale- and
+    /// browser-independent: every engine exposes page content under a web area.
+    static func isInWebArea(_ element: AXUIElement) -> Bool {
+        var current: AXUIElement? = element
+        for _ in 0..<30 {
+            guard let el = current else { return false }
+            if string(el, kAXRoleAttribute) == "AXWebArea" { return true }
+            guard let parent = copy(el, kAXParentAttribute),
+                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { return false }
+            current = (parent as! AXUIElement)
+        }
+        return false
+    }
+
     /// On-screen frame of an element, in global (top-left origin) display coords.
     static func frame(_ element: AXUIElement) -> CGRect? {
         guard
