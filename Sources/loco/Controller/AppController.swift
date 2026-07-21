@@ -54,6 +54,15 @@ final class AppController: NSObject {
     private var selectionDebounce: Timer?
     private var rephraseHotKey: GlobalHotKey?     // global shortcut → rephrase
 
+    // Onboarding sandbox: while true, the selection pill + ⌘` card deliberately
+    // target our own onboarding textarea (they normally ignore our own windows),
+    // letting the user try the real card without leaving the flow.
+    private var sandboxActive = false
+
+    // In-flight catalog-model download (one at a time).
+    private var modelDownload: URLSessionDownloadTask?
+    private var modelDownloadProgress: NSKeyValueObservation?
+
     // The card opens against a target; React fetches rewrites and sends back the
     // accepted text, which we write into this target.
     private var rewriteTarget: RewriteTarget?
@@ -161,10 +170,10 @@ final class AppController: NSObject {
             MainActor.assumeIsolated { self?.tick() }
         }
 
-        // First-run onboarding: if Accessibility isn't granted or no model is set
-        // up yet, open Settings so the user is guided through it. Deferred so the
-        // status-item button has a window (for positioning) and the web has loaded.
-        if !AXIsProcessTrusted() || LLMPaths.resolveModel() == nil {
+        // First-run onboarding: until the user has completed onboarding once, open
+        // it on launch so they're guided through setup. Deferred so the status-item
+        // button has a window (for positioning) and the web has loaded.
+        if !LLMPaths.onboardingCompleted() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.openSettings()
             }
@@ -283,9 +292,13 @@ final class AppController: NSObject {
         // Skip detection while our own UI is in front — nothing to correct there,
         // and not redrawing the full-screen overlay keeps the popover smooth.
         if settingsPopover?.isShown == true {
-            // Keep the Accessibility state live while Settings is open (the user may
-            // have just granted/revoked it in System Settings).
-            if AXIsProcessTrusted() != lastSettingsTrusted { pushSettingsState() }
+            // Keep the settings/onboarding state live while it's up — the user may
+            // have just granted Accessibility (or chosen a model), which lets
+            // onboarding advance to its "all set" screen. Onboarding closes only
+            // when the user taps Done (handled in closeSettings).
+            if AXIsProcessTrusted() != lastSettingsTrusted {
+                pushSettingsState()
+            }
             clearIfNeeded()
             return
         }
@@ -470,6 +483,9 @@ final class AppController: NSObject {
     /// or a grammar card over a flagged word; keep it open over the card; hide
     /// otherwise.
     private func handleMouseMove() {
+        // In the sandbox the card is driven by the DOM (pill/squiggle hover in the
+        // webview), not native hover-tracking — don't let global mouse moves close it.
+        if sandboxActive { return }
         let p = NSEvent.mouseLocation
 
         if popoverPanel.isVisible, popoverPanel.frame.insetBy(dx: -4, dy: -4).contains(p) {
@@ -540,6 +556,7 @@ final class AppController: NSObject {
 
     private func closePopover() {
         popoverPanel.orderOut(nil)
+        popoverPanel.level = .statusBar   // undo any sandbox level bump
         activeWord = nil
         hoveredID = nil
         popoverMode = .none
@@ -624,6 +641,7 @@ final class AppController: NSObject {
         view.setPill(nil)
         if popoverMode == .rephrase {
             popoverPanel.orderOut(nil)
+            popoverPanel.level = .statusBar   // undo any sandbox level bump
             popoverMode = .none
         }
     }
@@ -669,6 +687,11 @@ final class AppController: NSObject {
     private func triggerRephraseHotKey() {
         if popoverMode == .rephrase { hidePill(); return }   // already open → close
         guard enabled, popoverMode == .none else { return }  // don't fight the grammar card
+
+        // Onboarding sandbox: open the real card over our own textarea (⌘` or the
+        // pill both route here).
+        if sandboxActive { openSandboxCard(); return }
+
         updateSelectionPill()                                 // recompute selection + pill
         if rephraseText != nil, pillRect != nil {
             showRephrase()
@@ -676,9 +699,58 @@ final class AppController: NSObject {
         }
     }
 
+    /// Open the real rephrase card over the onboarding sandbox textarea, sourcing
+    /// its text + rect from the webview DOM (AX can't see our own webview). Driven
+    /// by ⌘` or hovering the sandbox pill. Stays open until the user acts.
+    private func openSandboxCard() {
+        guard popoverMode == .none else { return }
+        settingsPopover?.sandboxField { [weak self] text, rect in
+            guard let self, self.sandboxActive, self.popoverMode == .none else { return }
+            self.rephraseText = text
+            self.rephraseAppName = nil
+            self.rephraseElement = nil
+            self.rephraseRange = nil
+            self.pillRect = rect
+            // The onboarding panel is key at .statusBar; lift the card above it so
+            // it never renders behind the onboarding window.
+            self.popoverPanel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+            self.showRephrase()
+        }
+    }
+
+    /// Open the real grammar card for a scripted sandbox mistake (original →
+    /// corrected), anchored at the squiggle's screen rect. Accept writes back via
+    /// the DOM bridge (`applyRewrite` → sandbox path).
+    private func openSandboxGrammarCard(original: String, corrected: String, rect: CGRect) {
+        guard popoverMode == .none else { return }
+        popoverMode = .grammar
+        activeWord = FlaggedWord(rect: rect, original: original, corrected: corrected,
+                                 range: nil, sentenceID: original)
+        rewriteTarget = RewriteTarget(original: original, appName: nil, element: nil, range: nil)
+        popoverPanel.setCard([
+            "mode": "grammar",
+            "original": original,
+            "result": corrected,
+            "styles": [],
+            "llmUrl": "",
+            "ready": true,
+            "targetLanguage": targetLanguage,
+        ])
+        popoverPanel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+        popoverPanel.present(anchor: NSPoint(x: rect.minX, y: rect.minY - 6))
+    }
+
     /// Write `text` into the current target (browser DOM or native AX).
     private func applyRewrite(text: String) {
-        guard let target = rewriteTarget, !text.isEmpty else { return }
+        guard !text.isEmpty else { return }
+        // Sandbox writes back through the DOM (the textarea is uncontrolled, so it
+        // sticks) rather than AX, and tells the sandbox UI to tick its checkmark.
+        if sandboxActive {
+            settingsPopover?.setSandboxField(text)
+            settingsPopover?.notifySandboxApplied(text)
+            return
+        }
+        guard let target = rewriteTarget else { return }
         if let appName = target.appName {
             browser.replaceText(appName: appName, original: target.original, replacement: text)
         } else if let element = target.element {
@@ -694,6 +766,7 @@ final class AppController: NSObject {
 
     private func finishRephrase() {
         popoverPanel.orderOut(nil)
+        popoverPanel.level = .statusBar   // undo any sandbox level bump
         popoverMode = .none
         rewriteTarget = nil
         hidePill()
@@ -802,8 +875,19 @@ final class AppController: NSObject {
             settingsPopover?.close()
             return
         }
-        settingsPopover?.show(relativeTo: button)
+        // Until onboarding is completed, show it centered on screen; afterwards
+        // settings hangs under the menu-bar icon.
+        if LLMPaths.onboardingCompleted() {
+            settingsPopover?.show(relativeTo: button)
+        } else {
+            settingsPopover?.showCentered()
+        }
         pushSettingsState()
+    }
+
+    /// Accessibility granted and a model is configured.
+    private var isSetUp: Bool {
+        AXIsProcessTrusted() && LLMPaths.resolveModel() != nil
     }
 
     /// Where the React UI comes from. Resolution order:
@@ -847,11 +931,112 @@ final class AppController: NSObject {
                 .deletingLastPathComponent()
         }
         NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // The settings/onboarding panel floats at .statusBar, above the picker —
+        // drop it while the picker is modal so it doesn't obscure it.
+        settingsPopover?.lowerBelowModal()
+        let response = panel.runModal()
+        settingsPopover?.restoreLevel()
+        guard response == .OK, let url = panel.url else { return }
         UserDefaults.standard.set(url.path, forKey: "modelPath")
         llmReady = false
         llmServer.restart()
         pushSettingsState()
+    }
+
+    // MARK: - Model catalog (Hugging Face downloads)
+
+    /// Curated GGUF models offered in onboarding. Keep ids in sync with CATALOG
+    /// in Onboarding.tsx (which holds the display copy).
+    private struct CatalogModel {
+        let id: String
+        let file: String
+        let url: URL
+    }
+
+    private static let modelCatalog: [CatalogModel] = [
+        CatalogModel(
+            id: "gemma-4-e2b",
+            file: "gemma-4-E2B-it-Q4_K_M.gguf",
+            url: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true")!),
+        CatalogModel(
+            id: "qwen2.5-3b",
+            file: "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+            url: URL(string: "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf?download=true")!),
+        CatalogModel(
+            id: "llama-3.2-3b",
+            file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            url: URL(string: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true")!),
+    ]
+
+    private func startModelDownload(id: String) {
+        guard modelDownload == nil,
+              let model = Self.modelCatalog.first(where: { $0.id == id }) else { return }
+        try? FileManager.default.createDirectory(
+            at: LLMPaths.modelsDir, withIntermediateDirectories: true)
+        let dest = LLMPaths.modelsDir.appendingPathComponent(model.file)
+        print("⬇️ downloading \(model.file)…")
+
+        let task = URLSession.shared.downloadTask(with: model.url) { [weak self] tmp, response, error in
+            // Move the file off-main (it can be a cross-volume copy of gigabytes);
+            // URLSession deletes tmp when this handler returns, so do it here.
+            var moveError: String?
+            if let tmp, error == nil {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status >= 400 {
+                    moveError = "Download failed (HTTP \(status))"
+                } else {
+                    try? FileManager.default.removeItem(at: dest)
+                    do { try FileManager.default.moveItem(at: tmp, to: dest) }
+                    catch { moveError = error.localizedDescription }
+                }
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.modelDownloadProgress = nil
+                    self.modelDownload = nil
+                    if let error {
+                        if (error as NSError).code != NSURLErrorCancelled {
+                            self.settingsPopover?.setDownload(id: id, progress: 0,
+                                                              error: error.localizedDescription)
+                        }
+                        return
+                    }
+                    if let moveError {
+                        self.settingsPopover?.setDownload(id: id, progress: 0, error: moveError)
+                        return
+                    }
+                    print("⬇️ downloaded \(model.file)")
+                    UserDefaults.standard.set(dest.path, forKey: "modelPath")
+                    self.settingsPopover?.setDownload(id: id, progress: 1, done: true)
+                    self.llmReady = false
+                    self.llmServer.restart()
+                    self.pushSettingsState()
+                }
+            }
+        }
+
+        // Progress → UI, throttled to whole percents to avoid spamming evaluateJS.
+        var lastPercent = -1
+        modelDownloadProgress = task.progress.observe(\.fractionCompleted) { [weak self] p, _ in
+            let percent = Int(p.fractionCompleted * 100)
+            guard percent != lastPercent else { return }
+            lastPercent = percent
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.settingsPopover?.setDownload(id: id, progress: p.fractionCompleted)
+                }
+            }
+        }
+        modelDownload = task
+        task.resume()
+        settingsPopover?.setDownload(id: id, progress: 0)
+    }
+
+    private func cancelModelDownload() {
+        modelDownload?.cancel()
+        modelDownloadProgress = nil
+        modelDownload = nil
     }
 
     /// Push current state (enabled + accessibility + LLM) into the settings UI.
@@ -862,7 +1047,8 @@ final class AppController: NSObject {
                                   accessibilityTrusted: trusted,
                                   llmStatus: llmStatusString(),
                                   model: LLMPaths.modelName() ?? "—",
-                                  targetLanguage: targetLanguage)
+                                  targetLanguage: targetLanguage,
+                                  onboardingCompleted: LLMPaths.onboardingCompleted())
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -888,12 +1074,50 @@ final class AppController: NSObject {
                 targetLanguage = value
                 UserDefaults.standard.set(value, forKey: "targetLanguage")
             }
+        case "sandbox":
+            // The sandbox reads/writes its own textarea through the webview DOM
+            // (JS), not AX — WebKit doesn't expose our own webview's text to AX.
+            sandboxActive = (body["active"] as? NSNumber)?.boolValue ?? false
+            if sandboxActive {
+                // The model picker (NSOpenPanel) left the panel non-key; re-key it
+                // and focus the web content so the textarea's autofocus takes.
+                settingsPopover?.focusWebContent()
+            } else {
+                hidePill()
+                if popoverMode == .rephrase { popoverPanel.orderOut(nil); popoverMode = .none }
+            }
+        case "sandboxRephrase":
+            if sandboxActive { openSandboxCard() }
+        case "sandboxGrammar":
+            if sandboxActive,
+               let original = body["original"] as? String,
+               let corrected = body["corrected"] as? String,
+               let x = (body["x"] as? NSNumber)?.doubleValue,
+               let y = (body["y"] as? NSNumber)?.doubleValue,
+               let w = (body["w"] as? NSNumber)?.doubleValue,
+               let h = (body["h"] as? NSNumber)?.doubleValue,
+               let rect = settingsPopover?.domRectToScreen(x: x, y: y, w: w, h: h) {
+                openSandboxGrammarCard(original: original, corrected: corrected, rect: rect)
+            }
         case "openAccessibility":
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                 NSWorkspace.shared.open(url)
             }
         case "chooseModel":
             chooseModel()
+        case "downloadModel":
+            if let id = body["id"] as? String { startModelDownload(id: id) }
+        case "cancelDownload":
+            cancelModelDownload()
+        case "dragWindow":
+            settingsPopover?.beginDrag()
+        case "closeSettings":
+            // Tapping Done on the "all set" screen (or closing a completed
+            // onboarding) marks it done so it won't reappear on next launch.
+            if settingsPopover?.isOnboarding == true && isSetUp {
+                LLMPaths.setOnboardingCompleted(true)
+            }
+            settingsPopover?.close()
         case "quit":
             llmServer.stop()
             NSApp.terminate(nil)

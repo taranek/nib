@@ -82,6 +82,30 @@ enum LLMPaths {
     static var binDir: URL { supportDir.appendingPathComponent("bin", isDirectory: true) }
     static var modelsDir: URL { supportDir.appendingPathComponent("models", isDirectory: true) }
 
+    /// First-run onboarding flag, persisted as JSON alongside bin/ and models/ so
+    /// it survives relaunches. Delete the file (or set the flag false) to replay
+    /// onboarding.
+    static var stateURL: URL { supportDir.appendingPathComponent("state.json", isDirectory: false) }
+
+    static func onboardingCompleted() -> Bool {
+        guard let data = try? Data(contentsOf: stateURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return obj["onboardingCompleted"] as? Bool ?? false
+    }
+
+    static func setOnboardingCompleted(_ completed: Bool) {
+        try? FileManager.default.createDirectory(
+            at: supportDir, withIntermediateDirectories: true)
+        let obj: [String: Any] = [
+            "onboardingCompleted": completed,
+            "completedAt": completed ? ISO8601DateFormatter().string(from: Date()) : NSNull(),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
+            try? data.write(to: stateURL)
+        }
+    }
+
     /// Path to the llama-server binary:
     ///   1. LOCO_LLAMA_SERVER override (dev)
     ///   2. bundled in the app (Resources/bin/llama-server) — the shipped app

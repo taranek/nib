@@ -38,6 +38,8 @@ export interface SettingsState {
   model: string;
   /** Default target language for translations. */
   targetLanguage: string;
+  /** Whether first-run onboarding has been completed (drives which view shows). */
+  onboardingCompleted: boolean;
 }
 
 type OutboundMessage =
@@ -49,6 +51,27 @@ type OutboundMessage =
   | { type: "setTargetLanguage"; value: string }
   | { type: "openAccessibility" }
   | { type: "chooseModel" }
+  // Download a catalog model from Hugging Face (id from the curated list).
+  | { type: "downloadModel"; id: string }
+  | { type: "cancelDownload" }
+  | { type: "closeSettings" }
+  // Mousedown on the card's top bar — Swift starts a native window drag.
+  | { type: "dragWindow" }
+  // Onboarding sandbox: while active, ⌘` targets the onboarding's own textarea
+  // so the user can try the real card without leaving the flow. `sandboxRephrase`
+  // is the hover-the-pill equivalent of pressing ⌘`; `sandboxGrammar` opens the
+  // grammar card for a flagged word at the given DOM rect.
+  | { type: "sandbox"; active: boolean }
+  | { type: "sandboxRephrase" }
+  | {
+      type: "sandboxGrammar";
+      original: string;
+      corrected: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }
   | { type: "quit" };
 
 interface WebkitBridge {
@@ -57,9 +80,22 @@ interface WebkitBridge {
   };
 }
 
+/** Progress of an in-flight catalog-model download, pushed from Swift. */
+export interface DownloadProgress {
+  id: string;
+  /** 0–1. */
+  progress: number;
+  done: boolean;
+  error?: string;
+}
+
 interface LocoInbound {
   setCard?: (data: CardData) => void;
   setSettings?: (state: SettingsState) => void;
+  /** Swift → JS: a sandbox rephrase/grammar fix was applied (the accepted text). */
+  sandboxApplied?: (text: string) => void;
+  /** Swift → JS: model download progress. */
+  downloadProgress?: (d: DownloadProgress) => void;
 }
 
 declare global {
@@ -82,4 +118,14 @@ export function onSetCard(handler: (data: CardData) => void): void {
 /** Register the inbound entry point Swift calls to push settings state. */
 export function onSetSettings(handler: (state: SettingsState) => void): void {
   window.loco = { ...window.loco, setSettings: handler };
+}
+
+/** Register the callback Swift invokes after a sandbox fix is applied. */
+export function onSandboxApplied(handler: (text: string) => void): void {
+  window.loco = { ...window.loco, sandboxApplied: handler };
+}
+
+/** Register the callback Swift invokes with model-download progress. */
+export function onDownloadProgress(handler: (d: DownloadProgress) => void): void {
+  window.loco = { ...window.loco, downloadProgress: handler };
 }
