@@ -92,11 +92,3 @@ Detection is event-driven (`AXObserver` for focus/value/selection, workspace
 notifications for app switches) with a slow safety poll. Browser page content
 is read via the DOM bridge or AX fallback; browser chrome (address bar) is
 excluded by requiring an `AXWebArea` ancestor.
-
-## Known limitations
-
-- Single-screen coordinate mapping; multi-monitor needs per-screen flips.
-- AX coverage is uneven: native Cocoa and major browsers work well; custom-drawn
-  editors may expose no per-word geometry (degrades to the ⌘` card only).
-- Unsigned-for-distribution: no Developer ID / notarization yet, so Gatekeeper
-  warns on first launch.
