@@ -527,6 +527,16 @@ function RewritePanel({
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
 
+  // Grammar tab: explain each change (same explainers as the squiggle card).
+  const isGrammar = style === "grammar";
+  const corrected = !st.loading && !st.error && st.text.trim() !== original.trim();
+  const { fixes } = useFixExplanations(
+    original,
+    st.text,
+    llmUrl,
+    isGrammar && corrected && override == null,
+  );
+
   if (refining)
     return (
       <div className={BODY}>
@@ -580,6 +590,9 @@ function RewritePanel({
   return (
     <div className={BODY}>
       <DiffText original={original} result={st.text} />
+      {isGrammar && fixes && fixes.length > 0 && (
+        <FixExplanations fixes={fixes} llmUrl={llmUrl} />
+      )}
     </div>
   );
 }
