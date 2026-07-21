@@ -21,8 +21,8 @@ OUT="release"
 APP="$OUT/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 
-# llama-server source: env override, else loco's support dir (dev copy).
-LLAMA_SRC="${LOCO_LLAMA_SERVER:-$HOME/Library/Application Support/loco/bin/llama-server}"
+# llama-server source: env override, else the app's support dir (dev copy).
+LLAMA_SRC="${LOCO_LLAMA_SERVER:-$HOME/Library/Application Support/Nib/bin/llama-server}"
 
 echo "▸ Building web…"
 ( cd web && npm run build )
