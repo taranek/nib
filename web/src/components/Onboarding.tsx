@@ -56,10 +56,7 @@ export function Onboarding({ state }: { state: SettingsState }) {
         CARD_SHADOW,
       )}
     >
-      <ShaderBackground
-        className="pointer-events-none absolute inset-0 h-full w-full"
-        paused={phase === "sandbox"}
-      />
+      <ShaderBackground className="pointer-events-none absolute inset-0 h-full w-full" />
       {/* Darken the shader under the setup steps so text stays legible. */}
       <AnimatePresence>
         {phase === "setup" && (

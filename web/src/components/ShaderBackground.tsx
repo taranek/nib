@@ -57,15 +57,8 @@ void main(){
 `;
 
 /** Animated GLSL gradient background (falls back to transparent if WebGL is
- *  unavailable; renders a single static frame under "reduce motion" or when
- *  `paused` — e.g. while the sandbox card needs the GPU for inference). */
-export function ShaderBackground({
-  className,
-  paused = false,
-}: {
-  className?: string;
-  paused?: boolean;
-}) {
+ *  unavailable; renders a single static frame under "reduce motion"). */
+export function ShaderBackground({ className }: { className?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -115,7 +108,7 @@ export function ShaderBackground({
     };
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || paused) {
+    if (reduce) {
       draw(8);
       return;
     }
@@ -133,7 +126,7 @@ export function ShaderBackground({
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [paused]);
+  }, []);
 
   return <canvas ref={ref} className={className} />;
 }
