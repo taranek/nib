@@ -6,6 +6,7 @@ import { Toggle } from "@/components/ui/toggle";
 import { Pill } from "@/components/ui/pill";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Onboarding } from "@/components/Onboarding";
+import { ModelCatalog } from "@/components/ModelCatalog";
 import { X } from "lucide-react";
 
 const LANGUAGES = [
@@ -44,10 +45,17 @@ export function Settings() {
     // browser / `npm run dev` stays here so the flow is previewable).
     onboardingCompleted: false,
     explainFixes: true,
+    downloadedModels: [],
   });
 
   const llmReady = state.llmStatus.toLowerCase() === "ready";
   const wrapRef = useRef<HTMLDivElement>(null);
+  // "Change" expands the shared model catalog under the Local AI section.
+  const [browsingModels, setBrowsingModels] = useState(false);
+  // A new model arrived (download, Use, or picker) — collapse the catalog.
+  useEffect(() => {
+    setBrowsingModels(false);
+  }, [state.model]);
 
   useEffect(() => {
     onSetSettings(setState);
@@ -186,11 +194,12 @@ export function Settings() {
               <Button
                 size="sm"
                 variant="default"
-                onClick={() => send({ type: "chooseModel" })}
+                onClick={() => setBrowsingModels((b) => !b)}
               >
-                Change
+                {browsingModels ? "Close" : "Change"}
               </Button>
             </div>
+            {browsingModels && <ModelCatalog state={state} />}
           </section>
 
           <section className={SECTION}>

@@ -1,13 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, RefreshCw, RotateCcw, X } from "lucide-react";
-import {
-  type DownloadProgress,
-  type SettingsState,
-  onDownloadProgress,
-  onSandboxApplied,
-  send,
-} from "@/bridge";
+import { type SettingsState, onSandboxApplied, send } from "@/bridge";
+import { ModelCatalog } from "./ModelCatalog";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
@@ -387,105 +382,10 @@ function Intro({ onStart }: { onStart: () => void }) {
   );
 }
 
-// Curated models the user can download from Hugging Face. Keep ids in sync with
-// modelCatalog in AppController.swift (which holds the download URLs).
-const CATALOG = [
-  {
-    id: "gemma-4-e2b",
-    name: "Gemma 4 E2B",
-    size: "3.1 GB",
-    note: "Best quality for writing help",
-    recommended: true,
-  },
-  {
-    id: "qwen2.5-3b",
-    name: "Qwen 2.5 3B",
-    size: "2.1 GB",
-    note: "Fast and compact",
-    recommended: false,
-  },
-  {
-    id: "llama-3.2-3b",
-    name: "Llama 3.2 3B",
-    size: "2.0 GB",
-    note: "Solid all-rounder",
-    recommended: false,
-  },
-];
-
-/** One downloadable model: name + size, and a Get button that turns into a
- *  progress bar while its download runs. */
-function ModelRow({
-  m,
-  dl,
-  onCancel,
-}: {
-  m: (typeof CATALOG)[number];
-  dl: DownloadProgress | null;
-  onCancel: () => void;
-}) {
-  const mine = dl?.id === m.id;
-  const downloading = mine && !dl.error && !dl.done;
-  const anyDownloading = !!dl && !dl.error && !dl.done;
-  return (
-    <div className="flex items-center justify-between gap-3 py-2">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="flex items-center gap-1.5 text-[13px] text-foreground">
-          {m.name}
-          {m.recommended && (
-            <span className="rounded-full bg-[#2885ef]/20 px-1.5 py-px text-[10px] font-medium text-[#6eb1f7]">
-              Recommended
-            </span>
-          )}
-        </span>
-        <span className="text-[11px] text-muted-foreground">
-          {m.size} · {m.note}
-        </span>
-        {mine && dl.error && (
-          <span className="text-[11px] text-diff-del">{dl.error}</span>
-        )}
-      </div>
-      {downloading ? (
-        <div className="flex flex-none items-center gap-2">
-          <div className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
-            <div
-              className="h-full rounded-full bg-[#2885ef] transition-[width] duration-300"
-              style={{ width: `${Math.round(dl.progress * 100)}%` }}
-            />
-          </div>
-          <span className="w-8 text-right text-[11px] text-muted-foreground tabular-nums">
-            {Math.round(dl.progress * 100)}%
-          </span>
-          <button
-            aria-label="Cancel download"
-            onClick={onCancel}
-            className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
-          >
-            <X className="size-3.5" />
-          </button>
-        </div>
-      ) : (
-        <Button
-          size="sm"
-          variant="default"
-          disabled={anyDownloading}
-          onClick={() => send({ type: "downloadModel", id: m.id })}
-        >
-          Get
-        </Button>
-      )}
-    </div>
-  );
-}
-
 function Setup({ state }: { state: SettingsState }) {
   const hasModel = !!state.model && state.model !== "—";
-  const [dl, setDl] = useState<DownloadProgress | null>(null);
   // With a model already set, "Change" re-expands the download catalog.
   const [browsing, setBrowsing] = useState(false);
-  useEffect(() => {
-    onDownloadProgress(setDl);
-  }, []);
   // A new model arrived (download or picker) — collapse the catalog.
   useEffect(() => {
     setBrowsing(false);
@@ -555,24 +455,8 @@ function Setup({ state }: { state: SettingsState }) {
             }
           />
           {catalogOpen && (
-            <div className="ml-[28px] flex flex-col divide-y divide-border/60">
-              {CATALOG.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  m={m}
-                  dl={dl}
-                  onCancel={() => {
-                    send({ type: "cancelDownload" });
-                    setDl(null);
-                  }}
-                />
-              ))}
-              <button
-                onClick={() => send({ type: "chooseModel" })}
-                className="cursor-pointer py-2 text-left text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
-              >
-                …or choose a local .gguf file
-              </button>
+            <div className="ml-[28px]">
+              <ModelCatalog state={state} />
             </div>
           )}
         </motion.div>

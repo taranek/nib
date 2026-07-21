@@ -974,12 +974,38 @@ final class AppController: NSObject {
             url: URL(string: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true")!),
     ]
 
+    /// Catalog ids whose file is already on disk (no need to re-download).
+    private func downloadedModelIDs() -> [String] {
+        Self.modelCatalog
+            .filter {
+                FileManager.default.fileExists(
+                    atPath: LLMPaths.modelsDir.appendingPathComponent($0.file).path)
+            }
+            .map(\.id)
+    }
+
+    /// Activate an already-downloaded catalog model (no download).
+    private func selectModel(id: String) {
+        guard let model = Self.modelCatalog.first(where: { $0.id == id }) else { return }
+        let dest = LLMPaths.modelsDir.appendingPathComponent(model.file)
+        guard FileManager.default.fileExists(atPath: dest.path) else { return }
+        UserDefaults.standard.set(dest.path, forKey: "modelPath")
+        llmReady = false
+        llmServer.restart()
+        pushSettingsState()
+    }
+
     private func startModelDownload(id: String) {
         guard modelDownload == nil,
               let model = Self.modelCatalog.first(where: { $0.id == id }) else { return }
         try? FileManager.default.createDirectory(
             at: LLMPaths.modelsDir, withIntermediateDirectories: true)
         let dest = LLMPaths.modelsDir.appendingPathComponent(model.file)
+        // Already on disk — just activate it.
+        if FileManager.default.fileExists(atPath: dest.path) {
+            selectModel(id: id)
+            return
+        }
         print("⬇️ downloading \(model.file)…")
 
         let task = URLSession.shared.downloadTask(with: model.url) { [weak self] tmp, response, error in
@@ -1055,7 +1081,8 @@ final class AppController: NSObject {
                                   model: LLMPaths.modelName() ?? "—",
                                   targetLanguage: targetLanguage,
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
-                                  explainFixes: explainFixes)
+                                  explainFixes: explainFixes,
+                                  downloadedModels: downloadedModelIDs())
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -1117,6 +1144,8 @@ final class AppController: NSObject {
             chooseModel()
         case "downloadModel":
             if let id = body["id"] as? String { startModelDownload(id: id) }
+        case "selectModel":
+            if let id = body["id"] as? String { selectModel(id: id) }
         case "cancelDownload":
             cancelModelDownload()
         case "dragWindow":

@@ -44,6 +44,8 @@ export interface SettingsState {
   onboardingCompleted: boolean;
   /** Whether to show the per-change rule explainers under grammar fixes. */
   explainFixes: boolean;
+  /** Catalog model ids already downloaded to the models dir. */
+  downloadedModels: string[];
 }
 
 type OutboundMessage =
@@ -58,6 +60,8 @@ type OutboundMessage =
   | { type: "chooseModel" }
   // Download a catalog model from Hugging Face (id from the curated list).
   | { type: "downloadModel"; id: string }
+  // Activate a catalog model that's already on disk (no download).
+  | { type: "selectModel"; id: string }
   | { type: "cancelDownload" }
   | { type: "closeSettings" }
   // Mousedown on the card's top bar — Swift starts a native window drag.
