@@ -7,7 +7,12 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "loco",
-            path: "Sources/loco"
+            path: "Sources/loco",
+            resources: [
+                // Menu-bar icon (1x/2x template PNGs), loaded via Bundle.module.
+                .copy("Resources/nib-menubar-18.png"),
+                .copy("Resources/nib-menubar-36.png"),
+            ]
         )
     ],
     // Use Swift 5 language mode for the PoC so AppKit's MainActor isolation

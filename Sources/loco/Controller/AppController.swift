@@ -837,11 +837,28 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu bar + settings
 
+    /// The Nib pen glyph as a menu-bar template image (1x + 2x reps, tinted by
+    /// the system for light/dark menu bars).
+    private static func menuBarIcon() -> NSImage? {
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        for name in ["nib-menubar-18", "nib-menubar-36"] {
+            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+               let rep = NSImageRep(contentsOf: url) {
+                rep.size = NSSize(width: 18, height: 18)
+                image.addRepresentation(rep)
+            }
+        }
+        guard !image.representations.isEmpty else { return nil }
+        image.isTemplate = true
+        return image
+    }
+
     /// Put a small icon in the menu bar; clicking it opens the settings popover.
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            if let image = NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "Nib") {
+            if let image = Self.menuBarIcon()
+                ?? NSImage(systemSymbolName: "checkmark.bubble", accessibilityDescription: "Nib") {
                 image.isTemplate = true
                 button.image = image
             } else {

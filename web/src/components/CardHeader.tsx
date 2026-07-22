@@ -1,6 +1,7 @@
 import { Power } from "lucide-react";
 import { send } from "@/bridge";
 import { cn } from "@/lib/utils";
+import { NibGlyph } from "./NibGlyph";
 
 /** Shared card top bar — brand left, quit right — so the onboarding and
  *  settings cards look identical. Dismissing the card is Esc / click-outside;
@@ -22,9 +23,10 @@ export function CardHeader({ draggable = false }: { draggable?: boolean }) {
     >
       <span
         className={cn(
-          "text-[14px] font-semibold tracking-[-0.01em] text-foreground/90",
+          "inline-flex items-center gap-1.5 text-[14px] font-semibold tracking-[-0.01em] text-foreground/90",
         )}
       >
+        <NibGlyph className="size-[17px]" />
         Nib
       </span>
       <button

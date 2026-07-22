@@ -36,6 +36,8 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources/web" "$CONTENTS/Resources/bin"
 
 cp .build/release/"$PRODUCT" "$CONTENTS/MacOS/$APP_NAME"
 cp -R web/dist/. "$CONTENTS/Resources/web/"
+# SPM resource bundle (menu-bar icon) — Bundle.module finds it in Resources.
+cp -R ".build/release/${PRODUCT}_${PRODUCT}.bundle" "$CONTENTS/Resources/"
 
 # llama-server + its sibling dylibs (llama.cpp ships libllama/libggml*.dylib).
 if [[ ! -x "$LLAMA_SRC" ]]; then
