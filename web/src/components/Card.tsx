@@ -448,6 +448,8 @@ function RewriteBody({ card }: { card: CardData }) {
         </div>
       </Tabs>
 
+      {/* Same treatment the tab panels get during a switch (blur + fade on the
+          same spring), so the footer reads as part of one transition. */}
       <motion.div
         className={switching ? "pointer-events-none" : undefined}
         animate={
@@ -455,10 +457,7 @@ function RewriteBody({ card }: { card: CardData }) {
             ? { opacity: 0, filter: "blur(3px)" }
             : { opacity: 1, filter: "blur(0px)" }
         }
-        transition={{
-          duration: switching ? 0.1 : 0.25,
-          ease: [0.23, 1, 0.32, 1],
-        }}
+        transition={{ type: "spring", stiffness: 300, damping: 30, bounce: 0 }}
       >
       {/* The chips only exist on Rephrase — animate their height with the same
           spring as the tab content, so the card's bottom edge moves as one
