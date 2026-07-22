@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { ArrowUp, Check, Lightbulb, Loader2, RefreshCw } from "lucide-react";
 import { type CardData, send } from "@/bridge";
 import {
@@ -460,23 +460,37 @@ function RewriteBody({ card }: { card: CardData }) {
           ease: [0.23, 1, 0.32, 1],
         }}
       >
-      {current === "rephrase" && (
-        <div className="flex flex-wrap gap-1.5 pt-2.5 pr-2 pb-0 pl-3">
-          {CHIPS.map((c) => (
-            <Chip
-              key={c.label}
-              active={activeChip === c.label}
-              disabled={refining}
-              onClick={() => {
-                setActiveChip(c.label);
-                runInstruction(c.instruction, card.original, true);
-              }}
-            >
-              {c.label}
-            </Chip>
-          ))}
-        </div>
-      )}
+      {/* The chips only exist on Rephrase — animate their height with the same
+          spring as the tab content, so the card's bottom edge moves as one
+          glide instead of stepping when they mount/unmount. */}
+      <AnimatePresence initial={false}>
+        {current === "rephrase" && (
+          <motion.div
+            key="chips"
+            className="overflow-hidden"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 260, damping: 30, bounce: 0 }}
+          >
+            <div className="flex flex-wrap gap-1.5 pt-2.5 pr-2 pb-0 pl-3">
+              {CHIPS.map((c) => (
+                <Chip
+                  key={c.label}
+                  active={activeChip === c.label}
+                  disabled={refining}
+                  onClick={() => {
+                    setActiveChip(c.label);
+                    runInstruction(c.instruction, card.original, true);
+                  }}
+                >
+                  {c.label}
+                </Chip>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="flex items-center justify-end gap-2 p-2">
         {current === "rephrase" && (
