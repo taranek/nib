@@ -118,6 +118,7 @@ final class AppController: NSObject {
     ]
 
     func start() {
+        print("▸ controller starting (accessibility trusted: \(AXIsProcessTrusted()))")
         if !ensureAccessibilityPermission() {
             print("""
             ⏳ Accessibility permission required.
@@ -139,6 +140,7 @@ final class AppController: NSObject {
         popoverPanel.onMessage = { [weak self] body in self?.handleWebMessage(body) }
 
         setupStatusItem()
+        print("▸ status item installed")
 
         // Pre-create the settings popover so its web UI preloads before the first
         // open (otherwise the panel shows empty on launch).
@@ -1110,15 +1112,11 @@ final class AppController: NSObject {
         }.resume()
     }
 
-    /// Open the llama-server log (model load/connect failures land there).
+    /// Open the logs folder (app log + llama-server log) in Finder.
     private func openLlamaLog() {
         try? FileManager.default.createDirectory(
             at: LLMPaths.logsDir, withIntermediateDirectories: true)
-        let url = LLMPaths.llamaLogURL
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: Data())
-        }
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(LLMPaths.logsDir)
     }
 
     /// Push current state (enabled + accessibility + LLM) into the settings UI.
