@@ -1,10 +1,11 @@
-import { X } from "lucide-react";
+import { Power } from "lucide-react";
 import { send } from "@/bridge";
 import { cn } from "@/lib/utils";
 
-/** Shared card top bar — brand left, close right — so the onboarding and
- *  settings cards look identical. `draggable` wires mousedown to a native
- *  window drag (onboarding only; settings stays anchored to the menu bar). */
+/** Shared card top bar — brand left, quit right — so the onboarding and
+ *  settings cards look identical. Dismissing the card is Esc / click-outside;
+ *  the header button fully quits the app. `draggable` wires mousedown to a
+ *  native window drag (onboarding only; settings stays anchored). */
 export function CardHeader({ draggable = false }: { draggable?: boolean }) {
   return (
     <div
@@ -27,11 +28,12 @@ export function CardHeader({ draggable = false }: { draggable?: boolean }) {
         Nib
       </span>
       <button
-        aria-label="Close"
-        onClick={() => send({ type: "closeSettings" })}
-        className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+        aria-label="Quit Nib"
+        title="Quit Nib"
+        onClick={() => send({ type: "quit" })}
+        className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-diff-del/10 hover:text-diff-del"
       >
-        <X className="size-4" />
+        <Power className="size-4" />
       </button>
     </div>
   );

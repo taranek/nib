@@ -14,7 +14,6 @@ import { StatusDot } from "@/components/ui/status-dot";
 import { Onboarding } from "@/components/Onboarding";
 import { ModelCatalog } from "@/components/ModelCatalog";
 import { CardHeader } from "@/components/CardHeader";
-import { Power } from "lucide-react";
 
 const LANGUAGES = [
   "English",
@@ -283,24 +282,6 @@ export function Settings() {
             </div>
           </section>
 
-          <section className={SECTION}>
-            <div className={ROW}>
-              <div className={FIELD}>
-                <span className={LABEL}>Quit Nib</span>
-                <span className={HINT}>
-                  Stops suggestions until you launch it again.
-                </span>
-              </div>
-              <Button
-                size="sm"
-                variant="danger"
-                onClick={() => send({ type: "quit" })}
-              >
-                <Power className="size-3.5" />
-                Quit
-              </Button>
-            </div>
-          </section>
         </div>
       )}
     </div>
