@@ -36,9 +36,15 @@ VITE_PID=$!
 # Fingerprint of all Swift sources (mtimes) to detect saves without a watcher dep.
 stamp() { find Sources -name '*.swift' -exec stat -f '%m' {} + 2>/dev/null | sort | md5; }
 
+# Sign debug builds with a stable identity so the Accessibility (TCC) grant
+# persists across rebuilds — ad-hoc signatures change identity every build,
+# silently revoking the grant.
+SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application|Apple Development/{print $2; exit}')"
+
 build_and_run() {
   echo "🔨 building…"
   if swift build; then
+    [[ -n "$SIGN_ID" ]] && codesign --force -s "$SIGN_ID" .build/debug/loco 2>/dev/null
     [[ -n "$LOCO_PID" ]] && kill "$LOCO_PID" 2>/dev/null
     ./.build/debug/loco &
     LOCO_PID=$!

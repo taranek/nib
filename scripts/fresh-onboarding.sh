@@ -28,5 +28,9 @@ if [[ ! -x .build/debug/loco ]]; then
   swift build || exit 1
 fi
 
+# Stable signature so the Accessibility grant survives rebuilds (see dev.sh).
+SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application|Apple Development/{print $2; exit}')"
+[[ -n "$SIGN_ID" ]] && codesign --force -s "$SIGN_ID" .build/debug/loco 2>/dev/null
+
 LOCO_WEB_URL="http://localhost:5173" nohup ./.build/debug/loco > /tmp/loco-run.log 2>&1 &
 echo "✅ Nib relaunched — onboarding will open centered."
