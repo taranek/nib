@@ -26,7 +26,7 @@ export function CardHeader({ draggable = false }: { draggable?: boolean }) {
           "inline-flex items-center gap-1.5 text-[14px] font-semibold tracking-[-0.01em] text-foreground/90",
         )}
       >
-        <NibGlyph className="size-[22px]" />
+        <NibGlyph className="-ml-0.5 size-[25px]" />
         Nib
       </span>
       <button
