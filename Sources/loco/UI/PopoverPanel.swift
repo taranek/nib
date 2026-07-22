@@ -121,27 +121,37 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
     }
 
     func resize(toContentWidth width: CGFloat, height: CGFloat) {
-        setContentSize(NSSize(width: width, height: height))
-        reposition()
+        // Size + origin in ONE setFrame: the card is top-anchored, so a height
+        // change moves the origin too — applying them as two mutations makes
+        // content near the bottom edge (the Accept footer) visibly jitter.
+        let size = NSSize(width: width, height: height)
+        guard size != frame.size else { return }
+        setFrame(NSRect(origin: origin(forSize: size), size: size), display: true)
     }
 
     private func reposition() {
+        setFrameOrigin(origin(forSize: frame.size))
+    }
+
+    /// Window origin that lands the card's visual top-left on `anchor` for a
+    /// given window size, clamped on-screen.
+    private func origin(forSize size: NSSize) -> NSPoint {
         // The window includes a `shadowMargin` transparent border around the card,
         // so offset by it to land the card's visual top-left on `anchor`, then
         // nudge it right a touch and clamp fully on-screen.
         let nudgeX: CGFloat = 16
         let nudgeY: CGFloat = 4   // push down a touch from the anchor
         var origin = NSPoint(x: anchor.x - shadowMargin + nudgeX,
-                             y: anchor.y - frame.height + shadowMargin - nudgeY)
+                             y: anchor.y - size.height + shadowMargin - nudgeY)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
         if let vis = screen?.visibleFrame {
             let edge: CGFloat = 8
-            origin.x = min(origin.x, vis.maxX - edge - frame.width)
+            origin.x = min(origin.x, vis.maxX - edge - size.width)
             origin.x = max(origin.x, vis.minX + edge)
-            origin.y = min(origin.y, vis.maxY - edge - frame.height)
+            origin.y = min(origin.y, vis.maxY - edge - size.height)
             origin.y = max(origin.y, vis.minY + edge)
         }
-        setFrameOrigin(origin)
+        return origin
     }
 
     func userContentController(_ controller: WKUserContentController,

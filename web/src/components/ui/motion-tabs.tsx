@@ -181,6 +181,10 @@ function TabsTrigger({ ref, value, children, className, ...props }: TabsTriggerP
 type TabsContentsProps = React.ComponentProps<'div'> & {
   children: React.ReactNode
   transition?: Transition
+  /** Snap the container height instead of spring-animating it. Use when the
+   *  host window resizes to fit content — a per-frame height animation makes
+   *  the native window chase the web layout and everything below jitters. */
+  animateHeight?: boolean
 }
 
 function TabsContents({
@@ -193,6 +197,7 @@ function TabsContents({
     bounce: 0,
     restDelta: 0.01
   },
+  animateHeight = true,
   ...props
 }: TabsContentsProps) {
   const { activeValue } = useTabs()
@@ -228,7 +233,11 @@ function TabsContents({
       className={cn('overflow-hidden', className)}
       initial={false}
       animate={{ height: height ?? 'auto' }}
-      transition={{ type: 'spring', stiffness: 260, damping: 30, bounce: 0 }}
+      transition={
+        animateHeight
+          ? { type: 'spring', stiffness: 260, damping: 30, bounce: 0 }
+          : { duration: 0 }
+      }
       {...props}
     >
       <motion.div className='-mx-2 flex' animate={{ x: activeIndex * -100 + '%' }} transition={transition}>

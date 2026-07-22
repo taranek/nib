@@ -408,7 +408,9 @@ function RewriteBody({ card }: { card: CardData }) {
           )}
         </div>
         <div className={CONTENT}>
-          <TabsContents>
+          {/* Snap height on tab switch: the native panel resizes to fit, and a
+              per-frame height spring makes the footer (Accept) shake. */}
+          <TabsContents animateHeight={false}>
             {visibleStyles.map((s) => (
               <TabsContent key={s.id} value={s.id}>
                 <RewritePanel
