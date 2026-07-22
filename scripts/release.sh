@@ -33,7 +33,7 @@ if [[ -z "$NOTES" ]]; then
   NOTES="$(git log --no-merges --pretty='- %s' "$RANGE")"
 fi
 
-echo "▸ Packaging $TAG…"
+echo "▸ Packaging ${TAG}…"
 LOCO_VERSION="$VERSION" scripts/package.sh
 
 echo "▸ Verifying…"
@@ -59,7 +59,7 @@ else
 **Install:** download \`Nib.dmg\` and drag Nib into Applications."
 fi
 
-echo "▸ Tagging + pushing $TAG…"
+echo "▸ Tagging + pushing ${TAG}…"
 git tag -a "$TAG" -m "Nib $VERSION"
 git push origin master "$TAG"
 
