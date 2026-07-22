@@ -11,7 +11,7 @@ import WebKit
 // on-screen rect, draws highlights, and drives the hover card + settings popover.
 
 @MainActor
-final class AppController: NSObject {
+final class AppController: NSObject, NSApplicationDelegate {
     private var window: OverlayWindow!
     private var view: OverlayView!
     private var popoverPanel: PopoverPanel!
@@ -909,6 +909,14 @@ final class AppController: NSObject {
             settingsPopover?.showCentered()
         }
         pushSettingsState()
+    }
+
+    /// Dock icon clicked (it's visible while settings/onboarding is open, since
+    /// the app runs as .regular then): surface a buried panel.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if settingsPopover?.isShown == true { settingsPopover?.bringToFront() }
+        return false
     }
 
     /// Accessibility granted and a model is configured.

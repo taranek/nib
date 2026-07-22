@@ -14,6 +14,9 @@ struct Loco {
         app.setActivationPolicy(.accessory)
 
         let controller = AppController()
+        // Delegate handles Dock-icon clicks (the icon shows while the
+        // settings/onboarding panel is open) to resurface a buried panel.
+        app.delegate = controller
         controller.start()
 
         app.run()
