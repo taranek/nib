@@ -1091,18 +1091,24 @@ final class AppController: NSObject {
     }
 
     /// Ask GitHub for the latest release and report it to the settings UI.
+    /// Uses the web "latest" URL, whose redirect target ends in the version tag
+    /// — the REST API allows only 60 anonymous calls/hour per IP and then 403s
+    /// ("Couldn't reach GitHub" for anyone behind a busy NAT).
     private func checkForUpdates() {
-        let url = URL(string: "https://api.github.com/repos/taranek/nib/releases/latest")!
+        let latestURL = URL(string: "https://github.com/taranek/nib/releases/latest")!
+        var request = URLRequest(url: latestURL)
+        request.httpMethod = "HEAD"
         let current = appVersion
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             var latest: String?
-            var page = "https://github.com/taranek/nib/releases/latest"
-            if let data,
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let tag = obj["tag_name"] as? String {
-                    latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-                }
-                if let html = obj["html_url"] as? String { page = html }
+            var page = latestURL.absoluteString
+            if let finalURL = (response as? HTTPURLResponse)?.url,
+               finalURL.path.contains("/releases/tag/") {
+                let tag = finalURL.lastPathComponent
+                latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+                page = finalURL.absoluteString
+            } else if let error {
+                print("⚠️ update check failed: \(error.localizedDescription)")
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
