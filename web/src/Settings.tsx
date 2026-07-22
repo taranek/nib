@@ -268,9 +268,7 @@ export function Settings() {
             <div className={ROW}>
               <div className={FIELD}>
                 <span className={LABEL}>Logs</span>
-                <span className={HINT}>
-                  Model loading and connection output, for debugging.
-                </span>
+                <span className={HINT}>For troubleshooting.</span>
               </div>
               <Button
                 size="sm"
