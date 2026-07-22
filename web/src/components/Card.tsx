@@ -53,7 +53,9 @@ const CHIPS: { label: string; instruction: string }[] = [
   },
 ];
 
-const CONTENT = "px-2 py-3";
+// Tighter bottom: the footer below brings its own p-2, and stacking full
+// padding on both sides left ~20px above Accept (the app's rhythm is 10-14px).
+const CONTENT = "px-2 pt-3 pb-1";
 const BODY = "min-h-[22px] pl-2";
 const RESULT = "text-[15px] leading-[1.45] text-subtle";
 const TAB_KBD =
