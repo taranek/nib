@@ -86,6 +86,14 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
         // so we can activate and show it on top; revert on close.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Onboarding lingers (model downloads take minutes) — run it as a
+        // normal-level window on the current space so other windows can cover
+        // it, instead of floating over everything. The anchored settings stays
+        // at status-bar level; it dismisses on outside click anyway.
+        panel.level = centered ? .normal : .statusBar
+        panel.collectionBehavior = centered
+            ? [.fullScreenAuxiliary]
+            : [.canJoinAllSpaces, .fullScreenAuxiliary]
         reposition()
         panel.makeKeyAndOrderFront(nil)
         if dismissOnOutsideClick { installClickMonitor() }
@@ -101,7 +109,17 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
     /// Temporarily drop below app-modal windows (e.g. an NSOpenPanel) so the panel
     /// doesn't cover them; pair with restoreLevel().
     func lowerBelowModal() { panel.level = .normal }
-    func restoreLevel() { panel.level = .statusBar }
+    func restoreLevel() { panel.level = centered ? .normal : .statusBar }
+
+    /// Whether the panel is the key (frontmost-focused) window.
+    var isKeyPanel: Bool { panel.isKeyWindow }
+
+    /// Surface an open-but-buried panel (normal-level onboarding can be covered
+    /// by other windows).
+    func bringToFront() {
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
 
     /// Size the panel to the web content (card + transparent margin) and reposition.
     func resize(toContentWidth width: CGFloat, height: CGFloat) {

@@ -890,9 +890,15 @@ final class AppController: NSObject {
             popover.onMessage = { [weak self] body in self?.handleSettingsMessage(body) }
             settingsPopover = popover
         }
-        // Toggle: clicking the icon again closes it.
+        // Toggle — but the onboarding runs at normal level and can be buried
+        // under other windows: first click surfaces it, a click while it's
+        // frontmost closes it.
         if settingsPopover?.isShown == true {
-            settingsPopover?.close()
+            if settingsPopover?.isKeyPanel == true {
+                settingsPopover?.close()
+            } else {
+                settingsPopover?.bringToFront()
+            }
             return
         }
         // Until onboarding is completed, show it centered on screen; afterwards
