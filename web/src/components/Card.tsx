@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { motion } from "motion/react";
 import { ArrowUp, Check, Lightbulb, Loader2, RefreshCw } from "lucide-react";
 import { type CardData, send } from "@/bridge";
 import {
@@ -252,6 +253,21 @@ function RewriteBody({ card }: { card: CardData }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [cycle]);
 
+  // Tab switches animate the content height, so anything pinned below it
+  // (chips + the Accept footer) swims with the spring. Blur + fade that zone
+  // out for the switch and bring it back once the height has settled.
+  const [switching, setSwitching] = useState(false);
+  const firstTab = useRef(true);
+  useEffect(() => {
+    if (firstTab.current) {
+      firstTab.current = false;
+      return;
+    }
+    setSwitching(true);
+    const t = setTimeout(() => setSwitching(false), 340);
+    return () => clearTimeout(t);
+  }, [current]);
+
   const activeRes = results[current];
   const refining = refiningStyle === current;
   const activeText = refined[current] ?? activeRes?.text ?? "";
@@ -408,9 +424,7 @@ function RewriteBody({ card }: { card: CardData }) {
           )}
         </div>
         <div className={CONTENT}>
-          {/* Snap height on tab switch: the native panel resizes to fit, and a
-              per-frame height spring makes the footer (Accept) shake. */}
-          <TabsContents animateHeight={false}>
+          <TabsContents>
             {visibleStyles.map((s) => (
               <TabsContent key={s.id} value={s.id}>
                 <RewritePanel
@@ -434,6 +448,18 @@ function RewriteBody({ card }: { card: CardData }) {
         </div>
       </Tabs>
 
+      <motion.div
+        className={switching ? "pointer-events-none" : undefined}
+        animate={
+          switching
+            ? { opacity: 0, filter: "blur(3px)" }
+            : { opacity: 1, filter: "blur(0px)" }
+        }
+        transition={{
+          duration: switching ? 0.1 : 0.25,
+          ease: [0.23, 1, 0.32, 1],
+        }}
+      >
       {current === "rephrase" && (
         <div className="flex flex-wrap gap-1.5 pt-2.5 pr-2 pb-0 pl-3">
           {CHIPS.map((c) => (
@@ -499,6 +525,7 @@ function RewriteBody({ card }: { card: CardData }) {
           </Kbd>
         </Button>
       </div>
+      </motion.div>
     </>
   );
 }
