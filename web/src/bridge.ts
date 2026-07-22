@@ -46,6 +46,8 @@ export interface SettingsState {
   explainFixes: boolean;
   /** Catalog model ids already downloaded to the models dir. */
   downloadedModels: string[];
+  /** App version ("dev" for unbundled dev builds). */
+  version: string;
 }
 
 type OutboundMessage =
@@ -66,6 +68,12 @@ type OutboundMessage =
   | { type: "closeSettings" }
   // Mousedown on the card's top bar — Swift starts a native window drag.
   | { type: "dragWindow" }
+  // Ask Swift to hit the GitHub releases API; result arrives via updateStatus.
+  | { type: "checkForUpdates" }
+  // Open an https link in the default browser.
+  | { type: "openURL"; url: string }
+  // Open the llama-server log file (debugging model issues).
+  | { type: "openLogs" }
   // Onboarding sandbox: while active, ⌘` targets the onboarding's own textarea
   // so the user can try the real card without leaving the flow. `sandboxRephrase`
   // is the hover-the-pill equivalent of pressing ⌘`; `sandboxGrammar` opens the
@@ -98,6 +106,16 @@ export interface DownloadProgress {
   error?: string;
 }
 
+/** Result of an update check, pushed from Swift. */
+export interface UpdateStatus {
+  /** The running version. */
+  current: string;
+  /** Latest released version, absent if the check failed. */
+  latest?: string;
+  /** Release page to open when an update is available. */
+  url: string;
+}
+
 interface LocoInbound {
   setCard?: (data: CardData) => void;
   setSettings?: (state: SettingsState) => void;
@@ -105,6 +123,8 @@ interface LocoInbound {
   sandboxApplied?: (text: string) => void;
   /** Swift → JS: model download progress. */
   downloadProgress?: (d: DownloadProgress) => void;
+  /** Swift → JS: update check result. */
+  updateStatus?: (s: UpdateStatus) => void;
 }
 
 declare global {
@@ -137,4 +157,9 @@ export function onSandboxApplied(handler: (text: string) => void): void {
 /** Register the callback Swift invokes with model-download progress. */
 export function onDownloadProgress(handler: (d: DownloadProgress) => void): void {
   window.loco = { ...window.loco, downloadProgress: handler };
+}
+
+/** Register the callback Swift invokes with an update check's result. */
+export function onUpdateStatus(handler: (s: UpdateStatus) => void): void {
+  window.loco = { ...window.loco, updateStatus: handler };
 }

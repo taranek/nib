@@ -1083,6 +1083,44 @@ final class AppController: NSObject {
         modelDownload = nil
     }
 
+    /// The app's marketing version ("dev" for bare `swift run` builds).
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    /// Ask GitHub for the latest release and report it to the settings UI.
+    private func checkForUpdates() {
+        let url = URL(string: "https://api.github.com/repos/taranek/nib/releases/latest")!
+        let current = appVersion
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            var latest: String?
+            var page = "https://github.com/taranek/nib/releases/latest"
+            if let data,
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let tag = obj["tag_name"] as? String {
+                    latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+                }
+                if let html = obj["html_url"] as? String { page = html }
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.settingsPopover?.setUpdateStatus(current: current, latest: latest, url: page)
+                }
+            }
+        }.resume()
+    }
+
+    /// Open the llama-server log (model load/connect failures land there).
+    private func openLlamaLog() {
+        try? FileManager.default.createDirectory(
+            at: LLMPaths.logsDir, withIntermediateDirectories: true)
+        let url = LLMPaths.llamaLogURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     /// Push current state (enabled + accessibility + LLM) into the settings UI.
     private func pushSettingsState() {
         let trusted = AXIsProcessTrusted()
@@ -1094,7 +1132,8 @@ final class AppController: NSObject {
                                   targetLanguage: targetLanguage,
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
                                   explainFixes: explainFixes,
-                                  downloadedModels: downloadedModelIDs())
+                                  downloadedModels: downloadedModelIDs(),
+                                  version: appVersion)
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -1169,6 +1208,15 @@ final class AppController: NSObject {
                 LLMPaths.setOnboardingCompleted(true)
             }
             settingsPopover?.close()
+        case "checkForUpdates":
+            checkForUpdates()
+        case "openURL":
+            if let s = body["url"] as? String, let url = URL(string: s),
+               url.scheme == "https" {
+                NSWorkspace.shared.open(url)
+            }
+        case "openLogs":
+            openLlamaLog()
         case "quit":
             llmServer.stop()
             NSApp.terminate(nil)

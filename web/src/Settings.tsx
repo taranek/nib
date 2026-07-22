@@ -1,5 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { type SettingsState, onSetSettings, send } from "./bridge";
+import {
+  type SettingsState,
+  type UpdateStatus,
+  onSetSettings,
+  onUpdateStatus,
+  send,
+} from "./bridge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Toggle } from "@/components/ui/toggle";
@@ -25,6 +31,18 @@ const LANGUAGES = [
 
 const inWebView = Boolean(window.webkit?.messageHandlers?.loco);
 
+/** Simple semver "is `latest` newer than `current`" (dev builds never update). */
+function isNewer(latest: string, current: string): boolean {
+  if (current === "dev") return false;
+  const a = latest.split(".").map(Number);
+  const b = current.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
+    if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
+  }
+  return false;
+}
+
 const SECTION = "flex flex-col gap-2.5 border-t border-border pt-3.5";
 const ROW = "flex items-center justify-between gap-3";
 const FIELD = "flex min-w-0 flex-col gap-0.5";
@@ -47,7 +65,19 @@ export function Settings() {
     onboardingCompleted: false,
     explainFixes: true,
     downloadedModels: [],
+    version: "dev",
   });
+
+  // Update check: null until checked; Swift reports back via updateStatus.
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    onUpdateStatus((s) => {
+      setChecking(false);
+      setUpdate(s);
+    });
+  }, []);
+  const updateAvailable = !!update?.latest && isNewer(update.latest, state.version);
 
   const llmReady = state.llmStatus.toLowerCase() === "ready";
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -196,13 +226,80 @@ export function Settings() {
           </section>
 
           <section className={SECTION}>
-            <button
-              onClick={() => send({ type: "quit" })}
-              className="inline-flex cursor-pointer items-center gap-1.5 self-start rounded-md text-[13px] text-muted-foreground transition-colors hover:text-diff-del"
-            >
-              <Power className="size-3.5" />
-              Quit Nib
-            </button>
+            <div className={ROW}>
+              <div className={FIELD}>
+                <span className={LABEL}>Updates</span>
+                <span className={HINT}>
+                  {checking
+                    ? "Checking…"
+                    : update
+                      ? update.latest
+                        ? updateAvailable
+                          ? `Version ${update.latest} is available.`
+                          : "You're up to date."
+                        : "Couldn't reach GitHub."
+                      : `Version ${state.version}`}
+                </span>
+              </div>
+              {updateAvailable && update ? (
+                <Button
+                  size="sm"
+                  variant="brand"
+                  onClick={() => send({ type: "openURL", url: update.url })}
+                >
+                  Download
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="default"
+                  disabled={checking}
+                  onClick={() => {
+                    setChecking(true);
+                    send({ type: "checkForUpdates" });
+                  }}
+                >
+                  Check
+                </Button>
+              )}
+            </div>
+          </section>
+
+          <section className={SECTION}>
+            <div className={ROW}>
+              <div className={FIELD}>
+                <span className={LABEL}>Logs</span>
+                <span className={HINT}>
+                  Model loading and connection output, for debugging.
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => send({ type: "openLogs" })}
+              >
+                Open
+              </Button>
+            </div>
+          </section>
+
+          <section className={SECTION}>
+            <div className={ROW}>
+              <div className={FIELD}>
+                <span className={LABEL}>Quit Nib</span>
+                <span className={HINT}>
+                  Stops suggestions until you launch it again.
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => send({ type: "quit" })}
+              >
+                <Power className="size-3.5" />
+                Quit
+              </Button>
+            </div>
           </section>
         </div>
       )}

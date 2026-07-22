@@ -162,7 +162,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
     /// Push state into the settings UI.
     func setState(enabled: Bool, accessibilityTrusted: Bool, llmStatus: String,
                   model: String, targetLanguage: String, onboardingCompleted: Bool,
-                  explainFixes: Bool, downloadedModels: [String]) {
+                  explainFixes: Bool, downloadedModels: [String], version: String) {
         let payload: [String: Any] = [
             "enabled": enabled,
             "accessibilityTrusted": accessibilityTrusted,
@@ -172,6 +172,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
             "onboardingCompleted": onboardingCompleted,
             "explainFixes": explainFixes,
             "downloadedModels": downloadedModels,
+            "version": version,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -235,6 +236,16 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
         let f = panel.frame
         return CGRect(x: f.minX + CGFloat(x), y: f.maxY - CGFloat(y) - CGFloat(h),
                       width: CGFloat(w), height: CGFloat(h))
+    }
+
+    /// Report an update check's result to the settings UI.
+    func setUpdateStatus(current: String, latest: String?, url: String) {
+        var payload: [String: Any] = ["current": current, "url": url]
+        if let latest { payload["latest"] = latest }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript(
+            "window.loco && window.loco.updateStatus && window.loco.updateStatus(\(json))")
     }
 
     /// Push model-download progress into the settings/onboarding UI.

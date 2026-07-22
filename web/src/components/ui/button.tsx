@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-type ButtonVariant = "default" | "brand" | "outline";
+type ButtonVariant = "default" | "brand" | "outline" | "danger";
 type ButtonSize = "sm" | "md";
 
 const VARIANTS: Record<ButtonVariant, string> = {
@@ -17,6 +17,10 @@ const VARIANTS: Record<ButtonVariant, string> = {
   // Outline: bordered surface that fills with accent on hover.
   outline:
     "border border-input bg-background text-foreground shadow-sm shadow-black/5 hover:bg-accent hover:text-accent-foreground",
+  // Ghost-danger: quiet hairline button that turns destructive on hover — for
+  // actions like Quit that belong in the UI but shouldn't draw the eye.
+  danger:
+    "bg-transparent text-subtle ring-1 ring-inset ring-border hover:bg-diff-del/10 hover:text-diff-del hover:ring-diff-del/40",
 };
 
 const SIZES: Record<ButtonSize, string> = {

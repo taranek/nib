@@ -89,6 +89,9 @@ enum LLMPaths {
 
     static var binDir: URL { supportDir.appendingPathComponent("bin", isDirectory: true) }
     static var modelsDir: URL { supportDir.appendingPathComponent("models", isDirectory: true) }
+    static var logsDir: URL { supportDir.appendingPathComponent("logs", isDirectory: true) }
+    /// llama-server output (model load/connect failures land here).
+    static var llamaLogURL: URL { logsDir.appendingPathComponent("llama-server.log") }
 
     /// First-run onboarding flag, persisted as JSON alongside bin/ and models/ so
     /// it survives relaunches. Delete the file (or set the flag false) to replay
@@ -245,8 +248,8 @@ final class LLMServer {
             if data.isEmpty { return }
             // Tee llama-server output to a log file so model-load failures are
             // diagnosable even when the app is launched via Finder/`open` (no
-            // stdout). Tail it with: tail -f /tmp/nib-llama.log
-            let url = URL(fileURLWithPath: "/tmp/nib-llama.log")
+            // stdout). Also reachable via Settings → Open log.
+            let url = LLMPaths.llamaLogURL
             if let h = try? FileHandle(forWritingTo: url) {
                 h.seekToEndOfFile(); h.write(data); try? h.close()
             } else {
@@ -267,8 +270,10 @@ final class LLMServer {
         }
 
         // Start each run's log fresh.
+        try? FileManager.default.createDirectory(
+            at: LLMPaths.logsDir, withIntermediateDirectories: true)
         try? Data("▶ llama-server -m \(model) --port \(port)\n".utf8)
-            .write(to: URL(fileURLWithPath: "/tmp/nib-llama.log"))
+            .write(to: LLMPaths.llamaLogURL)
 
         do {
             try p.run()
