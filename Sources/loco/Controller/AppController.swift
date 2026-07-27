@@ -1060,6 +1060,10 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private static let modelCatalog: [CatalogModel] = [
         CatalogModel(
+            id: "grmr-v3-g4b",
+            file: "GRMR-V3-G4B-Q8_0.gguf",
+            url: URL(string: "https://huggingface.co/qingy2024/GRMR-V3-G4B-GGUF/resolve/main/GRMR-V3-G4B-Q8_0.gguf?download=true")!),
+        CatalogModel(
             id: "gemma-4-e2b",
             file: "gemma-4-E2B-it-Q4_K_M.gguf",
             url: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true")!),

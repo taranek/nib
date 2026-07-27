@@ -12,12 +12,20 @@ import { Button } from "@/components/ui/button";
 // sync with modelCatalog in AppController.swift (which holds the download URLs).
 const CATALOG = [
   {
+    id: "grmr-v3-g4b",
+    file: "GRMR-V3-G4B-Q8_0.gguf",
+    name: "GRMR V3 4B",
+    size: "4.1 GB",
+    note: "Purpose-built for grammar fixes · Apache 2.0",
+    recommended: true,
+  },
+  {
     id: "gemma-4-e2b",
     file: "gemma-4-E2B-it-Q4_K_M.gguf",
     name: "Gemma 4 E2B",
     size: "3.1 GB",
     note: "Best quality for writing help",
-    recommended: true,
+    recommended: false,
   },
   {
     id: "qwen2.5-3b",
