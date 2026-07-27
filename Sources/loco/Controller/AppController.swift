@@ -548,7 +548,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ])
-        popoverPanel.present(anchor: NSPoint(x: word.rect.minX, y: word.rect.minY - 6))
+        popoverPanel.present(avoiding: word.rect)
     }
 
     private func scheduleHidePopover() {
@@ -690,7 +690,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ])
-        popoverPanel.present(anchor: NSPoint(x: pillRect?.minX ?? 0, y: (pillRect?.minY ?? 0) - 2))
+        popoverPanel.present(avoiding: pillRect ?? .zero)
     }
 
     /// Register the global shortcut that opens the rephrase card on the current
@@ -762,7 +762,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "explainFixes": explainFixes,
         ])
         popoverPanel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-        popoverPanel.present(anchor: NSPoint(x: rect.minX, y: rect.minY - 6))
+        popoverPanel.present(avoiding: rect)
     }
 
     /// Write `text` into the current target (browser DOM or native AX).

@@ -55,8 +55,10 @@ class FloatingPanel: NSPanel {
 final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDelegate {
     private(set) var webView: WKWebView!
 
-    /// Top-left of the card is pinned to `anchor`; it grows downward.
-    private var anchor: NSPoint = .zero
+    /// The rect (screen coords) the card must not cover — the flagged word,
+    /// the selection pill, or the sandbox textarea. The card opens below it,
+    /// flipping above when there's no room (e.g. Slack's bottom-anchored input).
+    private var avoidRect: CGRect = .zero
 
     var onMessage: (([String: Any]) -> Void)?
     var onEnter: (() -> Void)?
@@ -110,8 +112,8 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         webView.evaluateJavaScript("window.loco && window.loco.setCard && window.loco.setCard(\(json))")
     }
 
-    func present(anchor: NSPoint) {
-        self.anchor = anchor
+    func present(avoiding rect: CGRect) {
+        avoidRect = rect
         reposition()
         orderFrontRegardless()
         // Become key (without activating the app, since it's non-activating) so
@@ -133,19 +135,25 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         setFrameOrigin(origin(forSize: frame.size))
     }
 
-    /// Window origin that lands the card's visual top-left on `anchor` for a
-    /// given window size, clamped on-screen.
+    /// Window origin for a given size: card below `avoidRect` when it fits,
+    /// above it otherwise — never covering the text it refers to — clamped
+    /// on-screen. (`shadowMargin` is the transparent border around the card.)
     private func origin(forSize size: NSSize) -> NSPoint {
-        // The window includes a `shadowMargin` transparent border around the card,
-        // so offset by it to land the card's visual top-left on `anchor`, then
-        // nudge it right a touch and clamp fully on-screen.
         let nudgeX: CGFloat = 16
-        let nudgeY: CGFloat = 4   // push down a touch from the anchor
-        var origin = NSPoint(x: anchor.x - shadowMargin + nudgeX,
-                             y: anchor.y - size.height + shadowMargin - nudgeY)
-        let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
+        let gap: CGFloat = 4      // breathing room between the card and the rect
+        let edge: CGFloat = 8
+        let screen = NSScreen.screens.first {
+            $0.frame.contains(NSPoint(x: avoidRect.midX, y: avoidRect.midY))
+        } ?? NSScreen.main
+
+        var origin = NSPoint(x: avoidRect.minX - shadowMargin + nudgeX, y: 0)
+        // Below: the card's visual top sits just under the rect.
+        origin.y = avoidRect.minY - gap - size.height + shadowMargin
         if let vis = screen?.visibleFrame {
-            let edge: CGFloat = 8
+            if origin.y < vis.minY + edge {
+                // No room below — flip above: visual bottom just over the rect.
+                origin.y = avoidRect.maxY + gap - shadowMargin
+            }
             origin.x = min(origin.x, vis.maxX - edge - size.width)
             origin.x = max(origin.x, vis.minX + edge)
             origin.y = min(origin.y, vis.maxY - edge - size.height)
