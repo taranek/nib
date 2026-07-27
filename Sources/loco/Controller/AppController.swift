@@ -219,6 +219,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         // The selection pill belongs to the app we're leaving — the overlay is
         // global (above all apps), so drop it before re-evaluating the new app.
         hidePill()
+        // Flip Chromium/Electron's AX switch as soon as the app comes to front —
+        // before the switch, such apps may expose no focused element at all.
+        if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            enableBrowserAccessibility(pid: pid)
+        }
         rebuildObservers()
         tick()
     }
@@ -780,7 +785,49 @@ final class AppController: NSObject, NSApplicationDelegate {
                     AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
                 }
             }
+            let before = AX.string(element, kAXValueAttribute)
             AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString)
+            // Chromium/Electron (Slack, VS Code, …) report success but silently
+            // ignore AX text writes. If the field value didn't change, fall back
+            // to pasting over the selection — the range set above (or the user's
+            // own selection) marks the text to replace.
+            let after = AX.string(element, kAXValueAttribute)
+            if before == after {
+                // Paste replaces the current selection — only safe if it holds
+                // exactly the text we're replacing (guards against the range set
+                // above also having been ignored, which would paste at the caret).
+                let selected = AX.string(element, kAXSelectedTextAttribute) ?? ""
+                guard selected.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == target.original.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                    print("⚠️ AX write-back ignored and selection mismatch — not pasting")
+                    return
+                }
+                print("⌨️ AX write-back ignored — typing instead")
+                typeReplace(text)
+            }
+        }
+    }
+
+    /// Replace the focused app's current selection by synthesizing `text` as
+    /// keyboard input (CGEvent unicode strings) — typing over a selection
+    /// replaces it, and unlike a ⌘V fallback the clipboard is never touched.
+    /// Delayed a beat so the card panel has closed and key focus is back in the
+    /// target app before the events land.
+    private func typeReplace(_ text: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let source = CGEventSource(stateID: .combinedSessionState)
+            let utf16 = Array(text.utf16)
+            // CGEvent carries ~20 UTF-16 units per event; chunk longer text.
+            var start = 0
+            while start < utf16.count {
+                let chunk = Array(utf16[start..<min(start + 20, utf16.count)])
+                let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+                down?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                down?.post(tap: .cghidEventTap)
+                let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+                up?.post(tap: .cghidEventTap)
+                start += 20
+            }
         }
     }
 
@@ -821,8 +868,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// on the app element is the documented switch ATs use. Done once per PID.
     private func enableBrowserAccessibilityIfNeeded(for element: AXUIElement) {
         var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success,
-              !a11yEnabledPids.contains(pid),
+        guard AXUIElementGetPid(element, &pid) == .success else { return }
+        enableBrowserAccessibility(pid: pid)
+    }
+
+    /// Same, keyed off a pid directly — called on app activation, because a
+    /// fresh Chromium/Electron process may expose NO focused element until the
+    /// switch is flipped (so the element-based path never triggers).
+    private func enableBrowserAccessibility(pid: pid_t) {
+        guard !a11yEnabledPids.contains(pid),
               let app = NSRunningApplication(processIdentifier: pid),
               let bundleID = app.bundleIdentifier,
               Self.browserBundleIDs.contains(bundleID)
