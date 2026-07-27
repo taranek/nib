@@ -16,7 +16,7 @@ const CATALOG = [
     file: "GRMR-V3-G4B-Q8_0.gguf",
     name: "GRMR V3 4B",
     size: "4.1 GB",
-    note: "Purpose-built for grammar fixes · Apache 2.0",
+    note: "Purpose-built for grammar fixes",
     recommended: true,
   },
   {
