@@ -71,9 +71,13 @@ export const CATALOG: {
  *  model, Active for the current one, plus the local-file fallback. */
 export function ModelCatalog({ state }: { state: SettingsState }) {
   const [dl, setDl] = useState<DownloadProgress | null>(null);
-  useEffect(() => {
-    onDownloadProgress(setDl);
-  }, []);
+  useEffect(
+    () =>
+      onDownloadProgress((d) => {
+        if (d.id !== "app-update") setDl(d);
+      }),
+    [],
+  );
   return (
     <div className="flex flex-col divide-y divide-border/60">
       {CATALOG.map((m) => (

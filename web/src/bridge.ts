@@ -96,6 +96,9 @@ type OutboundMessage =
   | { type: "dragWindow" }
   // Ask Swift to hit the GitHub releases API; result arrives via updateStatus.
   | { type: "checkForUpdates" }
+  // Download + install a release in place, then relaunch (progress arrives via
+  // downloadProgress with id "app-update"). Dev builds open the release page.
+  | { type: "installUpdate"; version: string; url: string }
   // Open an https link in the default browser.
   | { type: "openURL"; url: string }
   // Open the llama-server log file (debugging model issues).
@@ -180,9 +183,19 @@ export function onSandboxApplied(handler: (text: string) => void): void {
   window.loco = { ...window.loco, sandboxApplied: handler };
 }
 
-/** Register the callback Swift invokes with model-download progress. */
-export function onDownloadProgress(handler: (d: DownloadProgress) => void): void {
-  window.loco = { ...window.loco, downloadProgress: handler };
+/** Register a callback for download progress (models and app updates share the
+ *  channel — filter by `id`). Multiple subscribers supported; returns an
+ *  unsubscribe function. */
+const downloadHandlers = new Set<(d: DownloadProgress) => void>();
+export function onDownloadProgress(
+  handler: (d: DownloadProgress) => void,
+): () => void {
+  downloadHandlers.add(handler);
+  window.loco = {
+    ...window.loco,
+    downloadProgress: (d) => downloadHandlers.forEach((h) => h(d)),
+  };
+  return () => downloadHandlers.delete(handler);
 }
 
 /** Register the callback Swift invokes with an update check's result. */

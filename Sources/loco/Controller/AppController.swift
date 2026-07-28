@@ -1351,6 +1351,94 @@ final class AppController: NSObject, NSApplicationDelegate {
         }.resume()
     }
 
+    /// Self-update: download the release zip, stage the new bundle, then swap
+    /// it in and relaunch after this process exits. Only for packaged installs —
+    /// dev builds fall back to opening the release page.
+    private func installUpdate(version: String, pageURL: String) {
+        let bundlePath = Bundle.main.bundlePath
+        guard bundlePath.hasSuffix(".app") else {
+            if let url = URL(string: pageURL) { NSWorkspace.shared.open(url) }
+            return
+        }
+        let zipURL = URL(string: "https://github.com/taranek/nib/releases/download/v\(version)/Nib.zip")!
+        let progressID = "app-update"
+        settingsPopover?.setDownload(id: progressID, progress: 0)
+
+        let task = URLSession.shared.downloadTask(with: zipURL) { [weak self] tmp, response, error in
+            let fm = FileManager.default
+            var staged: String?
+            var failure: String?
+            if let error {
+                failure = error.localizedDescription
+            } else if let tmp, ((response as? HTTPURLResponse)?.statusCode ?? 0) < 400 {
+                // Unpack in tmp and verify the staged bundle is the version we want.
+                let dir = fm.temporaryDirectory.appendingPathComponent("nib-update-\(version)")
+                try? fm.removeItem(at: dir)
+                try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                let unzip = Process()
+                unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                unzip.arguments = ["-xk", tmp.path, dir.path]
+                try? unzip.run()
+                unzip.waitUntilExit()
+                let app = dir.appendingPathComponent("Nib.app")
+                let plist = app.appendingPathComponent("Contents/Info.plist")
+                if unzip.terminationStatus == 0,
+                   let info = NSDictionary(contentsOf: plist),
+                   info["CFBundleShortVersionString"] as? String == version {
+                    staged = app.path
+                } else {
+                    failure = "downloaded bundle failed verification"
+                }
+            } else {
+                failure = "download failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))"
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let failure {
+                        self.settingsPopover?.setDownload(id: progressID, progress: 0, error: failure)
+                        return
+                    }
+                    guard let staged else { return }
+                    self.settingsPopover?.setDownload(id: progressID, progress: 1, done: true)
+                    print("⬆️ update \(version) staged — swapping on exit")
+                    self.relaunch(swapping: staged, into: bundlePath)
+                }
+            }
+        }
+        var lastPercent = -1
+        modelDownloadProgress = task.progress.observe(\.fractionCompleted) { [weak self] p, _ in
+            let percent = Int(p.fractionCompleted * 100)
+            guard percent != lastPercent else { return }
+            lastPercent = percent
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.settingsPopover?.setDownload(id: progressID, progress: p.fractionCompleted)
+                }
+            }
+        }
+        task.resume()
+    }
+
+    /// Detach a script that waits for this process to exit, swaps the bundle,
+    /// clears quarantine, and relaunches — then quit.
+    private func relaunch(swapping staged: String, into dest: String) {
+        let script = """
+        while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done
+        rm -rf "\(dest)"
+        ditto "\(staged)" "\(dest)"
+        xattr -dr com.apple.quarantine "\(dest)" 2>/dev/null
+        open "\(dest)"
+        """
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = ["-c", script]
+        try? p.run()
+        llmServer.stop()
+        taskServers.values.forEach { $0.stop() }
+        NSApp.terminate(nil)
+    }
+
     /// Open the logs folder (app log + llama-server log) in Finder.
     private func openLlamaLog() {
         try? FileManager.default.createDirectory(
@@ -1469,6 +1557,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             if let s = body["url"] as? String, let url = URL(string: s),
                url.scheme == "https" {
                 NSWorkspace.shared.open(url)
+            }
+        case "installUpdate":
+            if let version = body["version"] as? String {
+                let page = body["url"] as? String ?? "https://github.com/taranek/nib/releases/latest"
+                installUpdate(version: version, pageURL: page)
             }
         case "openLogs":
             openLlamaLog()

@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  type DownloadProgress,
   type SettingsState,
   type UpdateStatus,
+  onDownloadProgress,
   onSetSettings,
   onUpdateStatus,
   send,
@@ -83,6 +85,17 @@ export function Settings() {
     });
   }, []);
   const updateAvailable = !!update?.latest && isNewer(update.latest, state.version);
+
+  // In-place update install: Swift streams progress on the "app-update" id,
+  // then the app swaps its bundle and relaunches itself.
+  const [updating, setUpdating] = useState<DownloadProgress | null>(null);
+  useEffect(
+    () =>
+      onDownloadProgress((d) => {
+        if (d.id === "app-update") setUpdating(d);
+      }),
+    [],
+  );
 
   const llmReady = state.llmStatus.toLowerCase() === "ready";
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -284,24 +297,37 @@ export function Settings() {
               <div className={FIELD}>
                 <span className={LABEL}>Updates</span>
                 <span className={HINT}>
-                  {checking
-                    ? "Checking…"
-                    : update
-                      ? update.latest
-                        ? updateAvailable
-                          ? `Version ${update.latest} is available.`
-                          : "You're up to date."
-                        : "Couldn't reach GitHub."
-                      : `Version ${state.version}`}
+                  {updating && !updating.error
+                    ? updating.done
+                      ? "Restarting…"
+                      : `Downloading update… ${Math.round(updating.progress * 100)}%`
+                    : updating?.error
+                      ? `Update failed: ${updating.error}`
+                      : checking
+                        ? "Checking…"
+                        : update
+                          ? update.latest
+                            ? updateAvailable
+                              ? `Version ${update.latest} is available.`
+                              : "You're up to date."
+                            : "Couldn't reach GitHub."
+                          : `Version ${state.version}`}
                 </span>
               </div>
               {updateAvailable && update ? (
                 <Button
                   size="sm"
                   variant="brand"
-                  onClick={() => send({ type: "openURL", url: update.url })}
+                  disabled={!!updating && !updating.error}
+                  onClick={() =>
+                    send({
+                      type: "installUpdate",
+                      version: update.latest!,
+                      url: update.url,
+                    })
+                  }
                 >
-                  Download
+                  Update
                 </Button>
               ) : (
                 <Button
