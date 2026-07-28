@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, Check, Lightbulb, Loader2, RefreshCw } from "lucide-react";
+import { ArrowUp, Check, Lightbulb, Loader2 } from "lucide-react";
 import { type CardData, send } from "@/bridge";
 import {
   type ChatMsg,
@@ -87,20 +87,24 @@ function modelLabel(card: CardData, task: "grammar" | "compose" | "translate") {
   );
 }
 
-/** Subtle footer strip naming the model serving the current view. */
-function ModelFooter({
+/** Subtle badge naming the model serving the current view. */
+function ModelBadge({
   card,
   task,
+  className,
 }: {
   card: CardData;
   task: "grammar" | "compose" | "translate";
+  className?: string;
 }) {
   const label = modelLabel(card, task);
   if (!label) return null;
   return (
-    <div className="px-3 pb-1.5 text-right text-[10px] text-muted-foreground/70">
+    <span
+      className={`flex-none pr-1 text-[10px] text-muted-foreground/70 ${className ?? ""}`}
+    >
       {label}
-    </div>
+    </span>
   );
 }
 const BODY = "min-h-[22px] pl-2";
@@ -152,6 +156,7 @@ function GrammarBody({ card }: { card: CardData }) {
         )}
       </div>
       <div className="flex items-center justify-end gap-2 p-2">
+        <ModelBadge card={card} task="grammar" className="mr-auto pl-1" />
         <Button
           variant="brand"
           disabled={!canAccept}
@@ -163,7 +168,6 @@ function GrammarBody({ card }: { card: CardData }) {
           </Kbd>
         </Button>
       </div>
-      <ModelFooter card={card} task="grammar" />
     </>
   );
 }
@@ -248,7 +252,8 @@ function FixRow({ fix, llmUrl }: { fix: FixDetail; llmUrl: string }) {
 function RewriteBody({ card }: { card: CardData }) {
   const [active, setActive] = useState(card.styles[0]?.id ?? "grammar");
   const [results, setResults] = useState<Record<string, RewriteState>>({});
-  const [attempts, setAttempts] = useState<Record<string, number>>({});
+  // Retry ("try again" variations) was removed from the UI; attempts stays 0.
+  const [attempts] = useState<Record<string, number>>({});
   const [refined, setRefined] = useState<Record<string, string>>({});
   // Per-style refine conversation so custom prompts accumulate; retry replays.
   const [chats, setChats] = useState<Record<string, ChatMsg[]>>({});
@@ -369,20 +374,6 @@ function RewriteBody({ card }: { card: CardData }) {
     [refiningStyle, current, chats, sendRefine],
   );
 
-  // Try again: replay the last conversation turn for a variation, else
-  // regenerate the base tab.
-  const retry = useCallback(() => {
-    const convo = chats[current];
-    if (convo?.length) {
-      const last = convo[convo.length - 1];
-      const upToUser = last.role === "assistant" ? convo.slice(0, -1) : convo;
-      sendRefine(current, upToUser);
-      return;
-    }
-    setActiveChip(null);
-    setAttempts((p) => ({ ...p, [current]: (p[current] ?? 0) + 1 }));
-  }, [current, chats, sendRefine]);
-
   const submitFeedback = useCallback(() => {
     const instruction = feedback.trim();
     if (!instruction) return;
@@ -468,11 +459,7 @@ function RewriteBody({ card }: { card: CardData }) {
               );
             })}
           </TabsList>
-          {current !== "grammar" && (
-            <IconButton aria-label="Try again" onClick={retry}>
-              <RefreshCw className="size-3.5" />
-            </IconButton>
-          )}
+          <ModelBadge card={card} task={STYLE_TASK[current] ?? "compose"} />
         </div>
         <div className={CONTENT}>
           <TabsContents>
@@ -591,7 +578,6 @@ function RewriteBody({ card }: { card: CardData }) {
           </Kbd>
         </Button>
       </div>
-      <ModelFooter card={card} task={STYLE_TASK[current] ?? "compose"} />
       </motion.div>
     </>
   );
