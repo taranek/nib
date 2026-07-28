@@ -235,7 +235,16 @@ export function Settings() {
                   </span>
                   <Select
                     value={current?.name ?? "Default"}
-                    options={["Default", ...eligible.map((m) => m.name)]}
+                    options={[
+                      {
+                        value: "Default",
+                        description: `Active model (${state.model})`,
+                      },
+                      ...eligible.map((m) => ({
+                        value: m.name,
+                        description: m.note,
+                      })),
+                    ]}
                     onValueChange={(name) => {
                       const id =
                         CATALOG.find((m) => m.name === name)?.id ?? "default";

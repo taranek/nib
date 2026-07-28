@@ -8,6 +8,11 @@ import {
   DropdownMenuTrigger,
 } from "./dropdown-menu";
 
+/** A select option: a plain string, or a value with a muted description line. */
+export type SelectOption = string | { value: string; description?: string };
+
+const valueOf = (o: SelectOption) => (typeof o === "string" ? o : o.value);
+
 /** Compact select built on the dropdown menu (radio options). */
 function Select({
   value,
@@ -15,7 +20,7 @@ function Select({
   onValueChange,
 }: {
   value: string;
-  options: string[];
+  options: SelectOption[];
   onValueChange: (value: string) => void;
 }) {
   return (
@@ -31,11 +36,25 @@ function Select({
         className="max-h-(--radix-dropdown-menu-content-available-height) min-w-40 overflow-y-auto"
       >
         <DropdownMenuRadioGroup value={value} onValueChange={onValueChange}>
-          {options.map((o) => (
-            <DropdownMenuRadioItem key={o} value={o}>
-              {o}
-            </DropdownMenuRadioItem>
-          ))}
+          {options.map((o) => {
+            const v = valueOf(o);
+            const description =
+              typeof o === "string" ? undefined : o.description;
+            return (
+              <DropdownMenuRadioItem key={v} value={v}>
+                {description ? (
+                  <span className="flex min-w-0 flex-col gap-px">
+                    <span>{v}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {description}
+                    </span>
+                  </span>
+                ) : (
+                  v
+                )}
+              </DropdownMenuRadioItem>
+            );
+          })}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
