@@ -174,10 +174,15 @@ final class LLMServer {
     var onStatusChange: ((Status) -> Void)?
 
     let port: Int
+    /// Pinned model for task-specific servers; nil = the app's default model.
+    let fixedModelPath: String?
     private var process: Process?
     private var owns = false   // did we spawn the server (so we may kill it)?
 
-    init(port: Int = 18080) { self.port = port }
+    init(port: Int = 18080, modelPath: String? = nil) {
+        self.port = port
+        self.fixedModelPath = modelPath
+    }
 
     var chatURL: URL { URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")! }
     private var healthURL: URL { URL(string: "http://127.0.0.1:\(port)/health")! }
@@ -215,7 +220,8 @@ final class LLMServer {
             print("⚠️ LLM: no llama-server binary. Set LOCO_LLAMA_SERVER or place it in \(LLMPaths.binDir.path)")
             return
         }
-        guard let model = LLMPaths.resolveModel() else {
+        guard let model = fixedModelPath ?? LLMPaths.resolveModel(),
+              FileManager.default.fileExists(atPath: model) else {
             status = .failed("no GGUF model found")
             print("⚠️ LLM: no model. Set LOCO_MODEL or place a .gguf in \(LLMPaths.modelsDir.path)")
             return
@@ -269,11 +275,16 @@ final class LLMServer {
             }
         }
 
-        // Start each run's log fresh.
+        // Start the log fresh for the main server; task servers append (they
+        // share the file).
         try? FileManager.default.createDirectory(
             at: LLMPaths.logsDir, withIntermediateDirectories: true)
-        try? Data("▶ llama-server -m \(model) --port \(port)\n".utf8)
-            .write(to: LLMPaths.llamaLogURL)
+        let header = Data("▶ llama-server -m \(model) --port \(port)\n".utf8)
+        if fixedModelPath == nil {
+            try? header.write(to: LLMPaths.llamaLogURL)
+        } else if let h = try? FileHandle(forWritingTo: LLMPaths.llamaLogURL) {
+            h.seekToEndOfFile(); h.write(header); try? h.close()
+        }
 
         do {
             try p.run()

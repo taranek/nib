@@ -65,6 +65,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var modelDownload: URLSessionDownloadTask?
     private var modelDownloadProgress: NSKeyValueObservation?
 
+    // Per-task model routing: each task can be pinned to a downloaded catalog
+    // model (UserDefaults "taskModel.<task>" = catalog id; absent = the default
+    // model). Distinct pinned models get their own llama-server, spawned lazily
+    // and kept warm.
+    enum LLMTask: String, CaseIterable {
+        case grammar, compose, translate
+    }
+    private var taskServers: [String: LLMServer] = [:]   // model path → server
+    private var nextTaskPort = 18085
+
     // The card opens against a target; React fetches rewrites and sends back the
     // accepted text, which we write into this target.
     private var rewriteTarget: RewriteTarget?
@@ -377,7 +387,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func recheck(value: String, appName: String?) {
         let token = value.hashValue
         let text = appName.flatMap { browser.focusedText(appName: $0) } ?? value
-        guard llmReady, let client = llmClient,
+        // Grammar may be pinned to its own model/server (per-task routing).
+        let grammarServer = server(for: .grammar)
+        let client = LLMClient(chatURL: grammarServer.chatURL)
+        guard grammarServer.status == .ready,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             currentCorrections = []
             currentFullText = text
@@ -537,13 +550,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Accept replaces the whole sentence.
         rewriteTarget = RewriteTarget(original: word.original, appName: activeBrowserAppName,
                                       element: activeElement, range: word.range)
+        let routing = cardRouting()
         popoverPanel.setCard([
             "mode": "grammar",
             "original": word.original,
             "result": word.corrected,
             "styles": [],
-            // The card fetches a friendly "why" explanation for the fix.
-            "llmUrl": llmServer.chatURL.absoluteString,
+            // The card fetches a friendly "why" explanation for the fix — from
+            // the compose model (a grammar-only fine-tune can't explain).
+            "llmUrl": chatURL(for: .compose).absoluteString,
+            "llmUrls": routing.urls,
+            "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
@@ -680,12 +697,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverMode = .rephrase
         rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
                                       element: rephraseElement, range: rephraseRange)
+        let routing = cardRouting()
         popoverPanel.setCard([
             "mode": "rewrite",
             "original": text,
             "result": "",
             "styles": Self.styleList,
-            "llmUrl": llmServer.chatURL.absoluteString,
+            "llmUrl": chatURL(for: .compose).absoluteString,
+            "llmUrls": routing.urls,
+            "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
@@ -751,12 +771,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         activeWord = FlaggedWord(rect: rect, original: original, corrected: corrected,
                                  range: nil, sentenceID: original)
         rewriteTarget = RewriteTarget(original: original, appName: nil, element: nil, range: nil)
+        let routing = cardRouting()
         popoverPanel.setCard([
             "mode": "grammar",
             "original": original,
             "result": corrected,
             "styles": [],
-            "llmUrl": llmServer.chatURL.absoluteString,
+            "llmUrl": chatURL(for: .compose).absoluteString,
+            "llmUrls": routing.urls,
+            "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
@@ -858,6 +881,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             // For grammar, suppress the sentence so it stops being flagged.
             if popoverMode == .grammar, let word = activeWord { dismissed.insert(word.id) }
             finishRephrase()
+        case "openSettings":
+            // A capability disclaimer's "Open Settings" — close the card first.
+            finishRephrase()
+            openSettings()
         default:
             break
         }
@@ -951,6 +978,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc private func quitFromMenu() {
         llmServer.stop()
+        taskServers.values.forEach { $0.stop() }
         NSApp.terminate(nil)
     }
 
@@ -1050,32 +1078,133 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // MARK: - Model catalog (Hugging Face downloads)
 
-    /// Curated GGUF models offered in onboarding. Keep ids in sync with CATALOG
-    /// in Onboarding.tsx (which holds the display copy).
+    /// What a model can be trusted with. Raw values are shared with the web UI.
+    enum ModelCapability: String, CaseIterable {
+        case grammar      // inline squiggles + the Grammar tab
+        case compose      // rephrase / shorten / refine / explainers
+        case translate    // the Translate tab
+    }
+
+    /// Curated GGUF models offered in onboarding. Keep ids/capabilities in sync
+    /// with CATALOG in ModelCatalog.tsx (which holds the display copy).
     private struct CatalogModel {
         let id: String
         let file: String
         let url: URL
+        let caps: Set<ModelCapability>
     }
 
     private static let modelCatalog: [CatalogModel] = [
         CatalogModel(
-            id: "grmr-v3-g4b",
-            file: "GRMR-V3-G4B-Q8_0.gguf",
-            url: URL(string: "https://huggingface.co/qingy2024/GRMR-V3-G4B-GGUF/resolve/main/GRMR-V3-G4B-Q8_0.gguf?download=true")!),
+            id: "qwen3-4b",
+            file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            url: URL(string: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true")!,
+            caps: [.grammar, .compose, .translate]),
         CatalogModel(
             id: "gemma-4-e2b",
             file: "gemma-4-E2B-it-Q4_K_M.gguf",
-            url: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true")!),
+            url: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true")!,
+            caps: [.grammar, .compose, .translate]),
         CatalogModel(
-            id: "qwen2.5-3b",
-            file: "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-            url: URL(string: "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf?download=true")!),
+            id: "eurollm-9b",
+            file: "EuroLLM-9B-Instruct-Q4_K_M.gguf",
+            url: URL(string: "https://huggingface.co/bartowski/EuroLLM-9B-Instruct-GGUF/resolve/main/EuroLLM-9B-Instruct-Q4_K_M.gguf?download=true")!,
+            caps: [.grammar, .compose, .translate]),
         CatalogModel(
-            id: "llama-3.2-3b",
-            file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-            url: URL(string: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true")!),
+            id: "grmr-v3-g4b",
+            file: "GRMR-V3-G4B-Q8_0.gguf",
+            url: URL(string: "https://huggingface.co/qingy2024/GRMR-V3-G4B-GGUF/resolve/main/GRMR-V3-G4B-Q8_0.gguf?download=true")!,
+            caps: [.grammar]),   // English-only correction fine-tune; can't rephrase/translate
     ]
+
+    /// Capabilities of the model at `path` — catalog lookup by file name;
+    /// unknown (user-supplied) models are assumed fully capable.
+    private static func capabilities(ofModelAt path: String?) -> Set<ModelCapability> {
+        guard let path else { return Set(ModelCapability.allCases) }
+        let file = URL(fileURLWithPath: path).lastPathComponent
+        return modelCatalog.first { $0.file == file }?.caps ?? Set(ModelCapability.allCases)
+    }
+
+    // MARK: - Per-task model routing
+
+    /// The catalog id pinned to `task`, or nil for "use the default model".
+    private func taskModelID(for task: LLMTask) -> String? {
+        UserDefaults.standard.string(forKey: "taskModel.\(task.rawValue)")
+    }
+
+    /// Absolute path of the model pinned to `task`, nil when it should use the
+    /// default (unset, unknown id, or the file is gone).
+    private func taskModelPath(for task: LLMTask) -> String? {
+        guard let id = taskModelID(for: task),
+              let model = Self.modelCatalog.first(where: { $0.id == id }) else { return nil }
+        let path = LLMPaths.modelsDir.appendingPathComponent(model.file).path
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        // Pinning the same model as the default is a no-op — share the server.
+        if path == LLMPaths.resolveModel() { return nil }
+        return path
+    }
+
+    /// The server responsible for `task`: a warm task server for pinned models,
+    /// else the main one. Spawns the task server on first use.
+    private func server(for task: LLMTask) -> LLMServer {
+        guard let path = taskModelPath(for: task) else { return llmServer }
+        if let existing = taskServers[path] { return existing }
+        let server = LLMServer(port: nextTaskPort, modelPath: path)
+        nextTaskPort += 1
+        server.onStatusChange = { [weak self] status in
+            guard let self else { return }
+            if status == .ready {
+                // Re-run detection now that the (possibly grammar) server is up.
+                self.lastSignature = ""
+                self.checkedValueHash = 0
+                self.tick()
+            }
+        }
+        taskServers[path] = server
+        server.start()
+        print("🧠 LLM: task server for \(URL(fileURLWithPath: path).lastPathComponent) on port \(server.port)")
+        return server
+    }
+
+    /// Chat URL serving `task` right now.
+    private func chatURL(for task: LLMTask) -> URL { server(for: task).chatURL }
+
+    /// Whether `task`'s backing model supports it (capability check).
+    private func taskSupported(_ task: LLMTask) -> Bool {
+        let path = taskModelPath(for: task) ?? LLMPaths.resolveModel()
+        let cap: ModelCapability = switch task {
+        case .grammar: .grammar
+        case .compose: .compose
+        case .translate: .translate
+        }
+        return Self.capabilities(ofModelAt: path).contains(cap)
+    }
+
+    /// Shut down task servers whose model no longer backs any task (after
+    /// reassignment), so memory isn't held by orphaned models.
+    private func pruneTaskServers() {
+        let needed = Set(LLMTask.allCases.compactMap { taskModelPath(for: $0) })
+        for (path, server) in taskServers where !needed.contains(path) {
+            server.stop()
+            taskServers[path] = nil
+            print("🧠 LLM: stopped task server for \(URL(fileURLWithPath: path).lastPathComponent)")
+        }
+    }
+
+    /// Payload fragments the card needs to route + gate its tabs.
+    private func cardRouting() -> (urls: [String: String], caps: [String: Bool]) {
+        let urls = [
+            "grammar": chatURL(for: .grammar).absoluteString,
+            "compose": chatURL(for: .compose).absoluteString,
+            "translate": chatURL(for: .translate).absoluteString,
+        ]
+        let caps = [
+            "grammar": taskSupported(.grammar),
+            "compose": taskSupported(.compose),
+            "translate": taskSupported(.translate),
+        ]
+        return (urls, caps)
+    }
 
     /// Catalog ids whose file is already on disk (no need to re-download).
     private func downloadedModelIDs() -> [String] {
@@ -1218,6 +1347,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func pushSettingsState() {
         let trusted = AXIsProcessTrusted()
         lastSettingsTrusted = trusted
+        let taskModels = Dictionary(uniqueKeysWithValues: LLMTask.allCases.map {
+            ($0.rawValue, taskModelID(for: $0) ?? "default")
+        })
         settingsPopover?.setState(enabled: enabled,
                                   accessibilityTrusted: trusted,
                                   llmStatus: llmStatusString(),
@@ -1226,7 +1358,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
                                   explainFixes: explainFixes,
                                   downloadedModels: downloadedModelIDs(),
-                                  version: appVersion)
+                                  version: appVersion,
+                                  taskModels: taskModels)
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -1290,6 +1423,20 @@ final class AppController: NSObject, NSApplicationDelegate {
             if let id = body["id"] as? String { startModelDownload(id: id) }
         case "selectModel":
             if let id = body["id"] as? String { selectModel(id: id) }
+        case "setTaskModel":
+            if let taskName = body["task"] as? String, let task = LLMTask(rawValue: taskName) {
+                let id = body["id"] as? String
+                if let id, id != "default" {
+                    UserDefaults.standard.set(id, forKey: "taskModel.\(task.rawValue)")
+                } else {
+                    UserDefaults.standard.removeObject(forKey: "taskModel.\(task.rawValue)")
+                }
+                _ = server(for: task)   // warm the newly-assigned model
+                pruneTaskServers()
+                // New grammar model → re-run detection against it.
+                if task == .grammar { lastSignature = ""; checkedValueHash = 0 }
+                pushSettingsState()
+            }
         case "cancelDownload":
             cancelModelDownload()
         case "dragWindow":
@@ -1312,6 +1459,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             openLlamaLog()
         case "quit":
             llmServer.stop()
+            taskServers.values.forEach { $0.stop() }
             NSApp.terminate(nil)
         default:
             break

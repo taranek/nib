@@ -56,6 +56,25 @@ const CHIPS: { label: string; instruction: string }[] = [
 // Tighter bottom: the footer below brings its own p-2, and stacking full
 // padding on both sides left ~20px above Accept (the app's rhythm is 10-14px).
 const CONTENT = "px-2 pt-3 pb-1";
+
+// Which routing task serves each rewrite style.
+const STYLE_TASK: Record<string, "grammar" | "compose" | "translate"> = {
+  grammar: "grammar",
+  rephrase: "compose",
+  shorten: "compose",
+  translate: "translate",
+};
+
+/** Chat URL for a style, honoring per-task model routing (older hosts only
+ *  send the single llmUrl). */
+function urlFor(card: CardData, style: string): string {
+  return card.llmUrls?.[STYLE_TASK[style] ?? "compose"] ?? card.llmUrl;
+}
+
+/** Whether the model behind a style's task supports it. */
+function styleSupported(card: CardData, style: string): boolean {
+  return card.capabilities?.[STYLE_TASK[style] ?? "compose"] ?? true;
+}
 const BODY = "min-h-[22px] pl-2";
 const RESULT = "text-[15px] leading-[1.45] text-subtle";
 const TAB_KBD =
@@ -77,7 +96,8 @@ function GrammarBody({ card }: { card: CardData }) {
     card.original,
     card.result,
     card.llmUrl,
-    canAccept && card.ready && !!card.llmUrl && card.explainFixes,
+    canAccept && card.ready && !!card.llmUrl && card.explainFixes &&
+      (card.capabilities?.compose ?? true),
   );
 
   // Keyboard: Tab accepts the correction, Esc dismisses.
@@ -432,8 +452,10 @@ function RewriteBody({ card }: { card: CardData }) {
                 <RewritePanel
                   style={s.id}
                   original={card.original}
-                  llmUrl={card.llmUrl}
-                  explain={card.explainFixes}
+                  llmUrl={urlFor(card, s.id)}
+                  explainUrl={card.llmUrl}
+                  explain={card.explainFixes && (card.capabilities?.compose ?? true)}
+                  supported={styleSupported(card, s.id)}
                   enabled={
                     s.id === current && (!needsLang(s.id) || !langLoading)
                   }
@@ -545,11 +567,33 @@ function RewriteBody({ card }: { card: CardData }) {
   );
 }
 
+/** Shown when the tab's backing model lacks the capability (e.g. a grammar-only
+ *  fine-tune asked to rephrase): explain and route to Settings. */
+function UnsupportedPanel({ style }: { style: string }) {
+  const what =
+    style === "translate" ? "translate" : "rewrite text";
+  return (
+    <div className={BODY}>
+      <div className="flex flex-col items-start gap-2 py-1">
+        <span className="text-[13px] text-muted-foreground">
+          The current model is built for grammar fixes only — it can't {what}.
+          Pick a different model for this task in Settings.
+        </span>
+        <Button size="sm" variant="default" onClick={() => send({ type: "openSettings" })}>
+          Open Settings
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function RewritePanel({
   style,
   original,
   llmUrl,
+  explainUrl,
   explain,
+  supported,
   enabled,
   language,
   attempt,
@@ -561,7 +605,10 @@ function RewritePanel({
   style: string;
   original: string;
   llmUrl: string;
+  /** Compose-model URL for explainers (may differ from the tab's own URL). */
+  explainUrl: string;
   explain: boolean;
+  supported: boolean;
   enabled: boolean;
   language: string | null;
   attempt: number;
@@ -570,7 +617,8 @@ function RewritePanel({
   refining?: boolean;
   onResult: (id: string, s: RewriteState) => void;
 }) {
-  const st = useRewrite(style, original, llmUrl, enabled, language, attempt, target);
+  const st = useRewrite(
+    style, original, llmUrl, enabled && supported, language, attempt, target);
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
@@ -581,10 +629,11 @@ function RewritePanel({
   const { fixes } = useFixExplanations(
     original,
     st.text,
-    llmUrl,
+    explainUrl,
     isGrammar && explain && corrected && override == null,
   );
 
+  if (!supported) return <UnsupportedPanel style={style} />;
   if (refining)
     return (
       <div className={BODY}>
@@ -639,7 +688,7 @@ function RewritePanel({
     <div className={BODY}>
       <DiffText original={original} result={st.text} />
       {isGrammar && explain && fixes && fixes.length > 0 && (
-        <FixExplanations fixes={fixes} llmUrl={llmUrl} />
+        <FixExplanations fixes={fixes} llmUrl={explainUrl} />
       )}
     </div>
   );

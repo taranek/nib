@@ -12,7 +12,12 @@ import { Toggle } from "@/components/ui/toggle";
 import { Pill } from "@/components/ui/pill";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Onboarding } from "@/components/Onboarding";
-import { ModelCatalog } from "@/components/ModelCatalog";
+import {
+  CATALOG,
+  CAPABILITY_LABELS,
+  ModelCatalog,
+  type Capability,
+} from "@/components/ModelCatalog";
 import { CardHeader } from "@/components/CardHeader";
 
 const LANGUAGES = [
@@ -65,6 +70,7 @@ export function Settings() {
     explainFixes: true,
     downloadedModels: [],
     version: "dev",
+    taskModels: { grammar: "default", compose: "default", translate: "default" },
   });
 
   // Update check: null until checked; Swift reports back via updateStatus.
@@ -203,6 +209,46 @@ export function Settings() {
               </Button>
             </div>
             {browsingModels && <ModelCatalog state={state} />}
+          </section>
+
+          <section className={SECTION}>
+            <div className={FIELD}>
+              <span className={LABEL}>Models by task</span>
+              <span className={HINT}>
+                Use a different downloaded model per task.
+              </span>
+            </div>
+            {(["grammar", "compose", "translate"] as const).map((task) => {
+              // Only downloaded models that actually support the task.
+              const eligible = CATALOG.filter(
+                (m) =>
+                  m.caps.includes(task as Capability) &&
+                  state.downloadedModels.includes(m.id),
+              );
+              const current = CATALOG.find(
+                (m) => m.id === state.taskModels[task],
+              );
+              return (
+                <div key={task} className={ROW}>
+                  <span className="text-[13px] text-subtle">
+                    {CAPABILITY_LABELS[task]}
+                  </span>
+                  <Select
+                    value={current?.name ?? "Default"}
+                    options={["Default", ...eligible.map((m) => m.name)]}
+                    onValueChange={(name) => {
+                      const id =
+                        CATALOG.find((m) => m.name === name)?.id ?? "default";
+                      setState((s) => ({
+                        ...s,
+                        taskModels: { ...s.taskModels, [task]: id },
+                      }));
+                      send({ type: "setTaskModel", task, id });
+                    }}
+                  />
+                </div>
+              );
+            })}
           </section>
 
           <section className={SECTION}>

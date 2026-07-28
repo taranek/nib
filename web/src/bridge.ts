@@ -13,6 +13,20 @@ export interface RewriteStyleOption {
 
 /** Card data pushed from Swift. Grammar carries a precomputed `result`; rewrite
  *  carries `styles` + `llmUrl` and React fetches each style from the LLM. */
+/** Per-task chat URLs (grammar / compose / translate may be different models). */
+export interface TaskUrls {
+  grammar: string;
+  compose: string;
+  translate: string;
+}
+
+/** Whether the model backing each task actually supports it. */
+export interface TaskCapabilities {
+  grammar: boolean;
+  compose: boolean;
+  translate: boolean;
+}
+
 export interface CardData {
   mode: "grammar" | "rewrite";
   /** The text the accepted result will replace. */
@@ -21,8 +35,12 @@ export interface CardData {
   result: string;
   /** Rewrite only: the style tabs. */
   styles: RewriteStyleOption[];
-  /** Rewrite only: the local LLM chat-completions URL React fetches. */
+  /** Compose-model chat URL (refine/explainers/language detection). */
   llmUrl: string;
+  /** Per-task chat URLs; falls back to `llmUrl` when absent (older hosts). */
+  llmUrls?: TaskUrls;
+  /** Per-task capability of the backing models; assumed true when absent. */
+  capabilities?: TaskCapabilities;
   /** Whether the local model is ready. */
   ready: boolean;
   /** Target language for the Translate tab (default "English"). */
@@ -48,6 +66,8 @@ export interface SettingsState {
   downloadedModels: string[];
   /** App version ("dev" for unbundled dev builds). */
   version: string;
+  /** Catalog model id assigned per task ("default" = the active model). */
+  taskModels: { grammar: string; compose: string; translate: string };
 }
 
 type OutboundMessage =
@@ -64,6 +84,10 @@ type OutboundMessage =
   | { type: "downloadModel"; id: string }
   // Activate a catalog model that's already on disk (no download).
   | { type: "selectModel"; id: string }
+  // Pin a task (grammar/compose/translate) to a catalog model, or "default".
+  | { type: "setTaskModel"; task: "grammar" | "compose" | "translate"; id: string }
+  // From the card: a capability disclaimer's button — close card, open settings.
+  | { type: "openSettings" }
   | { type: "cancelDownload" }
   | { type: "closeSettings" }
   // Mousedown on the card's top bar — Swift starts a native window drag.
