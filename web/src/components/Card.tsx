@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, BrainCircuit, Check, Lightbulb, Loader2 } from "lucide-react";
+import { ArrowUp, Check, Lightbulb, Loader2, Sparkle } from "lucide-react";
 import { type CardData, send } from "@/bridge";
 import {
   type ChatMsg,
@@ -108,7 +108,7 @@ function ModelBadge({
       <span className="text-[10px] text-muted-foreground/80 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
         {label}
       </span>
-      <BrainCircuit
+      <Sparkle
         aria-label={`Model: ${label}`}
         className="size-3.5 text-muted-foreground/50 transition-colors group-hover:text-muted-foreground"
       />
