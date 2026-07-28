@@ -456,8 +456,33 @@ struct LLMClient {
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               !corrected.isEmpty else { return nil }
 
+        // Sanity guard: some models (narrow fine-tunes on text they can't
+        // handle, e.g. non-English) echo the prompt instructions back as the
+        // "correction". Never surface those — treat the sentence as clean.
+        guard Self.isPlausibleCorrection(corrected, of: trimmed) else {
+            print("   ⚠️ implausible correction discarded (prompt echo?)")
+            await GrammarCache.shared.set(trimmed, trimmed)
+            return nil
+        }
+
         await GrammarCache.shared.set(trimmed, corrected)
         return corrected == trimmed ? nil : SentenceCorrection(original: trimmed, corrected: corrected)
+    }
+
+    /// A grammar fix should resemble the input: reject outputs that quote our
+    /// own prompt or balloon far beyond the original sentence.
+    static func isPlausibleCorrection(_ corrected: String, of original: String) -> Bool {
+        let echoMarkers = [
+            "You correct a single sentence",
+            "\"corrected\" field",
+            "'corrected' field",
+            "spelling, grammar, and punctuation",
+            "return it exactly unchanged",
+        ]
+        for marker in echoMarkers where corrected.contains(marker) { return false }
+        // A sentence-level fix shouldn't more than double the text (+ slack for
+        // very short inputs).
+        return corrected.count <= max(original.count * 2, original.count + 60)
     }
 
     // MARK: Text actions

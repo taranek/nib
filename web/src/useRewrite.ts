@@ -60,6 +60,19 @@ const RETRY_NUDGES = [
 // Module-level cache (style|text → result) so re-tabbing / re-mounting is instant.
 const cache = new Map<string, string>();
 
+// Some models (narrow fine-tunes on text they can't handle) echo the prompt
+// instructions back as the "result". Never surface those.
+const ECHO_MARKERS = [
+  "Put the result in the",
+  "never expand or replace them",
+  "'rewrite' field",
+  '"rewrite" field',
+  "Detect the source language automatically",
+];
+function isPromptEcho(out: string): boolean {
+  return ECHO_MARKERS.some((m) => out.includes(m));
+}
+
 async function fetchRewrite(
   style: string,
   text: string,
@@ -114,7 +127,8 @@ async function fetchRewrite(
     const json = content.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(json);
     const out = (parsed?.rewrite ?? "").trim();
-    return out || null;
+    if (!out || isPromptEcho(out)) return null;
+    return out;
   } catch {
     return null;
   }
