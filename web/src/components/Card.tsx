@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, Check, Lightbulb, Loader2 } from "lucide-react";
+import { ArrowUp, Check, Cpu, Lightbulb, Loader2 } from "lucide-react";
 import { type CardData, send } from "@/bridge";
 import {
   type ChatMsg,
@@ -87,7 +87,9 @@ function modelLabel(card: CardData, task: "grammar" | "compose" | "translate") {
   );
 }
 
-/** Subtle badge naming the model serving the current view. */
+/** A chip icon that reveals the current view's model name on hover. The label
+ *  is always laid out (opacity only), so nothing shifts. Use `flex-row-reverse`
+ *  via className to put the icon on the left (footer placement). */
 function ModelBadge({
   card,
   task,
@@ -101,9 +103,15 @@ function ModelBadge({
   if (!label) return null;
   return (
     <span
-      className={`flex-none pr-1 text-[10px] text-muted-foreground/70 ${className ?? ""}`}
+      className={`group flex flex-none items-center gap-1.5 px-1 ${className ?? ""}`}
     >
-      {label}
+      <span className="text-[10px] text-muted-foreground/80 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+        {label}
+      </span>
+      <Cpu
+        aria-label={`Model: ${label}`}
+        className="size-3.5 text-muted-foreground/50 transition-colors group-hover:text-muted-foreground"
+      />
     </span>
   );
 }
@@ -156,7 +164,7 @@ function GrammarBody({ card }: { card: CardData }) {
         )}
       </div>
       <div className="flex items-center justify-end gap-2 p-2">
-        <ModelBadge card={card} task="grammar" className="mr-auto pl-1" />
+        <ModelBadge card={card} task="grammar" className="mr-auto flex-row-reverse" />
         <Button
           variant="brand"
           disabled={!canAccept}
