@@ -26,6 +26,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Chip } from "@/components/ui/chip";
 import { IconButton } from "@/components/ui/icon-button";
 import { countChanges } from "@/lib/diff";
+import { CATALOG } from "@/components/ModelCatalog";
 import { DiffText } from "./DiffText";
 import { TextSkeleton } from "./TextSkeleton";
 
@@ -74,6 +75,33 @@ function urlFor(card: CardData, style: string): string {
 /** Whether the model behind a style's task supports it. */
 function styleSupported(card: CardData, style: string): boolean {
   return card.capabilities?.[STYLE_TASK[style] ?? "compose"] ?? true;
+}
+
+/** Friendly name of the model behind a task: catalog display name when the
+ *  file is known, else the file name without its extension. */
+function modelLabel(card: CardData, task: "grammar" | "compose" | "translate") {
+  const file = card.llmModels?.[task];
+  if (!file) return null;
+  return (
+    CATALOG.find((m) => m.file === file)?.name ?? file.replace(/\.gguf$/, "")
+  );
+}
+
+/** Subtle footer strip naming the model serving the current view. */
+function ModelFooter({
+  card,
+  task,
+}: {
+  card: CardData;
+  task: "grammar" | "compose" | "translate";
+}) {
+  const label = modelLabel(card, task);
+  if (!label) return null;
+  return (
+    <div className="px-3 pb-1.5 text-right text-[10px] text-muted-foreground/70">
+      {label}
+    </div>
+  );
 }
 const BODY = "min-h-[22px] pl-2";
 const RESULT = "text-[15px] leading-[1.45] text-subtle";
@@ -135,6 +163,7 @@ function GrammarBody({ card }: { card: CardData }) {
           </Kbd>
         </Button>
       </div>
+      <ModelFooter card={card} task="grammar" />
     </>
   );
 }
@@ -562,6 +591,7 @@ function RewriteBody({ card }: { card: CardData }) {
           </Kbd>
         </Button>
       </div>
+      <ModelFooter card={card} task={STYLE_TASK[current] ?? "compose"} />
       </motion.div>
     </>
   );

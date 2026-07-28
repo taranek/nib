@@ -39,6 +39,8 @@ export interface CardData {
   llmUrl: string;
   /** Per-task chat URLs; falls back to `llmUrl` when absent (older hosts). */
   llmUrls?: TaskUrls;
+  /** Model file name backing each task (for the card's footer label). */
+  llmModels?: TaskUrls;
   /** Per-task capability of the backing models; assumed true when absent. */
   capabilities?: TaskCapabilities;
   /** Whether the local model is ready. */

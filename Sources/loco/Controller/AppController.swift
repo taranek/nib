@@ -560,6 +560,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             // the compose model (a grammar-only fine-tune can't explain).
             "llmUrl": chatURL(for: .compose).absoluteString,
             "llmUrls": routing.urls,
+            "llmModels": routing.models,
             "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
@@ -705,6 +706,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "styles": Self.styleList,
             "llmUrl": chatURL(for: .compose).absoluteString,
             "llmUrls": routing.urls,
+            "llmModels": routing.models,
             "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
@@ -779,6 +781,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "styles": [],
             "llmUrl": chatURL(for: .compose).absoluteString,
             "llmUrls": routing.urls,
+            "llmModels": routing.models,
             "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
@@ -1191,8 +1194,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Payload fragments the card needs to route + gate its tabs.
-    private func cardRouting() -> (urls: [String: String], caps: [String: Bool]) {
+    /// Model file name backing `task` (pinned or the default model).
+    private func taskModelFile(for task: LLMTask) -> String {
+        let path = taskModelPath(for: task) ?? LLMPaths.resolveModel()
+        return path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—"
+    }
+
+    /// Payload fragments the card needs to route + gate + label its tabs.
+    private func cardRouting()
+        -> (urls: [String: String], caps: [String: Bool], models: [String: String]) {
         let urls = [
             "grammar": chatURL(for: .grammar).absoluteString,
             "compose": chatURL(for: .compose).absoluteString,
@@ -1203,7 +1213,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             "compose": taskSupported(.compose),
             "translate": taskSupported(.translate),
         ]
-        return (urls, caps)
+        let models = [
+            "grammar": taskModelFile(for: .grammar),
+            "compose": taskModelFile(for: .compose),
+            "translate": taskModelFile(for: .translate),
+        ]
+        return (urls, caps, models)
     }
 
     /// Catalog ids whose file is already on disk (no need to re-download).
