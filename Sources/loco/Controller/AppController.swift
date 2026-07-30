@@ -375,6 +375,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Debounce the grammar check so fast typing doesn't fire a request per key.
     private func scheduleRecheck(value: String, appName: String?) {
         grammarDebounce?.invalidate()
+        grammarChecking = true
+        refreshPillState()
         grammarDebounce = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.recheck(value: value, appName: appName) }
         }
@@ -395,6 +397,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             currentCorrections = []
             currentFullText = text
             checkedValueHash = token
+            grammarChecking = false
             applyDetection([], element: AX.focusedElement())
             return
         }
@@ -413,6 +416,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self.currentCorrections = corrections
                 self.currentFullText = text
                 self.checkedValueHash = token
+                self.grammarChecking = false
                 self.renderSentenceFixes(corrections, fullText: text, appName: appName)
             }
         }
@@ -473,10 +477,29 @@ final class AppController: NSObject, NSApplicationDelegate {
         applyDetection(words, element: element)
     }
 
+    // A grammar check is scheduled or in flight (drives the pill's spinner).
+    private var grammarChecking = false
+
+    /// The field state the selection pill should communicate.
+    private func pillState() -> PillState {
+        if grammarChecking { return .checking }
+        if !flagged.isEmpty { return .issues(flagged.count) }
+        // A verdict exists for the field's current text → clean.
+        if checkedValueHash != 0 && checkedValueHash == lastValueHash { return .clean }
+        return .plain
+    }
+
+    /// Re-render the pill (if visible) with the current state.
+    private func refreshPillState() {
+        guard let pillRect else { return }
+        view.setPill(pillRect, state: pillState())
+    }
+
     /// Commit a set of flagged words to the overlay (and close a stale card).
     private func applyDetection(_ words: [FlaggedWord], element: AXUIElement?) {
         activeElement = element
         flagged = words
+        refreshPillState()
         let highlights = words.map { Highlight(rect: $0.rect, color: .systemRed) }
         let key = highlights
             .map { "\(Int($0.rect.minX)),\(Int($0.rect.minY)),\(Int($0.rect.width))" }
@@ -673,7 +696,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let x = max(2, fieldBox.minX - size - 4)
         let pill = CGRect(x: x, y: r.midY - size / 2, width: size, height: size)
         pillRect = pill
-        view.setPill(pill)
+        view.setPill(pill, state: pillState())
     }
 
     private func hidePill() {
