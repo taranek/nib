@@ -98,11 +98,9 @@ final class OverlayView: NSView {
 
         if let pill {
             // Ambient status: color + glyph reflect the field's grammar state.
-            // While checking, the whole pill breathes (sine opacity 0.35…0.95).
-            let pulseAlpha = 0.65 + 0.3 * sin(pulsePhase)
             let fill: NSColor = switch pillState {
             case .plain: .systemBlue
-            case .checking: .systemBlue.withAlphaComponent(pulseAlpha)
+            case .checking: .white
             case .clean: NSColor(red: 0.25, green: 0.69, blue: 0.31, alpha: 1)   // diff-ins green
             case .issues: NSColor(red: 0.88, green: 0.65, blue: 0.29, alpha: 1)  // amber
             }
@@ -111,12 +109,16 @@ final class OverlayView: NSView {
 
             switch pillState {
             case .checking:
-                if let glyph = pillGlyph {
-                    let inset = pill.insetBy(dx: 3.5, dy: 3.5)
-                    glyph.withSymbolConfiguration(.init(paletteColors: [.white]))?
-                        .draw(in: inset, from: .zero, operation: .sourceOver,
-                              fraction: pulseAlpha)
-                }
+                // White circle with an inner black dot breathing in and out
+                // (sine-eased opacity), plus a hairline so the white disc keeps
+                // an edge on light backgrounds.
+                NSColor.black.withAlphaComponent(0.15).setStroke()
+                let rim = NSBezierPath(ovalIn: pill.insetBy(dx: 0.5, dy: 0.5))
+                rim.lineWidth = 1
+                rim.stroke()
+                let dotAlpha = 0.55 + 0.45 * sin(pulsePhase)
+                NSColor.black.withAlphaComponent(max(0.08, dotAlpha)).setFill()
+                NSBezierPath(ovalIn: pill.insetBy(dx: 5.5, dy: 5.5)).fill()
             case .issues(let n):
                 let text = n > 9 ? "9+" : String(n)
                 let attrs: [NSAttributedString.Key: Any] = [
