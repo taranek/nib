@@ -45,9 +45,11 @@ final class OverlayView: NSView {
     private lazy var checkGlyph = NSImage(systemSymbolName: "checkmark",
                                           accessibilityDescription: "No issues")
 
-    // Spinner: rotate the arc only while a check is visibly in flight.
-    private var spinPhase: CGFloat = 0
-    private var spinTimer: Timer?
+    // Pulse: breathe the pill's opacity only while a check is visibly in
+    // flight. A sine gives the ease-in-out feel of breathing — calmer than a
+    // spinner for something living at the edge of the user's vision.
+    private var pulsePhase: CGFloat = 0
+    private var pulseTimer: Timer?
 
     /// Grammar highlights (separate from the pill so each redraws independently).
     func update(highlights: [Highlight]) {
@@ -59,18 +61,19 @@ final class OverlayView: NSView {
     func setPill(_ rect: CGRect?, state: PillState = .plain) {
         pill = rect
         pillState = state
-        let spinning = rect != nil && state == .checking
-        if spinning, spinTimer == nil {
-            spinTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+        let pulsing = rect != nil && state == .checking
+        if pulsing, pulseTimer == nil {
+            pulsePhase = 0
+            pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.spinPhase += 0.22
+                    self.pulsePhase += 0.15   // ~1.4s per breath
                     self.needsDisplay = true
                 }
             }
-        } else if !spinning {
-            spinTimer?.invalidate()
-            spinTimer = nil
+        } else if !pulsing {
+            pulseTimer?.invalidate()
+            pulseTimer = nil
         }
         needsDisplay = true
     }
@@ -95,8 +98,11 @@ final class OverlayView: NSView {
 
         if let pill {
             // Ambient status: color + glyph reflect the field's grammar state.
+            // While checking, the whole pill breathes (sine opacity 0.35…0.95).
+            let pulseAlpha = 0.65 + 0.3 * sin(pulsePhase)
             let fill: NSColor = switch pillState {
-            case .plain, .checking: .systemBlue
+            case .plain: .systemBlue
+            case .checking: .systemBlue.withAlphaComponent(pulseAlpha)
             case .clean: NSColor(red: 0.25, green: 0.69, blue: 0.31, alpha: 1)   // diff-ins green
             case .issues: NSColor(red: 0.88, green: 0.65, blue: 0.29, alpha: 1)  // amber
             }
@@ -105,16 +111,12 @@ final class OverlayView: NSView {
 
             switch pillState {
             case .checking:
-                // Rotating 270° arc.
-                let arc = NSBezierPath()
-                let center = NSPoint(x: pill.midX, y: pill.midY)
-                let start = spinPhase * 180 / .pi
-                arc.appendArc(withCenter: center, radius: pill.width / 2 - 4,
-                              startAngle: start, endAngle: start + 270)
-                arc.lineWidth = 2
-                arc.lineCapStyle = .round
-                NSColor.white.setStroke()
-                arc.stroke()
+                if let glyph = pillGlyph {
+                    let inset = pill.insetBy(dx: 3.5, dy: 3.5)
+                    glyph.withSymbolConfiguration(.init(paletteColors: [.white]))?
+                        .draw(in: inset, from: .zero, operation: .sourceOver,
+                              fraction: pulseAlpha)
+                }
             case .issues(let n):
                 let text = n > 9 ? "9+" : String(n)
                 let attrs: [NSAttributedString.Key: Any] = [
