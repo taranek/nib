@@ -1136,15 +1136,34 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     /// Absolute path of the model pinned to `task`, nil when it should use the
-    /// default (unset, unknown id, or the file is gone).
+    /// default (unset, unknown id, or the file is gone). Pins are either a
+    /// catalog id or "file:<name>" for a user-supplied .gguf in the models dir.
     private func taskModelPath(for task: LLMTask) -> String? {
-        guard let id = taskModelID(for: task),
-              let model = Self.modelCatalog.first(where: { $0.id == id }) else { return nil }
-        let path = LLMPaths.modelsDir.appendingPathComponent(model.file).path
+        guard let id = taskModelID(for: task) else { return nil }
+        let file: String
+        if id.hasPrefix("file:") {
+            file = String(id.dropFirst("file:".count))
+        } else if let model = Self.modelCatalog.first(where: { $0.id == id }) {
+            file = model.file
+        } else {
+            return nil
+        }
+        let path = LLMPaths.modelsDir.appendingPathComponent(file).path
         guard FileManager.default.fileExists(atPath: path) else { return nil }
         // Pinning the same model as the default is a no-op — share the server.
         if path == LLMPaths.resolveModel() { return nil }
         return path
+    }
+
+    /// User-supplied .gguf files in the models dir (not from the catalog),
+    /// selectable per task alongside catalog models.
+    private func customModelFiles() -> [String] {
+        let catalogFiles = Set(Self.modelCatalog.map(\.file))
+        let items = (try? FileManager.default.contentsOfDirectory(
+            atPath: LLMPaths.modelsDir.path)) ?? []
+        return items
+            .filter { $0.hasSuffix(".gguf") && !$0.hasPrefix(".") && !catalogFiles.contains($0) }
+            .sorted()
     }
 
     /// The server responsible for `task`: a warm task server for pinned models,
@@ -1461,6 +1480,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
                                   explainFixes: explainFixes,
                                   downloadedModels: downloadedModelIDs(),
+                                  customModels: customModelFiles(),
                                   version: appVersion,
                                   taskModels: taskModels)
     }
@@ -1565,6 +1585,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         case "openLogs":
             openLlamaLog()
+        case "openModelsFolder":
+            try? FileManager.default.createDirectory(
+                at: LLMPaths.modelsDir, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(LLMPaths.modelsDir)
         case "quit":
             llmServer.stop()
             taskServers.values.forEach { $0.stop() }

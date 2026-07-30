@@ -66,6 +66,8 @@ export interface SettingsState {
   explainFixes: boolean;
   /** Catalog model ids already downloaded to the models dir. */
   downloadedModels: string[];
+  /** User-supplied .gguf file names in the models dir (non-catalog). */
+  customModels: string[];
   /** App version ("dev" for unbundled dev builds). */
   version: string;
   /** Catalog model id assigned per task ("default" = the active model). */
@@ -86,8 +88,11 @@ type OutboundMessage =
   | { type: "downloadModel"; id: string }
   // Activate a catalog model that's already on disk (no download).
   | { type: "selectModel"; id: string }
-  // Pin a task (grammar/compose/translate) to a catalog model, or "default".
+  // Pin a task (grammar/compose/translate) to a catalog model id, a
+  // user-supplied file ("file:<name>.gguf"), or "default".
   | { type: "setTaskModel"; task: "grammar" | "compose" | "translate"; id: string }
+  // Open the models folder in Finder (drop .gguf files there to use them).
+  | { type: "openModelsFolder" }
   // From the card: a capability disclaimer's button — close card, open settings.
   | { type: "openSettings" }
   | { type: "cancelDownload" }

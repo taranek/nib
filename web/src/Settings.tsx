@@ -71,6 +71,7 @@ export function Settings() {
     onboardingCompleted: false,
     explainFixes: true,
     downloadedModels: [],
+    customModels: [],
     version: "dev",
     taskModels: { grammar: "default", compose: "default", translate: "default" },
   });
@@ -228,26 +229,35 @@ export function Settings() {
             <div className={FIELD}>
               <span className={LABEL}>Models by task</span>
               <span className={HINT}>
-                Use a different downloaded model per task.
+                Use a different downloaded model per task, including{" "}
+                <button
+                  onClick={() => send({ type: "openModelsFolder" })}
+                  className="cursor-pointer underline underline-offset-2 transition-colors hover:text-foreground"
+                >
+                  your own .gguf files
+                </button>
+                .
               </span>
             </div>
             {(["grammar", "compose", "translate"] as const).map((task) => {
-              // Only downloaded models that actually support the task.
+              // Downloaded catalog models that support the task, plus any
+              // user-supplied .gguf (assumed fully capable).
               const eligible = CATALOG.filter(
                 (m) =>
                   m.caps.includes(task as Capability) &&
                   state.downloadedModels.includes(m.id),
               );
-              const current = CATALOG.find(
-                (m) => m.id === state.taskModels[task],
-              );
+              const pinned = state.taskModels[task];
+              const currentName = pinned.startsWith("file:")
+                ? pinned.slice(5).replace(/\.gguf$/, "")
+                : (CATALOG.find((m) => m.id === pinned)?.name ?? "Default");
               return (
                 <div key={task} className={ROW}>
                   <span className="text-[13px] text-subtle">
                     {CAPABILITY_LABELS[task]}
                   </span>
                   <Select
-                    value={current?.name ?? "Default"}
+                    value={currentName}
                     options={[
                       {
                         value: "Default",
@@ -257,10 +267,19 @@ export function Settings() {
                         value: m.name,
                         description: m.note,
                       })),
+                      ...state.customModels.map((f) => ({
+                        value: f.replace(/\.gguf$/, ""),
+                        description: "Your model",
+                      })),
                     ]}
                     onValueChange={(name) => {
-                      const id =
-                        CATALOG.find((m) => m.name === name)?.id ?? "default";
+                      const custom = state.customModels.find(
+                        (f) => f.replace(/\.gguf$/, "") === name,
+                      );
+                      const id = custom
+                        ? `file:${custom}`
+                        : (CATALOG.find((m) => m.name === name)?.id ??
+                          "default");
                       setState((s) => ({
                         ...s,
                         taskModels: { ...s.taskModels, [task]: id },
