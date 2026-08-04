@@ -33,6 +33,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var targetLanguage = UserDefaults.standard.string(forKey: "targetLanguage") ?? "English"
     /// Show the per-change rule explainers under grammar fixes (Settings toggle).
     private var explainFixes = UserDefaults.standard.object(forKey: "explainFixes") as? Bool ?? true
+    /// After Harper's instant rule pass, also run the LLM in the background to
+    /// catch sense-level errors rules can't see (Settings toggle, default off).
+    private var deepCheck = UserDefaults.standard.object(forKey: "deepCheck") as? Bool ?? false
 
     // The field + flagged words the UI currently targets.
     private var activeElement: AXUIElement?
@@ -460,6 +463,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self.currentFullText = text
                 self.checkedValueHash = token
                 self.renderSentenceFixes(corrections, fullText: text, appName: appName)
+                if self.deepCheck {
+                    self.runDeepCheck(value: value, text: text, token: token,
+                                      appName: appName, base: corrections)
+                }
             }
             return
         }
@@ -787,8 +794,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         // servers now so their models are loading before the user hovers.
         // (Grammar only needs the LLM when Harper won't cover the text.)
         _ = server(for: .compose)
-        if !(linterHost.ready
-             && NLLanguageRecognizer.dominantLanguage(for: target) == .english) {
+        if deepCheck
+            || !(linterHost.ready
+                 && NLLanguageRecognizer.dominantLanguage(for: target) == .english) {
             _ = server(for: .grammar)
         }
     }
@@ -1614,6 +1622,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   targetLanguage: targetLanguage,
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
                                   explainFixes: explainFixes,
+                                  deepCheck: deepCheck,
                                   downloadedModels: downloadedModelIDs(),
                                   customModels: customModelFiles(),
                                   version: appVersion,
@@ -1646,6 +1655,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         case "setExplainFixes":
             explainFixes = (body["value"] as? NSNumber)?.boolValue ?? true
             UserDefaults.standard.set(explainFixes, forKey: "explainFixes")
+        case "setDeepCheck":
+            deepCheck = (body["value"] as? NSNumber)?.boolValue ?? false
+            UserDefaults.standard.set(deepCheck, forKey: "deepCheck")
+            // Re-evaluate the field with the new mode.
+            lastSignature = ""
+            checkedValueHash = 0
         case "sandbox":
             // The sandbox reads/writes its own textarea through the webview DOM
             // (JS), not AX — WebKit doesn't expose our own webview's text to AX.
@@ -1799,6 +1814,40 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         }
         return out
+    }
+
+    /// Deep check: after Harper's rule pass, run the LLM over the same text in
+    /// the background and merge its sentence fixes on top (LLM supersedes
+    /// Harper for a sentence both touched — its fix includes the mechanical
+    /// corrections anyway). Trailing, never blocking: squiggles from rules are
+    /// already on screen when this starts.
+    private func runDeepCheck(value: String, text: String, token: Int,
+                              appName: String?, base: [SentenceCorrection]) {
+        let grammarServer = server(for: .grammar)
+        guard grammarServer.status == .ready else { return }
+        let grammarFile = taskModelFile(for: .grammar)
+        let quirks = ModelManifest.byFile(grammarFile)?.validate
+        let client = LLMClient(chatURL: grammarServer.chatURL,
+                               echoMarkers: quirks?.echoMarkers ?? [],
+                               maxGrowth: quirks?.maxGrowth ?? 2.0)
+        grammarTask?.cancel()
+        grammarTask = Task { [weak self] in
+            let llm = await client.corrections(in: text)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard let self else { return }
+                let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
+                guard current == value, self.checkedValueHash == token else { return }
+                var bySentence = Dictionary(base.map { ($0.original, $0) },
+                                            uniquingKeysWith: { _, new in new })
+                for correction in llm { bySentence[correction.original] = correction }
+                let merged = Array(bySentence.values)
+                guard merged.count != base.count || llm.count != 0 else { return }
+                print("🔬 deep check: +\(merged.count - base.count) sentence fix(es)")
+                self.currentCorrections = merged
+                self.renderSentenceFixes(merged, fullText: text, appName: appName)
+            }
+        }
     }
 
     /// Split a range into per-line subranges at hard newlines (empty segments

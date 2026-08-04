@@ -67,6 +67,8 @@ export interface SettingsState {
   onboardingCompleted: boolean;
   /** Whether to show the per-change rule explainers under grammar fixes. */
   explainFixes: boolean;
+  /** After the instant rule pass, also run the LLM for sense-level errors. */
+  deepCheck: boolean;
   /** Catalog model ids already downloaded to the models dir. */
   downloadedModels: string[];
   /** User-supplied .gguf file names in the models dir (non-catalog). */
@@ -85,6 +87,7 @@ type OutboundMessage =
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }
   | { type: "setExplainFixes"; value: boolean }
+  | { type: "setDeepCheck"; value: boolean }
   | { type: "openAccessibility" }
   | { type: "chooseModel" }
   // Download a catalog model from Hugging Face (id from the curated list).

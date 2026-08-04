@@ -70,6 +70,7 @@ export function Settings() {
     // browser / `npm run dev` stays here so the flow is previewable).
     onboardingCompleted: false,
     explainFixes: true,
+    deepCheck: false,
     downloadedModels: [],
     customModels: [],
     version: "dev",
@@ -181,6 +182,25 @@ export function Settings() {
                 onCheckedChange={(value) => {
                   setState((s) => ({ ...s, explainFixes: value }));
                   send({ type: "setExplainFixes", value });
+                }}
+              />
+            </div>
+          </section>
+
+          <section className={SECTION}>
+            <div className={ROW}>
+              <div className={FIELD}>
+                <span className={LABEL}>Deep checking</span>
+                <span className={HINT}>
+                  After the instant rule check, also run the AI model to catch
+                  errors rules miss.
+                </span>
+              </div>
+              <Toggle
+                checked={state.deepCheck}
+                onCheckedChange={(value) => {
+                  setState((s) => ({ ...s, deepCheck: value }));
+                  send({ type: "setDeepCheck", value });
                 }}
               />
             </div>
