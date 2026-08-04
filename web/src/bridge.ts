@@ -166,6 +166,8 @@ interface LocoInbound {
   updateStatus?: (s: UpdateStatus) => void;
   /** Swift → JS: selection pill state (pill surface only). */
   setPill?: (s: PillStatus) => void;
+  /** Swift → JS: lint request (linter surface only); result posts back. */
+  lint?: (text: string, id: number) => void;
 }
 
 declare global {

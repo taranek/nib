@@ -1,5 +1,6 @@
 import Cocoa
 import ApplicationServices
+import NaturalLanguage
 import Carbon.HIToolbox
 import UniformTypeIdentifiers
 import WebKit
@@ -98,6 +99,10 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // Local LLM grammar checking.
     private let llmServer = LLMServer()
+    // Rule-based fast path: Harper (WASM) lints English instantly on CPU, so
+    // the always-on squiggle pipeline doesn't touch the GPU; the LLM remains
+    // the path for other languages and for the rewrite card.
+    private var linterHost: LinterHost!
     private var llmClient: LLMClient?
     private var llmReady = false
     private var currentCorrections: [SentenceCorrection] = []
@@ -165,6 +170,9 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         print("▸ status item installed")
+
+        // Rule-based linter (offscreen webview) — ready a moment after launch.
+        linterHost = LinterHost(url: Self.webURL())
 
         // Pre-create the settings popover so its web UI preloads before the first
         // open (otherwise the panel shows empty on launch).
@@ -427,16 +435,44 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func recheck(value: String, appName: String?) {
         let token = value.hashValue
         let text = appName.flatMap { browser.focusedText(appName: $0) } ?? value
-        // Grammar may be pinned to its own model/server (per-task routing);
-        // the serving model's manifest quirks drive output validation.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            currentCorrections = []
+            currentFullText = text
+            checkedValueHash = token
+            applyDetection([], element: AX.focusedElement())
+            return
+        }
+
+        // Fast path: English goes through Harper (rules, ~ms, CPU-only, exact
+        // spans). Other languages fall through to the LLM below.
+        if linterHost.ready,
+           NLLanguageRecognizer.dominantLanguage(for: text) == .english {
+            let checkStart = CFAbsoluteTimeGetCurrent()
+            linterHost.lint(text) { [weak self] lints in
+                guard let self else { return }
+                // Only apply if the field still holds the text we checked.
+                let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
+                guard current == value else { return }
+                let corrections = self.corrections(fromLints: lints, in: text)
+                print("⚡ harper: \(lints.count) lint(s) → \(corrections.count) sentence fix(es)")
+                PerfHUD.shared.lastGrammarMs = Int((CFAbsoluteTimeGetCurrent() - checkStart) * 1000)
+                self.currentCorrections = corrections
+                self.currentFullText = text
+                self.checkedValueHash = token
+                self.renderSentenceFixes(corrections, fullText: text, appName: appName)
+            }
+            return
+        }
+
+        // LLM path — grammar may be pinned to its own model/server (per-task
+        // routing); the serving model's manifest quirks drive validation.
         let grammarServer = server(for: .grammar)
         let grammarFile = taskModelFile(for: .grammar)
         let quirks = ModelManifest.byFile(grammarFile)?.validate
         let client = LLMClient(chatURL: grammarServer.chatURL,
                                echoMarkers: quirks?.echoMarkers ?? [],
                                maxGrowth: quirks?.maxGrowth ?? 2.0)
-        guard grammarServer.status == .ready,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard grammarServer.status == .ready else {
             currentCorrections = []
             currentFullText = text
             checkedValueHash = token
@@ -529,7 +565,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// a static ring while it's open, plain blue when no model can serve it.
     private func pillState() -> PillState {
         if popoverMode == .rephrase { return .open }
-        return server(for: .grammar).status == .ready ? .loading : .plain
+        let canCheck = linterHost.ready || server(for: .grammar).status == .ready
+        return canCheck ? .loading : .plain
     }
 
     /// Re-render the pill (if visible) with the current state.
@@ -1695,6 +1732,38 @@ final class AppController: NSObject, NSApplicationDelegate {
             && rect.maxY <= field.maxY + slack
             && rect.minX >= field.minX - slack
             && rect.minX <= field.maxX
+    }
+
+    /// Convert Harper lints into sentence-level corrections (the shape the
+    /// whole downstream pipeline — diffing, rects, the card, write-back —
+    /// already speaks): group lints by containing sentence and apply each
+    /// lint's first suggestion right-to-left.
+    private func corrections(fromLints lints: [HarperLint], in text: String) -> [SentenceCorrection] {
+        let ns = text as NSString
+        var bySentence: [NSRange: [HarperLint]] = [:]
+        for lint in lints where !lint.suggestions.isEmpty {
+            guard lint.range.location + lint.range.length <= ns.length else { continue }
+            let sentence = sentenceRange(covering: lint.range, in: ns)
+            bySentence[sentence, default: []].append(lint)
+        }
+        var out: [SentenceCorrection] = []
+        for (sentence, sentenceLints) in bySentence {
+            let original = ns.substring(with: sentence)
+            var corrected = original as NSString
+            for lint in sentenceLints.sorted(by: { $0.range.location > $1.range.location }) {
+                let rel = NSRange(location: lint.range.location - sentence.location,
+                                  length: lint.range.length)
+                guard rel.location >= 0,
+                      rel.location + rel.length <= corrected.length else { continue }
+                corrected = corrected.replacingCharacters(in: rel, with: lint.suggestions[0]) as NSString
+            }
+            let trimmedOriginal = original.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedCorrected = (corrected as String).trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedOriginal != trimmedCorrected {
+                out.append(SentenceCorrection(original: trimmedOriginal, corrected: trimmedCorrected))
+            }
+        }
+        return out
     }
 
     /// Split a range into per-line subranges at hard newlines (empty segments
