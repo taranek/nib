@@ -140,6 +140,13 @@ export interface DownloadProgress {
   error?: string;
 }
 
+/** The selection pill's ambient state, pushed from Swift. */
+export interface PillStatus {
+  state: "plain" | "checking" | "clean" | "issues";
+  /** Flagged-spot count (issues state only). */
+  count: number;
+}
+
 /** Result of an update check, pushed from Swift. */
 export interface UpdateStatus {
   /** The running version. */
@@ -159,6 +166,8 @@ interface LocoInbound {
   downloadProgress?: (d: DownloadProgress) => void;
   /** Swift → JS: update check result. */
   updateStatus?: (s: UpdateStatus) => void;
+  /** Swift → JS: selection pill state (pill surface only). */
+  setPill?: (s: PillStatus) => void;
 }
 
 declare global {
@@ -206,4 +215,9 @@ export function onDownloadProgress(
 /** Register the callback Swift invokes with an update check's result. */
 export function onUpdateStatus(handler: (s: UpdateStatus) => void): void {
   window.loco = { ...window.loco, updateStatus: handler };
+}
+
+/** Register the callback Swift invokes with the pill's state. */
+export function onSetPill(handler: (s: PillStatus) => void): void {
+  window.loco = { ...window.loco, setPill: handler };
 }

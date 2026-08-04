@@ -15,6 +15,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var window: OverlayWindow!
     private var view: OverlayView!
     private var popoverPanel: PopoverPanel!
+    private var pillPanel: PillPanel!
     private let browser = BrowserBridge()
     static let debug = ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil
     private var timer: Timer?
@@ -148,6 +149,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverPanel.onEnter = { [weak self] in self?.cancelHidePopover() }
         popoverPanel.onExit = { [weak self] in self?.scheduleHidePopover() }
         popoverPanel.onMessage = { [weak self] body in self?.handleWebMessage(body) }
+
+        // The selection pill: a tiny web surface with native hover/click.
+        pillPanel = PillPanel(url: Self.webURL())
+        pillPanel.onEnter = { [weak self] in
+            guard let self else { return }
+            cancelHidePopover()
+            if popoverMode != .rephrase { showRephrase() }
+        }
+        pillPanel.onExit = { [weak self] in self?.scheduleHidePopover() }
+        pillPanel.onClick = { [weak self] in
+            guard let self else { return }
+            if popoverMode != .rephrase { showRephrase() }
+        }
 
         setupStatusItem()
         print("▸ status item installed")
@@ -491,8 +505,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Re-render the pill (if visible) with the current state.
     private func refreshPillState() {
-        guard let pillRect else { return }
-        view.setPill(pillRect, state: pillState())
+        guard pillRect != nil else { return }
+        pillPanel.setState(pillState())
     }
 
     /// Commit a set of flagged words to the overlay (and close a stale card).
@@ -544,13 +558,6 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         if popoverPanel.isVisible, popoverPanel.frame.insetBy(dx: -4, dy: -4).contains(p) {
             cancelHidePopover()
-            return
-        }
-
-        // Rephrase pill takes priority — it sits next to the selection.
-        if let pill = pillRect, pill.insetBy(dx: -6, dy: -6).contains(p) {
-            cancelHidePopover()
-            if popoverMode != .rephrase { showRephrase() }
             return
         }
 
@@ -696,13 +703,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         let x = max(2, fieldBox.minX - size - 4)
         let pill = CGRect(x: x, y: r.midY - size / 2, width: size, height: size)
         pillRect = pill
-        view.setPill(pill, state: pillState())
+        pillPanel.show(at: pill, state: pillState())
     }
 
     private func hidePill() {
         guard pillRect != nil else { return }
         pillRect = nil
-        view.setPill(nil)
+        pillPanel.hide()
         if popoverMode == .rephrase {
             popoverPanel.orderOut(nil)
             popoverPanel.level = .statusBar   // undo any sandbox level bump
@@ -1637,7 +1644,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         lastHighlightsKey = ""
         flagged = []
         view.update(highlights: [])
-        view.setPill(nil)
+        pillPanel.hide()
         pillRect = nil
         popoverPanel.orderOut(nil)
         popoverMode = .none

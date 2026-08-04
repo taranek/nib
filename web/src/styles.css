@@ -26,6 +26,22 @@
   }
 }
 
+/* The pill's checking state: inner dot breathing (sine-like ease-in-out). */
+@keyframes pill-breathe {
+  0%,
+  100% {
+    opacity: 0.1;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@layer utilities {
+  .animate-pill-breathe {
+    animation: pill-breathe 1.4s ease-in-out infinite;
+  }
+}
+
 /* shadcn theme tokens (oklch). Mapped so Tailwind utilities like bg-card,
    text-foreground, etc. resolve. Both surfaces are dark → document carries `.dark`. */
 @theme inline {

@@ -3,22 +3,27 @@ import { createRoot } from "react-dom/client";
 import { MotionConfig } from "motion/react";
 import { App } from "./App";
 import { Settings } from "./Settings";
+import { Pill } from "./Pill";
 import "./styles.css";
 
-// One bundle, two surfaces: the per-word card (default) and the settings
-// window. The Swift host marks settings via an injected `__locoSettings` flag
-// (a file:// URL fragment is unreliable with loadFileURL); #settings still works
-// for plain-browser dev.
-const isSettings =
-  (window as unknown as { __locoSettings?: boolean }).__locoSettings === true ||
-  window.location.hash.replace(/^#/, "") === "settings";
+// One bundle, three surfaces: the per-word card (default), the settings
+// window, and the selection pill. The Swift host marks non-default surfaces
+// via injected flags (a file:// URL fragment is unreliable with loadFileURL);
+// #settings / #pill still work for plain-browser dev.
+const flags = window as unknown as {
+  __locoSettings?: boolean;
+  __locoPill?: boolean;
+};
+const hash = window.location.hash.replace(/^#/, "");
+const isSettings = flags.__locoSettings === true || hash === "settings";
+const isPill = flags.__locoPill === true || hash === "pill";
 
 // reducedMotion="user" makes Motion drop transforms/height animation (keeping
 // opacity) when the OS "Reduce motion" setting is on.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <MotionConfig reducedMotion="user">
-      {isSettings ? <Settings /> : <App />}
+      {isPill ? <Pill /> : isSettings ? <Settings /> : <App />}
     </MotionConfig>
   </StrictMode>,
 );
