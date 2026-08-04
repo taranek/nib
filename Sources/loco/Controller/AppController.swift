@@ -726,10 +726,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         rephraseElement = element
         rephraseRange = nativeRange
 
-        // Pill in the field's left margin, vertically centered on the selection.
+        // Grammarly-style docking: the pill hugs the field's bottom-right
+        // corner. Field frames are the one geometry AX reports reliably across
+        // apps — per-line selection tracking is not — so a fixed corner is
+        // always accurate and builds muscle memory. (`r`, the selection rect,
+        // still drives the card's text targeting above.)
+        _ = r
         let size: CGFloat = 18
-        let x = max(2, fieldBox.minX - size - 4)
-        let pill = CGRect(x: x, y: r.midY - size / 2, width: size, height: size)
+        let inset: CGFloat = 7
+        let pill = CGRect(x: fieldBox.maxX - size - inset,
+                          y: fieldBox.minY + inset,
+                          width: size, height: size)
         pillRect = pill
         pillPanel.show(at: pill, state: pillState())
     }
