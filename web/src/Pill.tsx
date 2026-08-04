@@ -15,31 +15,31 @@ export function Pill() {
   const { state, count } = status;
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
-      <div
-        className={cn(
-          "flex size-[18px] items-center justify-center rounded-full",
-          "transition-colors duration-200",
-          state === "checking" && "bg-white ring-1 ring-black/15",
-          state === "clean" && "bg-[#40b04f]",
-          state === "issues" && "bg-[#e0a64a]",
-          state === "plain" && "bg-[#2885ef]",
-        )}
-      >
-        {state === "checking" && (
-          <span className="size-[7px] animate-pill-breathe rounded-full bg-black" />
-        )}
-        {state === "clean" && (
-          <Check className="size-[10px] text-white" strokeWidth={3.5} />
-        )}
-        {state === "issues" && (
-          <span className="text-[10px] leading-none font-bold text-white tabular-nums">
-            {count > 9 ? "9+" : count}
-          </span>
-        )}
-        {state === "plain" && (
-          <RefreshCw className="size-[10px] text-white" strokeWidth={2.5} />
-        )}
-      </div>
+      {state === "checking" ? (
+        <span className="pill-glass-loader" />
+      ) : (
+        <div
+          className={cn(
+            "flex size-[18px] items-center justify-center rounded-full",
+            "transition-colors duration-200",
+            state === "clean" && "bg-[#40b04f]",
+            state === "issues" && "bg-[#e0a64a]",
+            state === "plain" && "bg-[#2885ef]",
+          )}
+        >
+          {state === "clean" && (
+            <Check className="size-[10px] text-white" strokeWidth={3.5} />
+          )}
+          {state === "issues" && (
+            <span className="text-[10px] leading-none font-bold text-white tabular-nums">
+              {count > 9 ? "9+" : count}
+            </span>
+          )}
+          {state === "plain" && (
+            <RefreshCw className="size-[10px] text-white" strokeWidth={2.5} />
+          )}
+        </div>
+      )}
     </div>
   );
 }

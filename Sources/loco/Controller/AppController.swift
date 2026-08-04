@@ -391,7 +391,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         grammarDebounce?.invalidate()
         grammarChecking = true
         refreshPillState()
-        grammarDebounce = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
+        grammarDebounce = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.recheck(value: value, appName: appName) }
         }
     }
@@ -494,13 +494,18 @@ final class AppController: NSObject, NSApplicationDelegate {
     // A grammar check is scheduled or in flight (drives the pill's spinner).
     private var grammarChecking = false
 
-    /// The field state the selection pill should communicate.
+    /// The field state the selection pill should communicate. The verdict comes
+    /// from the corrections themselves, NOT the located highlights — rect
+    /// location fails routinely (browser mapping, clipped fields), and a pill
+    /// claiming "clean" while the Grammar tab shows fixes is a lie.
     private func pillState() -> PillState {
-        if grammarChecking { return .checking }
-        if !flagged.isEmpty { return .issues(flagged.count) }
-        // A verdict exists for the field's current text → clean.
-        if checkedValueHash != 0 && checkedValueHash == lastValueHash { return .clean }
-        return .plain
+        let verdictCurrent = checkedValueHash != 0 && checkedValueHash == lastValueHash
+        if verdictCurrent && !grammarChecking {
+            return currentCorrections.isEmpty ? .clean : .issues(currentCorrections.count)
+        }
+        // Unsure (debouncing, checking, or the text changed since the last
+        // verdict) → loader, as long as a grammar model can actually check.
+        return server(for: .grammar).status == .ready ? .checking : .plain
     }
 
     /// Re-render the pill (if visible) with the current state.
