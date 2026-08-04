@@ -84,6 +84,31 @@ attributes CLI tools to their parent), then re-run.
 App data lives in `~/Library/Application Support/Nib/` (`bin/llama-server`,
 `models/*.gguf`, `state.json` for the onboarding flag).
 
+## Model licenses & attributions
+
+Nib ships **no model weights** — models are downloaded from Hugging Face at the
+user's request (catalog) or supplied by the user (`.gguf`). Licenses of the
+catalog models:
+
+| Model | License |
+|---|---|
+| Qwen3 4B Instruct 2507 | Apache-2.0 |
+| Gemma 4 E2B IT | [Gemma Terms of Use](https://ai.google.dev/gemma/terms) |
+| EuroLLM 9B Instruct | Apache-2.0 |
+| GRMR V3 4B | Apache-2.0 (derivative of Gemma 3 — Gemma Terms also apply) |
+
+### CoEdIT
+
+During model evaluation, this project tested
+[grammarly/coedit-large](https://huggingface.co/grammarly/coedit-large) —
+"CoEdIT: Text Editing by Task-Specific Instruction Tuning" (Raheja, Kumar,
+Koo, Kang; 2023) © Grammarly, licensed
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
+CoEdIT is **not** bundled with, distributed by, or used in Nib; its
+license is **non-commercial**, so it is also not offered in the model
+catalog. If you supply a CoEdIT `.gguf` yourself as a custom model, you are
+responsible for complying with its non-commercial terms.
+
 ## Architecture
 
 | Piece | Where |
