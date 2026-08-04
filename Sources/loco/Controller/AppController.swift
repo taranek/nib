@@ -691,15 +691,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             // AX fallback — works for native fields AND browsers that don't grant
             // Automation / aren't contentEditable. Write back via AX (native route).
             writeAppName = nil
-            // Selection geometry, best effort: the full range → just its first
-            // character (often resolves when the full range doesn't, e.g.
-            // Electron) → the mouse position, which is where the user selected
-            // (clamped into the field). Never the whole field — that parked the
-            // pill at the field's vertical center regardless of the selection.
+            // Selection geometry, best effort: index-based range bounds → text-
+            // marker bounds (the VoiceOver channel — works in Chromium/Electron
+            // where index bounds fail) → first-character bounds → the mouse
+            // position clamped into the field. Never the whole field.
             let firstChar = CFRange(location: cf.location, length: min(1, max(0, cf.length)))
             let mouseY = min(max(NSEvent.mouseLocation.y, fieldBox.minY + 9),
                              fieldBox.maxY - 9)
             selRect = AX.bounds(of: cf, in: element).map(toCocoa)
+                ?? AX.selectionMarkerBounds(element).map(toCocoa)
                 ?? AX.bounds(of: firstChar, in: element).map(toCocoa)
                 ?? CGRect(x: fieldBox.minX, y: mouseY - 8, width: 1, height: 16)
             let selRange = NSRange(location: cf.location, length: cf.length)
@@ -726,17 +726,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         rephraseElement = element
         rephraseRange = nativeRange
 
-        // Grammarly-style docking: the pill hugs the field's bottom-right
-        // corner. Field frames are the one geometry AX reports reliably across
-        // apps — per-line selection tracking is not — so a fixed corner is
-        // always accurate and builds muscle memory. (`r`, the selection rect,
-        // still drives the card's text targeting above.)
-        _ = r
+        // Pill in the field's left margin, vertically centered on the selection
+        // line (clamped into the field so a partly-scrolled selection doesn't
+        // strand it outside).
         let size: CGFloat = 18
-        let inset: CGFloat = 7
-        let pill = CGRect(x: fieldBox.maxX - size - inset,
-                          y: fieldBox.minY + inset,
-                          width: size, height: size)
+        let x = max(2, fieldBox.minX - size - 4)
+        let y = min(max(r.midY - size / 2, fieldBox.minY + 2), fieldBox.maxY - size - 2)
+        let pill = CGRect(x: x, y: y, width: size, height: size)
         pillRect = pill
         pillPanel.show(at: pill, state: pillState())
     }
