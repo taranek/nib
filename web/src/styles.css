@@ -26,24 +26,6 @@
   }
 }
 
-/* The pill's checking state: a "glass" ring — dark core with a spinning
-   sky→purple gradient border (gradient drawn in the border box, core painted
-   over the padding box). */
-.pill-glass-loader {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  background:
-    linear-gradient(#0f172a, #0f172a) padding-box,
-    linear-gradient(45deg, #38bdf8, #a855f7) border-box;
-  animation: pill-spin 1.2s linear infinite;
-}
-@keyframes pill-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 /* shadcn theme tokens (oklch). Mapped so Tailwind utilities like bg-card,
    text-foreground, etc. resolve. Both surfaces are dark → document carries `.dark`. */

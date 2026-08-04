@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { ThinkingOrb } from "thinking-orbs";
 import { type PillStatus, onSetPill } from "./bridge";
 
 /** The selection pill as a web surface (hover/click are handled natively by a
@@ -24,9 +25,12 @@ export function Pill() {
   }
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
-      <span
-        className="pill-glass-loader"
-        style={state === "open" ? { animationPlayState: "paused" } : undefined}
+      <ThinkingOrb
+        state="breathing"
+        size={20}
+        speed={1.3}
+        paused={state === "open"}
+        aria-label="Nib is checking"
       />
     </div>
   );
