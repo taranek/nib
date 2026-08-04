@@ -64,6 +64,34 @@ const cache = new Map<string, string>();
 // adapters — quirks are declared in the manifest, not hardcoded here.
 import { isImplausibleOutput } from "@/models/adapters";
 
+/** POST a chat request with per-attempt timeout and retry. Task servers spawn
+ *  lazily and take seconds to load a model — during that window requests are
+ *  refused or 503'd; retrying keeps the UI in its loading state until the
+ *  server is up instead of hanging or failing on the first open. */
+async function postChat(
+  llmUrl: string,
+  body: unknown,
+  retries = 10,
+): Promise<unknown | null> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetch(llmUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        // Generous: covers slow generations under GPU contention.
+        signal: AbortSignal.timeout(90_000),
+      });
+      if (res.ok) return await res.json();
+      if (res.status !== 503) return null; // real error — don't hammer
+    } catch {
+      // connection refused / aborted — server likely cold-starting
+    }
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  return null;
+}
+
 async function fetchRewrite(
   style: string,
   text: string,
@@ -98,22 +126,18 @@ async function fetchRewrite(
     instruction += RETRY_NUDGES[(attempt - 1) % RETRY_NUDGES.length];
   }
   try {
-    const res = await fetch(llmUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: instruction },
-          { role: "user", content: text },
-        ],
-        temperature: retry ? 0.8 : 0,
-        ...(retry ? { seed: attempt, top_p: 0.95 } : {}),
-        max_tokens: 1024,
-        response_format: SCHEMA,
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = (await postChat(llmUrl, {
+      messages: [
+        { role: "system", content: instruction },
+        { role: "user", content: text },
+      ],
+      temperature: retry ? 0.8 : 0,
+      ...(retry ? { seed: attempt, top_p: 0.95 } : {}),
+      max_tokens: 1024,
+      response_format: SCHEMA,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any;
+    if (!data) return null;
     const content: string | undefined = data?.choices?.[0]?.message?.content;
     if (!content) return null;
     const json = content.replace(/```json|```/g, "").trim();
@@ -149,18 +173,14 @@ export async function chatRefine(
   llmUrl: string,
 ): Promise<string | null> {
   try {
-    const res = await fetch(llmUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages,
-        temperature: 0.4,
-        max_tokens: 1024,
-        response_format: SCHEMA,
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = (await postChat(llmUrl, {
+      messages,
+      temperature: 0.4,
+      max_tokens: 1024,
+      response_format: SCHEMA,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any;
+    if (!data) return null;
     const content: string | undefined = data?.choices?.[0]?.message?.content;
     if (!content) return null;
     const parsed = JSON.parse(content.replace(/```json|```/g, "").trim());

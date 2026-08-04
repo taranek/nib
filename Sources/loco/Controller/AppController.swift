@@ -782,6 +782,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         let pill = CGRect(x: x, y: y, width: size, height: size)
         pillRect = pill
         pillPanel.show(at: pill, state: pillState())
+
+        // A selection means the card is likely next — spawn any cold task
+        // servers now so their models are loading before the user hovers.
+        _ = server(for: .compose)
+        _ = server(for: .grammar)
     }
 
     private func hidePill() {
