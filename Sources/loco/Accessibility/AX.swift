@@ -81,7 +81,6 @@ enum AX {
         return rect.isEmpty ? nil : rect
     }
 
-    /// The current selection/caret as a character range.
     /// Screen bounds of the current selection via WebKit-style text markers —
     /// the channel VoiceOver uses. Chromium/Electron implement it even where
     /// index-based AXBoundsForRange fails, so it's the reliable path for
@@ -99,6 +98,7 @@ enum AX {
         return rect
     }
 
+    /// The current selection/caret as a character range.
     static func selectedRange(_ element: AXUIElement) -> CFRange? {
         guard let value = copy(element, kAXSelectedTextRangeAttribute),
               CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
