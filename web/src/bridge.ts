@@ -33,6 +33,9 @@ export interface CardData {
   original: string;
   /** Grammar only: the corrected sentence. */
   result: string;
+  /** Rewrite card: precomputed grammar correction (Harper, English) — the
+   *  Grammar tab renders this instantly instead of fetching the LLM. */
+  grammarResult?: string;
   /** Rewrite only: the style tabs. */
   styles: RewriteStyleOption[];
   /** Compose-model chat URL (refine/explainers/language detection). */

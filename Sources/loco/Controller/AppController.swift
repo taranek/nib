@@ -785,8 +785,12 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         // A selection means the card is likely next — spawn any cold task
         // servers now so their models are loading before the user hovers.
+        // (Grammar only needs the LLM when Harper won't cover the text.)
         _ = server(for: .compose)
-        _ = server(for: .grammar)
+        if !(linterHost.ready
+             && NLLanguageRecognizer.dominantLanguage(for: target) == .english) {
+            _ = server(for: .grammar)
+        }
     }
 
     private func hidePill() {
@@ -811,20 +815,46 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverMode = .rephrase
         rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
                                       element: rephraseElement, range: rephraseRange)
+        // English selections get their Grammar tab from Harper — computed here,
+        // shown instantly, no LLM involved.
+        if linterHost.ready, NLLanguageRecognizer.dominantLanguage(for: text) == .english {
+            linterHost.lint(text) { [weak self] lints in
+                guard let self, self.popoverMode == .rephrase,
+                      self.rephraseText == text else { return }
+                let ns = text as NSString
+                var corrected = ns
+                for lint in lints.sorted(by: { $0.range.location > $1.range.location })
+                where !lint.suggestions.isEmpty {
+                    guard lint.range.location + lint.range.length <= corrected.length else { continue }
+                    corrected = corrected.replacingCharacters(
+                        in: lint.range, with: lint.suggestions[0]) as NSString
+                }
+                self.presentRephraseCard(text: text, grammarResult: corrected as String)
+            }
+        } else {
+            presentRephraseCard(text: text, grammarResult: nil)
+        }
+    }
+
+    private func presentRephraseCard(text: String, grammarResult: String?) {
         let routing = cardRouting()
-        popoverPanel.setCard([
+        var models = routing.models
+        if grammarResult != nil { models["grammar"] = "Harper (rules)" }
+        var payload: [String: Any] = [
             "mode": "rewrite",
             "original": text,
             "result": "",
             "styles": Self.styleList,
             "llmUrl": chatURL(for: .compose).absoluteString,
             "llmUrls": routing.urls,
-            "llmModels": routing.models,
+            "llmModels": models,
             "capabilities": routing.caps,
             "ready": llmReady,
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
-        ])
+        ]
+        if let grammarResult { payload["grammarResult"] = grammarResult }
+        popoverPanel.setCard(payload)
         popoverPanel.present(avoiding: pillRect ?? .zero)
         refreshPillState()   // loading → open (static ring) while the card is up
     }

@@ -478,8 +478,13 @@ function RewriteBody({ card }: { card: CardData }) {
                   explainUrl={card.llmUrl}
                   explain={card.explainFixes && (card.capabilities?.compose ?? true)}
                   supported={styleSupported(card, s.id)}
+                  precomputed={
+                    s.id === "grammar" ? card.grammarResult : undefined
+                  }
                   enabled={
-                    s.id === current && (!needsLang(s.id) || !langLoading)
+                    s.id === current &&
+                    (!needsLang(s.id) || !langLoading) &&
+                    !(s.id === "grammar" && card.grammarResult != null)
                   }
                   language={language}
                   attempt={attempts[s.id] ?? 0}
@@ -617,6 +622,7 @@ function RewritePanel({
   explainUrl,
   explain,
   supported,
+  precomputed,
   enabled,
   language,
   attempt,
@@ -634,6 +640,8 @@ function RewritePanel({
   explainUrl: string;
   explain: boolean;
   supported: boolean;
+  /** Ready-made result (Harper grammar) — rendered instead of fetching. */
+  precomputed?: string;
   enabled: boolean;
   language: string | null;
   attempt: number;
@@ -642,9 +650,13 @@ function RewritePanel({
   refining?: boolean;
   onResult: (id: string, s: RewriteState) => void;
 }) {
-  const st = useRewrite(
+  const fetched = useRewrite(
     style, original, llmUrl, enabled && supported, language, attempt, target,
     modelFile);
+  const st: RewriteState =
+    precomputed != null
+      ? { loading: false, text: precomputed, error: false }
+      : fetched;
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);
