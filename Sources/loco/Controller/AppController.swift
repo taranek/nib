@@ -174,6 +174,20 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         startLLM()
 
+        // Perf HUD (right-click the menu-bar icon, or LOCO_PERF=1): live FPS/
+        // stall, CPU/RAM, and per-server llama latency.
+        PerfHUD.shared.serversProvider = { [weak self] in
+            guard let self else { return [] }
+            var servers = [(LLMPaths.modelName().map { String($0.prefix(10)) } ?? "default", llmServer.port)]
+            for (path, server) in taskServers {
+                servers.append((String(URL(fileURLWithPath: path).lastPathComponent.prefix(10)), server.port))
+            }
+            return servers
+        }
+        if ProcessInfo.processInfo.environment["LOCO_PERF"] != nil {
+            PerfHUD.shared.show()
+        }
+
         print("✅ Nib running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
         print("   Card UI from: \(Self.webURL().absoluteString)\n")
 
@@ -415,12 +429,14 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         print("📝 validating focused input (\(text.count) chars)…")
         grammarTask?.cancel()
+        let checkStart = CFAbsoluteTimeGetCurrent()
         grammarTask = Task { [weak self] in
             let corrections = await client.corrections(in: text)
             if Task.isCancelled { return }
             await MainActor.run {
                 guard let self else { return }
                 print("   → \(corrections.count) sentence fix(es)")
+                PerfHUD.shared.lastGrammarMs = Int((CFAbsoluteTimeGetCurrent() - checkStart) * 1000)
                 // Only apply if the field still holds the text we checked.
                 let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
                 guard current == value else { print("   (stale — field changed)"); return }
@@ -993,12 +1009,21 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func showStatusMenu() {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
+        let hud = NSMenuItem(title: PerfHUD.shared.visible ? "Hide Performance HUD" : "Show Performance HUD",
+                             action: #selector(togglePerfHUD), keyEquivalent: "")
+        hud.target = self
+        menu.addItem(hud)
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Nib",
                               action: #selector(quitFromMenu), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         menu.popUp(positioning: nil,
                    at: NSPoint(x: 0, y: button.bounds.maxY + 4), in: button)
+    }
+
+    @objc private func togglePerfHUD() {
+        PerfHUD.shared.toggle()
     }
 
     @objc private func quitFromMenu() {
