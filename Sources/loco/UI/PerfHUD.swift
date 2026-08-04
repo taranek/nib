@@ -1,7 +1,9 @@
 import Cocoa
 
 /// Floating performance HUD — a general debugging utility (toggled from the
-/// status item's right-click menu, or forced on with LOCO_PERF=1).
+/// status item's right-click menu, or forced on with LOCO_PERF=1). While
+/// measuring, every sample is also appended to logs/perf.log for offline
+/// analysis (same folder Settings → Logs opens).
 ///
 /// Metrics:
 ///  - FPS / stall: a 120Hz main-run-loop timer counts fires; missed fires mean
@@ -31,6 +33,8 @@ final class PerfHUD {
     private var lastCPUTime: Double = 0
     private var lastCPUStamp = CFAbsoluteTimeGetCurrent()
     private var pings: [Int: Int] = [:]   // port → ms
+    private var lastCPU: Double = 0
+    private var lastRAM: Double = 0
 
     var visible: Bool { panel?.isVisible == true }
 
@@ -80,9 +84,11 @@ final class PerfHUD {
         windowStart = now
         maxStall = 0
 
+        lastCPU = cpuPercent()
+        lastRAM = ramMB()
         var lines = [
             String(format: "fps %3d   stall %4dms", fps, stallMs),
-            String(format: "cpu %3.0f%%  ram %5.0fMB", cpuPercent(), ramMB()),
+            String(format: "cpu %3.0f%%  ram %5.0fMB", lastCPU, lastRAM),
         ]
         for (name, port) in serversProvider() {
             let ping = pings[port].map { "\($0)ms" } ?? "…"
@@ -91,6 +97,41 @@ final class PerfHUD {
         }
         if let ms = lastGrammarMs { lines.append("last check \(ms)ms") }
         label?.stringValue = lines.joined(separator: "\n")
+        logSample(fps: fps, stallMs: stallMs)
+    }
+
+    // MARK: - File log
+
+    private static var logURL: URL { LLMPaths.logsDir.appendingPathComponent("perf.log") }
+    private lazy var stamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
+        return f
+    }()
+
+    /// One compact line per sample; starts fresh past ~2 MB.
+    private func logSample(fps: Int, stallMs: Int) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: LLMPaths.logsDir, withIntermediateDirectories: true)
+        if let size = try? fm.attributesOfItem(atPath: Self.logURL.path)[.size] as? Int,
+           size > 2_000_000 {
+            try? fm.removeItem(at: Self.logURL)
+        }
+        let servers = serversProvider()
+            .map { "\($0.0):\(pings[$0.1].map(String.init) ?? "-")ms" }
+            .joined(separator: " ")
+        let check = lastGrammarMs.map { "\($0)ms" } ?? "-"
+        let line = String(
+            format: "%@ fps=%d stall=%dms cpu=%.0f%% ram=%.0fMB %@ check=%@\n",
+            stamp.string(from: Date()), fps, stallMs, lastCPU, lastRAM, servers, check)
+        if !fm.fileExists(atPath: Self.logURL.path) {
+            fm.createFile(atPath: Self.logURL.path, contents: Data())
+        }
+        if let handle = try? FileHandle(forWritingTo: Self.logURL) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        }
     }
 
     /// Time a /health round trip per server — inference queuing shows up here.
