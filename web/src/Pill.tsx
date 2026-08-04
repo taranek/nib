@@ -25,13 +25,19 @@ export function Pill() {
   }
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
-      <ThinkingOrb
-        state="breathing"
-        size={20}
-        speed={1.3}
-        paused={state === "open"}
-        aria-label="Nib is checking"
-      />
+      {/* The window is transparent — the orb needs its own disc or its dots
+          drown in whatever app is behind. Dark disc + dark orb, matching the
+          cards' always-dark identity regardless of the system scheme. */}
+      <div className="flex size-6 items-center justify-center rounded-full bg-[#191a1b] shadow-[0_1px_4px_rgba(0,0,0,0.4)] ring-1 ring-white/20">
+        <ThinkingOrb
+          state="breathing"
+          size={20}
+          speed={1.3}
+          theme="dark"
+          paused={state === "open"}
+          aria-label="Nib is checking"
+        />
+      </div>
     </div>
   );
 }
