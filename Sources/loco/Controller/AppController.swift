@@ -691,8 +691,17 @@ final class AppController: NSObject, NSApplicationDelegate {
             // AX fallback — works for native fields AND browsers that don't grant
             // Automation / aren't contentEditable. Write back via AX (native route).
             writeAppName = nil
+            // Selection geometry, best effort: the full range → just its first
+            // character (often resolves when the full range doesn't, e.g.
+            // Electron) → the mouse position, which is where the user selected
+            // (clamped into the field). Never the whole field — that parked the
+            // pill at the field's vertical center regardless of the selection.
+            let firstChar = CFRange(location: cf.location, length: min(1, max(0, cf.length)))
+            let mouseY = min(max(NSEvent.mouseLocation.y, fieldBox.minY + 9),
+                             fieldBox.maxY - 9)
             selRect = AX.bounds(of: cf, in: element).map(toCocoa)
-                ?? CGRect(x: fieldBox.minX, y: fieldBox.minY, width: 1, height: fieldBox.height)
+                ?? AX.bounds(of: firstChar, in: element).map(toCocoa)
+                ?? CGRect(x: fieldBox.minX, y: mouseY - 8, width: 1, height: 16)
             let selRange = NSRange(location: cf.location, length: cf.length)
             if t.contains("\n") {
                 // Multi-line: expand to whole sentence(s).
