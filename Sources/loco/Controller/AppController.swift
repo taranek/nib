@@ -427,9 +427,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func recheck(value: String, appName: String?) {
         let token = value.hashValue
         let text = appName.flatMap { browser.focusedText(appName: $0) } ?? value
-        // Grammar may be pinned to its own model/server (per-task routing).
+        // Grammar may be pinned to its own model/server (per-task routing);
+        // the serving model's manifest quirks drive output validation.
         let grammarServer = server(for: .grammar)
-        let client = LLMClient(chatURL: grammarServer.chatURL)
+        let grammarFile = taskModelFile(for: .grammar)
+        let quirks = ModelManifest.byFile(grammarFile)?.validate
+        let client = LLMClient(chatURL: grammarServer.chatURL,
+                               echoMarkers: quirks?.echoMarkers ?? [],
+                               maxGrowth: quirks?.maxGrowth ?? 2.0)
         guard grammarServer.status == .ready,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             currentCorrections = []
@@ -1157,51 +1162,21 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // MARK: - Model catalog (Hugging Face downloads)
 
-    /// What a model can be trusted with. Raw values are shared with the web UI.
+    /// What a model can be trusted with. Raw values are shared with the web UI
+    /// (and the manifest's capabilities arrays).
     enum ModelCapability: String, CaseIterable {
         case grammar      // inline squiggles + the Grammar tab
         case compose      // rephrase / shorten / refine / explainers
         case translate    // the Translate tab
     }
 
-    /// Curated GGUF models offered in onboarding. Keep ids/capabilities in sync
-    /// with CATALOG in ModelCatalog.tsx (which holds the display copy).
-    private struct CatalogModel {
-        let id: String
-        let file: String
-        let url: URL
-        let caps: Set<ModelCapability>
-    }
-
-    private static let modelCatalog: [CatalogModel] = [
-        CatalogModel(
-            id: "qwen3-4b",
-            file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-            url: URL(string: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true")!,
-            caps: [.grammar, .compose, .translate]),
-        CatalogModel(
-            id: "gemma-4-e2b",
-            file: "gemma-4-E2B-it-Q4_K_M.gguf",
-            url: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true")!,
-            caps: [.grammar, .compose, .translate]),
-        CatalogModel(
-            id: "eurollm-9b",
-            file: "EuroLLM-9B-Instruct-Q4_K_M.gguf",
-            url: URL(string: "https://huggingface.co/bartowski/EuroLLM-9B-Instruct-GGUF/resolve/main/EuroLLM-9B-Instruct-Q4_K_M.gguf?download=true")!,
-            caps: [.grammar, .compose, .translate]),
-        CatalogModel(
-            id: "grmr-v3-g4b",
-            file: "GRMR-V3-G4B-Q8_0.gguf",
-            url: URL(string: "https://huggingface.co/qingy2024/GRMR-V3-G4B-GGUF/resolve/main/GRMR-V3-G4B-Q8_0.gguf?download=true")!,
-            caps: [.grammar]),   // English-only correction fine-tune; can't rephrase/translate
-    ]
-
-    /// Capabilities of the model at `path` — catalog lookup by file name;
+    /// Capabilities of the model at `path` — manifest lookup by file name;
     /// unknown (user-supplied) models are assumed fully capable.
     private static func capabilities(ofModelAt path: String?) -> Set<ModelCapability> {
-        guard let path else { return Set(ModelCapability.allCases) }
-        let file = URL(fileURLWithPath: path).lastPathComponent
-        return modelCatalog.first { $0.file == file }?.caps ?? Set(ModelCapability.allCases)
+        guard let path,
+              let model = ModelManifest.byFile(URL(fileURLWithPath: path).lastPathComponent)
+        else { return Set(ModelCapability.allCases) }
+        return Set(model.capabilities.compactMap(ModelCapability.init(rawValue:)))
     }
 
     // MARK: - Per-task model routing
@@ -1219,7 +1194,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let file: String
         if id.hasPrefix("file:") {
             file = String(id.dropFirst("file:".count))
-        } else if let model = Self.modelCatalog.first(where: { $0.id == id }) {
+        } else if let model = ModelManifest.byID(id) {
             file = model.file
         } else {
             return nil
@@ -1234,7 +1209,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// User-supplied .gguf files in the models dir (not from the catalog),
     /// selectable per task alongside catalog models.
     private func customModelFiles() -> [String] {
-        let catalogFiles = Set(Self.modelCatalog.map(\.file))
+        let catalogFiles = Set(ModelManifest.models.map(\.file))
         let items = (try? FileManager.default.contentsOfDirectory(
             atPath: LLMPaths.modelsDir.path)) ?? []
         return items
@@ -1330,7 +1305,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Catalog ids whose file is already on disk (no need to re-download).
     private func downloadedModelIDs() -> [String] {
-        Self.modelCatalog
+        ModelManifest.models
             .filter {
                 FileManager.default.fileExists(
                     atPath: LLMPaths.modelsDir.appendingPathComponent($0.file).path)
@@ -1340,7 +1315,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Activate an already-downloaded catalog model (no download).
     private func selectModel(id: String) {
-        guard let model = Self.modelCatalog.first(where: { $0.id == id }) else { return }
+        guard let model = ModelManifest.byID(id) else { return }
         let dest = LLMPaths.modelsDir.appendingPathComponent(model.file)
         guard FileManager.default.fileExists(atPath: dest.path) else { return }
         UserDefaults.standard.set(dest.path, forKey: "modelPath")
@@ -1351,7 +1326,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func startModelDownload(id: String) {
         guard modelDownload == nil,
-              let model = Self.modelCatalog.first(where: { $0.id == id }) else { return }
+              let model = ModelManifest.byID(id) else { return }
         try? FileManager.default.createDirectory(
             at: LLMPaths.modelsDir, withIntermediateDirectories: true)
         let dest = LLMPaths.modelsDir.appendingPathComponent(model.file)

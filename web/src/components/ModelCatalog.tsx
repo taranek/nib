@@ -8,8 +8,11 @@ import {
 } from "@/bridge";
 import { Button } from "@/components/ui/button";
 
-// What each model can be trusted with (mirrors ModelCapability in Swift).
-export type Capability = "grammar" | "compose" | "translate";
+// Catalog data comes from the shared model manifest (adapters.ts wraps
+// Sources/loco/Resources/models.json — also read by Swift).
+import { ADAPTERS, type Capability } from "@/models/adapters";
+
+export type { Capability };
 
 export const CAPABILITY_LABELS: Record<Capability, string> = {
   grammar: "Grammar",
@@ -17,54 +20,15 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   translate: "Translation",
 };
 
-// Curated models the user can download from Hugging Face. Keep ids, files, and
-// capabilities in sync with modelCatalog in AppController.swift.
-export const CATALOG: {
-  id: string;
-  file: string;
-  name: string;
-  size: string;
-  note: string;
-  recommended: boolean;
-  caps: Capability[];
-}[] = [
-  {
-    id: "qwen3-4b",
-    file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-    name: "Qwen3 4B",
-    size: "2.4 GB",
-    note: "Best all-round, strong in many languages",
-    recommended: true,
-    caps: ["grammar", "compose", "translate"],
-  },
-  {
-    id: "gemma-4-e2b",
-    file: "gemma-4-E2B-it-Q4_K_M.gguf",
-    name: "Gemma 4 E2B",
-    size: "3.1 GB",
-    note: "Best rewrites, fastest",
-    recommended: false,
-    caps: ["grammar", "compose", "translate"],
-  },
-  {
-    id: "eurollm-9b",
-    file: "EuroLLM-9B-Instruct-Q4_K_M.gguf",
-    name: "EuroLLM 9B",
-    size: "5.2 GB",
-    note: "Best translations, 35 languages",
-    recommended: false,
-    caps: ["grammar", "compose", "translate"],
-  },
-  {
-    id: "grmr-v3-g4b",
-    file: "GRMR-V3-G4B-Q8_0.gguf",
-    name: "GRMR V3 4B",
-    size: "4.1 GB",
-    note: "Sharpest grammar fixes · English only",
-    recommended: false,
-    caps: ["grammar"],
-  },
-];
+export const CATALOG = ADAPTERS.map((m) => ({
+  id: m.id,
+  file: m.file,
+  name: m.display.name,
+  size: m.display.size,
+  note: m.display.note,
+  recommended: m.display.recommended,
+  caps: m.capabilities,
+}));
 
 /** The downloadable-models list shared by onboarding and settings: Get to
  *  download (with progress + cancel), Use to activate an already-downloaded

@@ -10,10 +10,11 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
+    "resolveJsonModule": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "baseUrl": ".",
     "paths": { "@/*": ["src/*"] }
   },
-  "include": ["src"]
+  "include": ["src", "../Sources/loco/Resources/models.json"]
 }

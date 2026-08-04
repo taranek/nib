@@ -60,18 +60,9 @@ const RETRY_NUDGES = [
 // Module-level cache (style|text → result) so re-tabbing / re-mounting is instant.
 const cache = new Map<string, string>();
 
-// Some models (narrow fine-tunes on text they can't handle) echo the prompt
-// instructions back as the "result". Never surface those.
-const ECHO_MARKERS = [
-  "Put the result in the",
-  "never expand or replace them",
-  "'rewrite' field",
-  '"rewrite" field',
-  "Detect the source language automatically",
-];
-function isPromptEcho(out: string): boolean {
-  return ECHO_MARKERS.some((m) => out.includes(m));
-}
+// Per-model output validation (echo markers, growth caps) lives in the model
+// adapters — quirks are declared in the manifest, not hardcoded here.
+import { isImplausibleOutput } from "@/models/adapters";
 
 async function fetchRewrite(
   style: string,
@@ -80,6 +71,7 @@ async function fetchRewrite(
   language: string | null,
   attempt: number,
   target: string,
+  modelFile?: string,
 ): Promise<string | null> {
   let instruction = INSTRUCTIONS[style] ?? INSTRUCTIONS.grammar;
   // Translate goes to the user's chosen target language.
@@ -127,7 +119,7 @@ async function fetchRewrite(
     const json = content.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(json);
     const out = (parsed?.rewrite ?? "").trim();
-    if (!out || isPromptEcho(out)) return null;
+    if (!out || isImplausibleOutput(out, text, modelFile)) return null;
     return out;
   } catch {
     return null;
@@ -547,6 +539,7 @@ export function useRewrite(
   language: string | null,
   attempt: number,
   target: string,
+  modelFile?: string,
 ): RewriteState {
   const key = `${style}|${text}|${attempt}|${target}`;
   const [state, setState] = useState<RewriteState>(() =>
@@ -563,7 +556,7 @@ export function useRewrite(
     }
     let cancelled = false;
     setState({ loading: true, text: "", error: false });
-    fetchRewrite(style, text, llmUrl, language, attempt, target).then((result) => {
+    fetchRewrite(style, text, llmUrl, language, attempt, target, modelFile).then((result) => {
       if (cancelled) return;
       if (result != null) {
         cache.set(key, result);

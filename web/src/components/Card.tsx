@@ -26,7 +26,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Chip } from "@/components/ui/chip";
 import { IconButton } from "@/components/ui/icon-button";
 import { countChanges } from "@/lib/diff";
-import { CATALOG } from "@/components/ModelCatalog";
+import { displayName } from "@/models/adapters";
 import { DiffText } from "./DiffText";
 import { TextSkeleton } from "./TextSkeleton";
 
@@ -81,10 +81,7 @@ function styleSupported(card: CardData, style: string): boolean {
  *  file is known, else the file name without its extension. */
 function modelLabel(card: CardData, task: "grammar" | "compose" | "translate") {
   const file = card.llmModels?.[task];
-  if (!file) return null;
-  return (
-    CATALOG.find((m) => m.file === file)?.name ?? file.replace(/\.gguf$/, "")
-  );
+  return file ? displayName(file) : null;
 }
 
 /** A chip icon that reveals the current view's model name on hover. The label
@@ -477,6 +474,7 @@ function RewriteBody({ card }: { card: CardData }) {
                   style={s.id}
                   original={card.original}
                   llmUrl={urlFor(card, s.id)}
+                  modelFile={card.llmModels?.[STYLE_TASK[s.id] ?? "compose"]}
                   explainUrl={card.llmUrl}
                   explain={card.explainFixes && (card.capabilities?.compose ?? true)}
                   supported={styleSupported(card, s.id)}
@@ -615,6 +613,7 @@ function RewritePanel({
   style,
   original,
   llmUrl,
+  modelFile,
   explainUrl,
   explain,
   supported,
@@ -629,6 +628,8 @@ function RewritePanel({
   style: string;
   original: string;
   llmUrl: string;
+  /** Backing model's file (adapter lookup for output validation). */
+  modelFile?: string;
   /** Compose-model URL for explainers (may differ from the tab's own URL). */
   explainUrl: string;
   explain: boolean;
@@ -642,7 +643,8 @@ function RewritePanel({
   onResult: (id: string, s: RewriteState) => void;
 }) {
   const st = useRewrite(
-    style, original, llmUrl, enabled && supported, language, attempt, target);
+    style, original, llmUrl, enabled && supported, language, attempt, target,
+    modelFile);
   useEffect(() => {
     onResult(style, st);
   }, [style, st.loading, st.text, st.error, onResult]);

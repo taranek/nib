@@ -20,6 +20,7 @@ const SAMPLE: CardData = {
   llmUrl: "http://127.0.0.1:18080/v1/chat/completions",
   ready: true,
   targetLanguage: "English",
+  explainFixes: true,
 };
 
 export function App() {

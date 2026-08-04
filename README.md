@@ -19,9 +19,10 @@ leaves your Mac.
 - **Rewrite card** — select text anywhere and press <kbd>⌘</kbd><kbd>`</kbd>
   (or hover the pill) for Rephrase / Shorten / Translate tabs, quick-edit chips,
   and a composer for custom instructions.
-- **Local models** — pick from a curated catalog (Gemma 4 E2B recommended,
-  Qwen 2.5 3B, Llama 3.2 3B) downloaded straight from Hugging Face, or supply
-  your own `.gguf`. Served by a bundled `llama-server`.
+- **Local models** — pick from a curated catalog (Qwen3 4B recommended, plus
+  Gemma 4 E2B, EuroLLM 9B, GRMR V3) downloaded straight from Hugging Face, or
+  supply your own `.gguf` — assignable per task (grammar / writing /
+  translation). Served by a bundled `llama-server`.
 - **First-run onboarding** — guided setup (Accessibility → model) plus a
   hands-on sandbox to try both interactions before using them for real.
 

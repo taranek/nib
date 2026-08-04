@@ -356,6 +356,10 @@ final class LLMServer {
 /// Sends grammar-check requests to the local server and parses corrections.
 struct LLMClient {
     let chatURL: URL
+    /// Output-validation quirks of the serving model (from the manifest);
+    /// generic prompt-echo markers are always applied on top.
+    var echoMarkers: [String] = []
+    var maxGrowth: Double = 2.0
 
     private static let correctPrompt = """
     You correct a single sentence. Fix ONLY clear spelling, grammar, and \
@@ -460,7 +464,7 @@ struct LLMClient {
         // Sanity guard: some models (narrow fine-tunes on text they can't
         // handle, e.g. non-English) echo the prompt instructions back as the
         // "correction". Never surface those — treat the sentence as clean.
-        guard Self.isPlausibleCorrection(corrected, of: trimmed) else {
+        guard isPlausibleCorrection(corrected, of: trimmed) else {
             print("   ⚠️ implausible correction discarded (prompt echo?)")
             await GrammarCache.shared.set(trimmed, trimmed)
             return nil
@@ -470,20 +474,21 @@ struct LLMClient {
         return corrected == trimmed ? nil : SentenceCorrection(original: trimmed, corrected: corrected)
     }
 
+    /// Generic prompt fragments that only appear when a model echoes our own
+    /// instructions back; per-model markers come from the manifest.
+    private static let genericEchoMarkers = [
+        "You correct a single sentence",
+        "\"corrected\" field",
+        "'corrected' field",
+    ]
+
     /// A grammar fix should resemble the input: reject outputs that quote our
     /// own prompt or balloon far beyond the original sentence.
-    static func isPlausibleCorrection(_ corrected: String, of original: String) -> Bool {
-        let echoMarkers = [
-            "You correct a single sentence",
-            "\"corrected\" field",
-            "'corrected' field",
-            "spelling, grammar, and punctuation",
-            "return it exactly unchanged",
-        ]
-        for marker in echoMarkers where corrected.contains(marker) { return false }
-        // A sentence-level fix shouldn't more than double the text (+ slack for
-        // very short inputs).
-        return corrected.count <= max(original.count * 2, original.count + 60)
+    func isPlausibleCorrection(_ corrected: String, of original: String) -> Bool {
+        for marker in Self.genericEchoMarkers + echoMarkers
+        where corrected.contains(marker) { return false }
+        let cap = max(Double(original.count) * maxGrowth, Double(original.count + 60))
+        return Double(corrected.count) <= cap
     }
 
     // MARK: Text actions

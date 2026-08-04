@@ -12,6 +12,8 @@ let package = Package(
                 // Menu-bar icon (1x/2x template PNGs), loaded via Bundle.module.
                 .copy("Resources/nib-menubar-18.png"),
                 .copy("Resources/nib-menubar-36.png"),
+                // Shared model manifest (also imported by the web bundle).
+                .copy("Resources/models.json"),
             ]
         )
     ],
