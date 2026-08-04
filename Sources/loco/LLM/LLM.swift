@@ -176,6 +176,8 @@ final class LLMServer {
     let port: Int
     /// Pinned model for task-specific servers; nil = the app's default model.
     let fixedModelPath: String?
+    /// Last time a task routed to this server (drives idle shutdown).
+    var lastUsed = Date()
     private var process: Process?
     private var owns = false   // did we spawn the server (so we may kill it)?
 
@@ -241,7 +243,6 @@ final class LLMServer {
             "-ngl", "999",
             "-c", "8192",
             "--parallel", "4",        // overlap the per-sentence requests
-            "--no-mmap",
             "--reasoning-budget", "0",
             "--jinja",
         ]

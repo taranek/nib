@@ -174,6 +174,18 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         startLLM()
 
+        // Reclaim task servers orphaned by a crashed/killed previous session
+        // (the main port reclaims itself at spawn; 18085+ would leak).
+        let reap = Process()
+        reap.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        reap.arguments = ["-9", "-f", "llama-server.*--port 1808[5-9]"]
+        try? reap.run()
+
+        // Idle sweep: drop task-pinned models that haven't been used in 10 min.
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reapIdleTaskServers() }
+        }
+
         // Perf HUD (right-click the menu-bar icon, or LOCO_PERF=1): live FPS/
         // stall, CPU/RAM, and per-server llama latency.
         PerfHUD.shared.serversProvider = { [weak self] in
@@ -1217,7 +1229,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// else the main one. Spawns the task server on first use.
     private func server(for task: LLMTask) -> LLMServer {
         guard let path = taskModelPath(for: task) else { return llmServer }
-        if let existing = taskServers[path] { return existing }
+        if let existing = taskServers[path] { existing.lastUsed = Date(); return existing }
         let server = LLMServer(port: nextTaskPort, modelPath: path)
         nextTaskPort += 1
         server.onStatusChange = { [weak self] status in
@@ -1257,6 +1269,18 @@ final class AppController: NSObject, NSApplicationDelegate {
             server.stop()
             taskServers[path] = nil
             print("🧠 LLM: stopped task server for \(URL(fileURLWithPath: path).lastPathComponent)")
+        }
+    }
+
+    /// Task servers are spawned on demand (opening a card) but a resident model
+    /// is gigabytes — stop any that haven't served a task in 10 minutes. They
+    /// respawn transparently on next use (the card shows its loading state).
+    private func reapIdleTaskServers() {
+        for (path, server) in taskServers
+        where Date().timeIntervalSince(server.lastUsed) > 600 {
+            server.stop()
+            taskServers[path] = nil
+            print("🧠 LLM: idle task server stopped (\(URL(fileURLWithPath: path).lastPathComponent))")
         }
     }
 
