@@ -502,11 +502,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else {
             activeBrowserAppName = nil
             for p in pendings {
-                guard let rect = screenRect(for: p.range, in: element), isSaneRect(rect, in: fieldBox) else { continue }
                 let sentence = ns.range(of: p.original)
-                words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
-                                         range: sentence.location != NSNotFound ? sentence : nil,
-                                         sentenceID: p.original))
+                // AXBoundsForRange unions multi-line ranges into one giant box —
+                // split at newlines so each line gets its own highlight.
+                for sub in Self.splitAtNewlines(p.range, in: ns) {
+                    guard let rect = screenRect(for: sub, in: element),
+                          isSaneRect(rect, in: fieldBox) else { continue }
+                    words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
+                                             range: sentence.location != NSNotFound ? sentence : nil,
+                                             sentenceID: p.original))
+                }
             }
         }
 
@@ -1715,6 +1720,24 @@ final class AppController: NSObject, NSApplicationDelegate {
             && rect.maxY <= field.maxY + slack
             && rect.minX >= field.minX - slack
             && rect.minX <= field.maxX
+    }
+
+    /// Split a range into per-line subranges at hard newlines (empty segments
+    /// dropped) so multi-line ranges don't render as one union box.
+    private static func splitAtNewlines(_ range: NSRange, in ns: NSString) -> [NSRange] {
+        var out: [NSRange] = []
+        var start = range.location
+        let end = range.location + range.length
+        var i = start
+        while i < end {
+            if ns.character(at: i) == 10 {
+                if i > start { out.append(NSRange(location: start, length: i - start)) }
+                start = i + 1
+            }
+            i += 1
+        }
+        if end > start { out.append(NSRange(location: start, length: end - start)) }
+        return out
     }
 
     /// Expand a range to the whole sentence(s) it overlaps: back to the previous
