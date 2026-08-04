@@ -34,7 +34,6 @@ export function Pill() {
           size={20}
           speed={1.3}
           theme="dark"
-          paused={state === "open"}
           aria-label="Nib is checking"
         />
       </div>
