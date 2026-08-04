@@ -140,11 +140,9 @@ export interface DownloadProgress {
   error?: string;
 }
 
-/** The selection pill's ambient state, pushed from Swift. */
+/** The selection pill's state, pushed from Swift. */
 export interface PillStatus {
-  state: "plain" | "checking" | "clean" | "issues";
-  /** Flagged-spot count (issues state only). */
-  count: number;
+  state: "plain" | "loading" | "open";
 }
 
 /** Result of an update check, pushed from Swift. */

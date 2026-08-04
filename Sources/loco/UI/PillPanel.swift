@@ -1,12 +1,12 @@
 import Cocoa
 import WebKit
 
-/// What the pill communicates about the focused field's grammar state.
+/// What the pill shows: a spinning loader until the user opens the card,
+/// a static ring while the card is open, plain blue when no model is ready.
 enum PillState: Equatable {
-    case plain          // no verdict yet (e.g. model not ready)
-    case checking       // a grammar check is in flight
-    case clean          // checked, nothing flagged
-    case issues(Int)    // checked, n flagged spots
+    case plain
+    case loading
+    case open
 }
 
 /// Transparent hit-target layered over the pill webview: tracking areas fire
@@ -106,14 +106,13 @@ final class PillPanel: NSObject, WKNavigationDelegate {
 
     private func push(state: PillState) {
         guard loaded else { pending = (true, state); return }
-        let (name, count): (String, Int) = switch state {
-        case .plain: ("plain", 0)
-        case .checking: ("checking", 0)
-        case .clean: ("clean", 0)
-        case .issues(let n): ("issues", n)
+        let name = switch state {
+        case .plain: "plain"
+        case .loading: "loading"
+        case .open: "open"
         }
         webView.evaluateJavaScript(
-            "window.loco && window.loco.setPill && window.loco.setPill({state:\"\(name)\",count:\(count)})")
+            "window.loco && window.loco.setPill && window.loco.setPill({state:\"\(name)\"})")
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

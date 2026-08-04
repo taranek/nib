@@ -389,8 +389,6 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Debounce the grammar check so fast typing doesn't fire a request per key.
     private func scheduleRecheck(value: String, appName: String?) {
         grammarDebounce?.invalidate()
-        grammarChecking = true
-        refreshPillState()
         grammarDebounce = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.recheck(value: value, appName: appName) }
         }
@@ -411,7 +409,6 @@ final class AppController: NSObject, NSApplicationDelegate {
             currentCorrections = []
             currentFullText = text
             checkedValueHash = token
-            grammarChecking = false
             applyDetection([], element: AX.focusedElement())
             return
         }
@@ -430,7 +427,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self.currentCorrections = corrections
                 self.currentFullText = text
                 self.checkedValueHash = token
-                self.grammarChecking = false
                 self.renderSentenceFixes(corrections, fullText: text, appName: appName)
             }
         }
@@ -491,21 +487,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         applyDetection(words, element: element)
     }
 
-    // A grammar check is scheduled or in flight (drives the pill's spinner).
-    private var grammarChecking = false
-
-    /// The field state the selection pill should communicate. The verdict comes
-    /// from the corrections themselves, NOT the located highlights — rect
-    /// location fails routinely (browser mapping, clipped fields), and a pill
-    /// claiming "clean" while the Grammar tab shows fixes is a lie.
+    /// The pill's visual: a loader inviting the user in until the card opens,
+    /// a static ring while it's open, plain blue when no model can serve it.
     private func pillState() -> PillState {
-        let verdictCurrent = checkedValueHash != 0 && checkedValueHash == lastValueHash
-        if verdictCurrent && !grammarChecking {
-            return currentCorrections.isEmpty ? .clean : .issues(currentCorrections.count)
-        }
-        // Unsure (debouncing, checking, or the text changed since the last
-        // verdict) → loader, as long as a grammar model can actually check.
-        return server(for: .grammar).status == .ready ? .checking : .plain
+        if popoverMode == .rephrase { return .open }
+        return server(for: .grammar).status == .ready ? .loading : .plain
     }
 
     /// Re-render the pill (if visible) with the current state.
@@ -748,6 +734,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "explainFixes": explainFixes,
         ])
         popoverPanel.present(avoiding: pillRect ?? .zero)
+        refreshPillState()   // loading → open (static ring) while the card is up
     }
 
     /// Register the global shortcut that opens the rephrase card on the current
