@@ -1708,7 +1708,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Expand a range to the whole sentence(s) it overlaps: back to the previous
     /// sentence terminator, forward to the next one. Matches the in-page logic.
     private func sentenceRange(covering range: NSRange, in ns: NSString) -> NSRange {
-        let enders = CharacterSet(charactersIn: ".!?")
+        // Newlines bound sentences too — chat text often has no .!? at all, and
+        // without this the expansion swallows the entire field.
+        let enders = CharacterSet(charactersIn: ".!?\n")
         func isEnder(_ i: Int) -> Bool {
             guard i >= 0, i < ns.length, let s = Unicode.Scalar(ns.character(at: i)) else { return false }
             return enders.contains(s)
@@ -1722,6 +1724,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         while start < range.location, isSpace(start) { start += 1 }
         var end = range.location + range.length
         while end < ns.length, !isEnder(end - 1) { end += 1 }
+        // Don't let the range end on newline(s) — write-back would eat the
+        // paragraph break (never shrink past the original selection).
+        while end > range.location + range.length, ns.character(at: end - 1) == 10 { end -= 1 }
         return NSRange(location: start, length: max(0, end - start))
     }
 
