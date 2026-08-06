@@ -87,10 +87,13 @@ final class PillPanel: NSObject, WKNavigationDelegate {
         panel.contentView = container
     }
 
-    /// Show the pill centered on `rect` (screen coords) with the given state.
+    /// Breathing room around the pill so its ring and shadow aren't clipped.
+    private static let margin: CGFloat = 4
+
+    /// Show the pill filling `rect` (screen coords) with the given state. The
+    /// rect grows for a selection, which turns the disc into a capsule.
     func show(at rect: CGRect, state: PillState) {
-        panel.setFrameOrigin(NSPoint(x: rect.midX - Self.size / 2,
-                                     y: rect.midY - Self.size / 2))
+        panel.setFrame(rect.insetBy(dx: -Self.margin, dy: -Self.margin), display: true)
         push(state: state)
         panel.orderFrontRegardless()
     }

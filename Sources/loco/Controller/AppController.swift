@@ -57,6 +57,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var pillDwell: Timer?                // hover-to-open delay
     /// Last believable pill anchor, kept per focused element (see below).
     private var lastAnchor: (element: AXUIElement, rect: CGRect)?
+    private var retriedAnchor = false            // one retry per failed anchor
+    /// Whether the pill currently marks a selection (vs. just the caret).
+    private var pillOnSelection = false
     private var rephraseText: String?            // selection text the pill acts on
     private var rephraseAppName: String?
     private var rephraseElement: AXUIElement?
@@ -338,6 +341,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             AXObserverRemoveNotification(observer, old, kAXSelectedTextChangedNotification as CFString)
         }
         lastAnchor = nil   // a new field's geometry has nothing to do with the old
+        retriedAnchor = false
         observedElement = AX.focusedElement()
         if let element = observedElement {
             AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
@@ -813,23 +817,44 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard let target = text, let r = selRect,
               !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               isInsideField(r, fieldBox) else {
+            // Chromium's first geometry answer after a focus change is often the
+            // junk box, and there's no cached anchor yet to fall back on. One
+            // retry turns "no pill until you move the caret" into a brief wait.
+            if text != nil, selRect == nil, !retriedAnchor {
+                retriedAnchor = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                    self?.updateSelectionPill()
+                }
+            }
             hidePill(); return
         }
+        retriedAnchor = false
 
         rephraseText = target
         rephraseAppName = writeAppName
         rephraseElement = element
         rephraseRange = nativeRange
 
-        // Pill in the field's left margin, beside the *first* line of the
+        // Pill in the field's left margin, centred on the *first* line of the
         // selection — anchoring to its middle would push the pill halfway down
-        // a multi-line selection, far from where the eye is. Clamped into the
-        // field so a partly-scrolled selection doesn't strand it outside.
-        let size: CGFloat = 18
-        let x = max(2, fieldBox.minX - size - 4)
-        let y = min(max(r.maxY - size, fieldBox.minY + 2), fieldBox.maxY - size - 2)
-        let pill = CGRect(x: x, y: y, width: size, height: size)
+        // a multi-line selection, far from where the eye is. A selection grows
+        // it into a capsule so it reads as acting on a passage rather than
+        // marking a spot. Clamped into the field so a partly-scrolled selection
+        // doesn't strand it outside.
+        let width: CGFloat = 14
+        // A selection grows the pill to span it, so it reads as bracketing the
+        // passage it acts on; a bare caret keeps the disc, centred on its line.
+        let height = hasSelection
+            ? max(width, min(r.height, fieldBox.height - 4))
+            : width
+        let lineHeight = min(r.height, 24)          // union rects span many lines
+        let anchorY = hasSelection ? r.midY : r.maxY - lineHeight / 2
+        let x = max(2, fieldBox.minX - width - 4)
+        let y = min(max(anchorY - height / 2, fieldBox.minY + 2),
+                    max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
+        let pill = CGRect(x: x, y: y, width: width, height: height)
         pillRect = pill
+        pillOnSelection = hasSelection
         pillPanel.show(at: pill, state: pillState())
 
         // A selection means the card is likely next — spawn any cold task
@@ -845,9 +870,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     /// Hovering the pill opens the card only after a short dwell, so brushing
-    /// past it with the cursor doesn't fire it.
+    /// past it with the cursor doesn't fire it — and only when it marks a
+    /// selection. Opening the card takes key focus away from the field, which
+    /// mid-sentence means the user's typing stops landing; a bare caret means
+    /// they're still writing, so that one opens on click only.
     private func startPillDwell() {
         cancelPillDwell()
+        guard pillOnSelection else { return }
         pillDwell = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.pillRect != nil, self.popoverMode != .rephrase else { return }
@@ -863,6 +892,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func hidePill() {
         cancelPillDwell()
+        pillOnSelection = false
         guard pillRect != nil else { return }
         pillRect = nil
         pillPanel.hide()
@@ -1836,17 +1866,24 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// A resolved rect is trustworthy only if it sits within the field
     /// (contenteditable sometimes returns valid-looking but off-field rects).
-    /// Convert an AX rect to Cocoa space, rejecting the ones that aren't a line.
-    /// Chromium answers geometry queries it can't resolve with the element's own
-    /// box, which would otherwise strand the pill at the middle of the field
-    /// instead of beside the caret's line.
+    /// Convert an AX rect to Cocoa space, rejecting answers that describe the
+    /// field rather than the text in it. Chromium replies to geometry queries it
+    /// can't resolve with the element's own box, which would otherwise strand
+    /// the pill at the middle of the field instead of beside the caret's line.
+    /// The tell is that it matches the field exactly — real text is inset from
+    /// it, even a select-all — so size alone can't be the test: a genuine
+    /// multi-line selection is legitimately tall.
     private func lineRect(_ axRect: CGRect?, _ field: CGRect) -> CGRect? {
         guard let axRect else { return nil }
         let r = toCocoa(axRect)
         guard r.height > 0 else { return nil }
-        // A line is short; a whole-field answer is not. Single-line fields are
-        // as tall as their line, hence the 48pt floor.
-        guard r.height <= max(48, field.height * 0.5) else { return nil }
+        let slop: CGFloat = 2
+        let isFieldBox = abs(r.minX - field.minX) <= slop && abs(r.maxX - field.maxX) <= slop
+            && abs(r.minY - field.minY) <= slop && abs(r.maxY - field.maxY) <= slop
+        guard !isFieldBox else { return nil }
+        // Nor anything outside the field (the web-area box is another stand-in
+        // Chromium hands back).
+        guard isInsideField(r, field) else { return nil }
         return r
     }
 
