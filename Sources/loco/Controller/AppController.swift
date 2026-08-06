@@ -896,14 +896,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Hovering the pill opens the card only after a short dwell, so brushing
-    /// past it with the cursor doesn't fire it — and only when it marks a
-    /// selection. Opening the card takes key focus away from the field, which
-    /// mid-sentence means the user's typing stops landing; a bare caret means
-    /// they're still writing, so that one opens on click only.
+    /// Hovering the pill opens the card after a short dwell, so brushing past it
+    /// with the cursor doesn't fire it. Applies to the caret pill too, not just
+    /// a selection — note the card takes key focus when it opens, so resting the
+    /// pointer on the pill mid-sentence will interrupt typing.
     private func startPillDwell() {
         cancelPillDwell()
-        guard pillOnSelection else { return }
         pillDwell = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.pillRect != nil, self.popoverMode != .rephrase else { return }
