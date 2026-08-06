@@ -54,6 +54,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private enum PopoverMode { case none, grammar, rephrase }
     private var popoverMode: PopoverMode = .none
     private var pillRect: CGRect?
+    private var pillDwell: Timer?                // hover-to-open delay
+    /// Last believable pill anchor, kept per focused element (see below).
+    private var lastAnchor: (element: AXUIElement, rect: CGRect)?
     private var rephraseText: String?            // selection text the pill acts on
     private var rephraseAppName: String?
     private var rephraseElement: AXUIElement?
@@ -163,11 +166,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         pillPanel.onEnter = { [weak self] in
             guard let self else { return }
             cancelHidePopover()
-            if popoverMode != .rephrase { showRephrase() }
+            startPillDwell()
         }
-        pillPanel.onExit = { [weak self] in self?.scheduleHidePopover() }
+        pillPanel.onExit = { [weak self] in
+            self?.cancelPillDwell()
+            self?.scheduleHidePopover()
+        }
         pillPanel.onClick = { [weak self] in
             guard let self else { return }
+            cancelPillDwell()   // a click opens right away
             if popoverMode != .rephrase { showRephrase() }
         }
 
@@ -330,6 +337,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             AXObserverRemoveNotification(observer, old, kAXValueChangedNotification as CFString)
             AXObserverRemoveNotification(observer, old, kAXSelectedTextChangedNotification as CFString)
         }
+        lastAnchor = nil   // a new field's geometry has nothing to do with the old
         observedElement = AX.focusedElement()
         if let element = observedElement {
             AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
@@ -340,6 +348,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func handleAXNotification(_ notification: String) {
         if notification == kAXFocusedUIElementChangedNotification as String {
             attachToFocusedElement()
+            // The pill sits at the caret, so a newly focused field needs one
+            // even when no selection-changed notification follows (Chromium
+            // often doesn't send one on focus).
+            scheduleSelectionUpdate()
         }
         if notification == kAXSelectedTextChangedNotification as String {
             scheduleSelectionUpdate()
@@ -730,11 +742,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         var text: String?
         var selRect: CGRect?
         var nativeRange: NSRange?
+        // Real selection vs. a bare caret — only a selection is worth warming
+        // models for (a focused field alone isn't a signal the card is next).
+        var hasSelection = false
         // Write-back route: the browser DOM path (needs Automation) when it
         // succeeds, otherwise native AX write-back (set below to nil on fallback).
         var writeAppName = appName
 
         if let appName, let sel = browser.selection(appName: appName) {
+            hasSelection = true
             // Multi-line selection → rephrase the whole sentence(s) it sits in.
             text = (sel.multiline && !sel.sentence.isEmpty) ? sel.sentence : sel.text
             selRect = CGRect(x: fieldBox.minX + sel.x, y: fieldBox.maxY - sel.y - sel.height,
@@ -750,12 +766,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             // where index bounds fail) → first-character bounds → the mouse
             // position clamped into the field. Never the whole field.
             let firstChar = CFRange(location: cf.location, length: min(1, max(0, cf.length)))
-            let mouseY = min(max(NSEvent.mouseLocation.y, fieldBox.minY + 9),
-                             fieldBox.maxY - 9)
-            selRect = AX.bounds(of: cf, in: element).map(toCocoa)
-                ?? AX.selectionMarkerBounds(element).map(toCocoa)
-                ?? AX.bounds(of: firstChar, in: element).map(toCocoa)
-                ?? CGRect(x: fieldBox.minX, y: mouseY - 8, width: 1, height: 16)
+            // Never the mouse: a keyboard-made selection has nothing to do
+            // with where the cursor happens to rest.
+            selRect = lineRect(AX.bounds(of: cf, in: element), fieldBox)
+                ?? lineRect(AX.selectionMarkerBounds(element), fieldBox)
+                ?? lineRect(AX.bounds(of: firstChar, in: element), fieldBox)
             let selRange = NSRange(location: cf.location, length: cf.length)
             if t.contains("\n") {
                 // Multi-line: expand to whole sentence(s).
@@ -767,6 +782,32 @@ final class AppController: NSObject, NSApplicationDelegate {
                 text = t
                 nativeRange = selRange
             }
+            hasSelection = true
+        } else if let cf = AX.selectedRange(element), cf.length == 0,
+                  let full = AX.string(element, kAXValueAttribute),
+                  !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Nothing selected — sit beside the caret's own line and act on the
+            // sentence around it. The caret's *marker* range is what yields a
+            // real rect in Chromium (index-based bounds come back as an empty
+            // box there), which is what makes this work in Gmail and Slack.
+            writeAppName = nil
+            let ns = full as NSString
+            let caret = min(max(cf.location, 0), ns.length)
+            let expanded = sentenceRange(covering: NSRange(location: caret, length: 0), in: ns)
+            text = ns.substring(with: expanded)
+            nativeRange = expanded
+            selRect = lineRect(AX.selectionMarkerBounds(element), fieldBox)
+                ?? lineRect(AX.bounds(of: CFRange(location: caret, length: 0), in: element), fieldBox)
+        }
+
+        // Chromium answers the *same* geometry query intermittently with the
+        // element's own box instead of the line. Those answers are filtered out
+        // above, so hold the last believable position through them — a marker
+        // that blinks away every few queries is worse than one that lags a beat.
+        if let good = selRect {
+            lastAnchor = (element, good)
+        } else if let last = lastAnchor, CFEqual(last.element, element) {
+            selRect = last.rect
         }
 
         guard let target = text, let r = selRect,
@@ -780,12 +821,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         rephraseElement = element
         rephraseRange = nativeRange
 
-        // Pill in the field's left margin, vertically centered on the selection
-        // line (clamped into the field so a partly-scrolled selection doesn't
-        // strand it outside).
+        // Pill in the field's left margin, beside the *first* line of the
+        // selection — anchoring to its middle would push the pill halfway down
+        // a multi-line selection, far from where the eye is. Clamped into the
+        // field so a partly-scrolled selection doesn't strand it outside.
         let size: CGFloat = 18
         let x = max(2, fieldBox.minX - size - 4)
-        let y = min(max(r.midY - size / 2, fieldBox.minY + 2), fieldBox.maxY - size - 2)
+        let y = min(max(r.maxY - size, fieldBox.minY + 2), fieldBox.maxY - size - 2)
         let pill = CGRect(x: x, y: y, width: size, height: size)
         pillRect = pill
         pillPanel.show(at: pill, state: pillState())
@@ -793,6 +835,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // A selection means the card is likely next — spawn any cold task
         // servers now so their models are loading before the user hovers.
         // (Grammar only needs the LLM when Harper won't cover the text.)
+        guard hasSelection else { return }
         _ = server(for: .compose)
         if deepCheck
             || !(linterHost.ready
@@ -801,7 +844,25 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Hovering the pill opens the card only after a short dwell, so brushing
+    /// past it with the cursor doesn't fire it.
+    private func startPillDwell() {
+        cancelPillDwell()
+        pillDwell = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.pillRect != nil, self.popoverMode != .rephrase else { return }
+                self.showRephrase()
+            }
+        }
+    }
+
+    private func cancelPillDwell() {
+        pillDwell?.invalidate()
+        pillDwell = nil
+    }
+
     private func hidePill() {
+        cancelPillDwell()
         guard pillRect != nil else { return }
         pillRect = nil
         pillPanel.hide()
@@ -1775,6 +1836,20 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// A resolved rect is trustworthy only if it sits within the field
     /// (contenteditable sometimes returns valid-looking but off-field rects).
+    /// Convert an AX rect to Cocoa space, rejecting the ones that aren't a line.
+    /// Chromium answers geometry queries it can't resolve with the element's own
+    /// box, which would otherwise strand the pill at the middle of the field
+    /// instead of beside the caret's line.
+    private func lineRect(_ axRect: CGRect?, _ field: CGRect) -> CGRect? {
+        guard let axRect else { return nil }
+        let r = toCocoa(axRect)
+        guard r.height > 0 else { return nil }
+        // A line is short; a whole-field answer is not. Single-line fields are
+        // as tall as their line, hence the 48pt floor.
+        guard r.height <= max(48, field.height * 0.5) else { return nil }
+        return r
+    }
+
     private func isInsideField(_ rect: CGRect, _ field: CGRect) -> Bool {
         guard rect.height > 0 else { return false }
         let slack: CGFloat = 8
