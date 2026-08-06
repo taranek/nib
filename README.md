@@ -49,6 +49,22 @@ The build isn't notarized yet, so first launch shows *"Apple could not verify
 
 Or from a terminal: `xattr -dr com.apple.quarantine /Applications/Nib.app`
 
+**App doesn't show up after launch?** If the process starts but no menu-bar
+icon appears, the Gatekeeper assessment of the quarantined bundle has hung —
+the process is stuck before the app's code even runs. Fix: quit it (Activity
+Monitor or `pkill -9 Nib`), then strip the quarantine flag with the `xattr`
+command above and relaunch. The flag comes from downloading through a browser,
+so a clean alternative is installing from the terminal, which sets no
+quarantine at all:
+
+```sh
+curl -sL -o /tmp/Nib.zip https://github.com/taranek/nib/releases/latest/download/Nib.zip
+ditto -xk /tmp/Nib.zip /tmp/nib-extract && ditto /tmp/nib-extract/Nib.app /Applications/Nib.app
+```
+
+In-app updates (Settings → Check → Update) never hit this — only fresh
+browser downloads do.
+
 ## Development
 
 The UI is a React app rendered in `WKWebView`s; the host is a Swift menu-bar
