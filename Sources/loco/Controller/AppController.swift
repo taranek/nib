@@ -691,7 +691,20 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func scheduleHidePopover() {
         hideHoverTimer?.invalidate()
         hideHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.closePopover() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // The card's window carries a wide transparent margin, and it
+                // opens only a few points from the pill — so the window ends up
+                // over the pill and the pill reports "pointer left" while the
+                // pointer hasn't moved at all. Closing on that, then reopening
+                // on the re-entry it causes, is what reads as flicker.
+                let mouse = NSEvent.mouseLocation
+                if self.popoverPanel.frame.contains(mouse)
+                    || (self.pillRect?.insetBy(dx: -6, dy: -6).contains(mouse) ?? false) {
+                    return
+                }
+                self.closePopover()
+            }
         }
     }
 
@@ -909,7 +922,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Open the rewrite card on the selection. React fetches all styles from the
     /// local LLM directly; Swift only supplies the text + LLM URL and applies the
     /// accepted result.
-    private func showRephrase(takingFocus: Bool = false) {
+    private func showRephrase() {
         guard let text = rephraseText else { return }
         popoverMode = .rephrase
         rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
@@ -928,16 +941,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                     corrected = corrected.replacingCharacters(
                         in: lint.range, with: lint.suggestions[0]) as NSString
                 }
-                self.presentRephraseCard(text: text, grammarResult: corrected as String,
-                                         takingFocus: takingFocus)
+                self.presentRephraseCard(text: text, grammarResult: corrected as String)
             }
         } else {
-            presentRephraseCard(text: text, grammarResult: nil, takingFocus: takingFocus)
+            presentRephraseCard(text: text, grammarResult: nil)
         }
     }
 
-    private func presentRephraseCard(text: String, grammarResult: String?,
-                                     takingFocus: Bool = false) {
+    private func presentRephraseCard(text: String, grammarResult: String?) {
         let routing = cardRouting()
         var models = routing.models
         if grammarResult != nil { models["grammar"] = "Harper (rules)" }
@@ -956,7 +967,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         ]
         if let grammarResult { payload["grammarResult"] = grammarResult }
         popoverPanel.setCard(payload)
-        popoverPanel.present(avoiding: pillRect ?? .zero, takingFocus: takingFocus)
+        popoverPanel.present(avoiding: pillRect ?? .zero)
         refreshPillState()   // loading → open (static ring) while the card is up
     }
 
@@ -985,7 +996,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         updateSelectionPill()                                 // recompute selection + pill
         if rephraseText != nil, pillRect != nil {
-            showRephrase(takingFocus: true)   // invoked from the keyboard
+            showRephrase()
             startAutoDismiss()   // mouse isn't near it — close unless engaged
         }
     }
