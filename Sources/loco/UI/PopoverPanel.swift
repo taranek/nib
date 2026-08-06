@@ -8,7 +8,17 @@ import WebKit
 final class HoverWebView: WKWebView {
     var onEnter: (() -> Void)?
     var onExit: (() -> Void)?
+    var onMouseDown: (() -> Void)?
     private var tracking: NSTrackingArea?
+
+    /// Act on the first click even though the panel isn't key, so a click that
+    /// focuses the card also does what the user aimed at.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?()
+        super.mouseDown(with: event)
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -91,6 +101,11 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         web.autoresizingMask = [.width, .height]
         web.setValue(false, forKey: "drawsBackground")   // transparent webview
         web.onEnter = { [weak self] in self?.onEnter?() }
+        // Focus follows a click, never a hover. The card's window carries a wide
+        // transparent shadow margin that overlaps the pill, so "pointer inside
+        // the webview" happens while the user is merely hovering the trigger —
+        // and taking focus there swallows the rest of their sentence.
+        web.onMouseDown = { [weak self] in self?.takeFocus() }
         web.onExit = { [weak self] in self?.onExit?() }
         if url.isFileURL {
             web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
@@ -112,12 +127,23 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         webView.evaluateJavaScript("window.loco && window.loco.setCard && window.loco.setCard(\(json))")
     }
 
-    func present(avoiding rect: CGRect) {
+    /// Show the card. `takingFocus` is for keyboard-invoked opens (⌘`), where the
+    /// user expects Escape and the arrow keys to work right away. A card opened by
+    /// hovering the pill must NOT take focus: the user may still be typing in the
+    /// field it's advising on, and taking key focus both swallows their keystrokes
+    /// and moves the system's focused element, which reads to us as "the field is
+    /// gone" and tears the card straight back down.
+    func present(avoiding rect: CGRect, takingFocus: Bool = false) {
         avoidRect = rect
         reposition()
         orderFrontRegardless()
-        // Become key (without activating the app, since it's non-activating) so
-        // the webview receives mouseMoved (CSS :hover) and key events (shortcuts).
+        if takingFocus { takeFocus() }
+    }
+
+    /// Become key without activating the app (it's a non-activating panel), so the
+    /// webview gets mouseMoved for CSS :hover and key events for shortcuts.
+    func takeFocus() {
+        guard !isKeyWindow else { return }
         makeKey()
         makeFirstResponder(webView)
     }

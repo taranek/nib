@@ -909,7 +909,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Open the rewrite card on the selection. React fetches all styles from the
     /// local LLM directly; Swift only supplies the text + LLM URL and applies the
     /// accepted result.
-    private func showRephrase() {
+    private func showRephrase(takingFocus: Bool = false) {
         guard let text = rephraseText else { return }
         popoverMode = .rephrase
         rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
@@ -928,14 +928,16 @@ final class AppController: NSObject, NSApplicationDelegate {
                     corrected = corrected.replacingCharacters(
                         in: lint.range, with: lint.suggestions[0]) as NSString
                 }
-                self.presentRephraseCard(text: text, grammarResult: corrected as String)
+                self.presentRephraseCard(text: text, grammarResult: corrected as String,
+                                         takingFocus: takingFocus)
             }
         } else {
-            presentRephraseCard(text: text, grammarResult: nil)
+            presentRephraseCard(text: text, grammarResult: nil, takingFocus: takingFocus)
         }
     }
 
-    private func presentRephraseCard(text: String, grammarResult: String?) {
+    private func presentRephraseCard(text: String, grammarResult: String?,
+                                     takingFocus: Bool = false) {
         let routing = cardRouting()
         var models = routing.models
         if grammarResult != nil { models["grammar"] = "Harper (rules)" }
@@ -954,7 +956,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         ]
         if let grammarResult { payload["grammarResult"] = grammarResult }
         popoverPanel.setCard(payload)
-        popoverPanel.present(avoiding: pillRect ?? .zero)
+        popoverPanel.present(avoiding: pillRect ?? .zero, takingFocus: takingFocus)
         refreshPillState()   // loading → open (static ring) while the card is up
     }
 
@@ -983,7 +985,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         updateSelectionPill()                                 // recompute selection + pill
         if rephraseText != nil, pillRect != nil {
-            showRephrase()
+            showRephrase(takingFocus: true)   // invoked from the keyboard
             startAutoDismiss()   // mouse isn't near it — close unless engaged
         }
     }
