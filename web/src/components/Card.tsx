@@ -562,6 +562,13 @@ function RewriteBody({ card }: { card: CardData }) {
                 } else if (e.key === "ArrowRight") {
                   e.preventDefault();
                   cycle(1);
+                } else if (e.key === "Tab" && canAccept) {
+                  // The composer is autofocused, and the window-level handler
+                  // skips events aimed at inputs — without this, the first Tab
+                  // only moves focus out of the composer and it takes a second
+                  // one to accept.
+                  e.preventDefault();
+                  send({ type: "applyRewrite", text: activeText });
                 }
               }}
             />
