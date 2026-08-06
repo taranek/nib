@@ -762,6 +762,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Real selection vs. a bare caret — only a selection is worth warming
         // models for (a focused field alone isn't a signal the card is next).
         var hasSelection = false
+        // Select-all: the only case where the element's own box is a truthful
+        // answer to "where is the selection", rather than Chromium's stand-in.
+        var selectionSpansField = false
         // Write-back route: the browser DOM path (needs Automation) when it
         // succeeds, otherwise native AX write-back (set below to nil on fallback).
         var writeAppName = appName
@@ -788,6 +791,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             selRect = lineRect(AX.bounds(of: cf, in: element), fieldBox)
                 ?? lineRect(AX.selectionMarkerBounds(element), fieldBox)
                 ?? lineRect(AX.bounds(of: firstChar, in: element), fieldBox)
+            let length = (AX.string(element, kAXValueAttribute) as NSString?)?.length ?? 0
+            selectionSpansField = cf.location == 0 && cf.location + cf.length >= length && length > 0
             let selRange = NSRange(location: cf.location, length: cf.length)
             if t.contains("\n") {
                 // Multi-line: expand to whole sentence(s).
@@ -825,6 +830,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             lastAnchor = (element, good)
         } else if let last = lastAnchor, CFEqual(last.element, element) {
             selRect = last.rect
+        } else if selectionSpansField {
+            // Last resort for a select-all with no usable geometry and nothing
+            // cached: hang a capsule from the field's first line, where the
+            // selection certainly starts. Capped, because a field is often far
+            // taller than the text in it and a capsule spanning empty space
+            // reads as a bug.
+            let height = min(fieldBox.height - 4, 96)
+            selRect = CGRect(x: fieldBox.minX, y: fieldBox.maxY - height,
+                             width: fieldBox.width, height: height)
         }
 
         guard let target = text, let r = selRect,
@@ -996,8 +1010,10 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         updateSelectionPill()                                 // recompute selection + pill
         if rephraseText != nil, pillRect != nil {
+            // No auto-dismiss: the user asked for this card with a keystroke and
+            // may never bring the mouse near it. Esc, ⌘` again, or moving the
+            // selection all close it.
             showRephrase()
-            startAutoDismiss()   // mouse isn't near it — close unless engaged
         }
     }
 
