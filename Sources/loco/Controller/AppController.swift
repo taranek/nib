@@ -544,17 +544,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             let changed = WordDiff.changedRanges(original: sc.original, corrected: sc.corrected)
             let ranges = changed.isEmpty ? [NSRange(location: 0, length: sc.original.utf16.count)] : changed
             for r in ranges {
-                let absolute = NSRange(location: sentence.location + r.location, length: r.length)
-                // Split at newlines and drop the blank pieces. A range that
-                // spans empty lines otherwise draws a full-width bar for each
-                // of them — the browser's getClientRects() reports a line box
-                // for an empty line, and AXBoundsForRange unions the lot.
-                for sub in Self.splitAtNewlines(absolute, in: ns) {
-                    guard !ns.substring(with: sub)
-                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                    pendings.append(Pending(range: sub, original: sc.original,
-                                            corrected: sc.corrected))
-                }
+                pendings.append(Pending(
+                    range: NSRange(location: sentence.location + r.location, length: r.length),
+                    original: sc.original, corrected: sc.corrected))
             }
         }
 
@@ -566,7 +558,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     let p = pendings[rr.index]
                     let rect = CGRect(x: fieldBox.minX + rr.x, y: fieldBox.maxY - rr.y - rr.height,
                                       width: rr.width, height: rr.height)
-                    guard isSaneRect(rect, in: fieldBox) else { continue }
+                    guard isInsideField(rect, fieldBox) else { continue }
                     words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
                                              range: nil, sentenceID: p.original))
                 }
@@ -575,11 +567,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             activeBrowserAppName = nil
             for p in pendings {
                 let sentence = ns.range(of: p.original)
-                guard let rect = screenRect(for: p.range, in: element),
-                      isSaneRect(rect, in: fieldBox) else { continue }
-                words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
-                                         range: sentence.location != NSNotFound ? sentence : nil,
-                                         sentenceID: p.original))
+                // AXBoundsForRange unions multi-line ranges into one giant box —
+                // split at newlines so each line gets its own highlight.
+                for sub in Self.splitAtNewlines(p.range, in: ns) {
+                    guard let rect = screenRect(for: sub, in: element),
+                          isSaneRect(rect, in: fieldBox) else { continue }
+                    words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
+                                             range: sentence.location != NSNotFound ? sentence : nil,
+                                             sentenceID: p.original))
+                }
             }
         }
 
