@@ -37,33 +37,24 @@ leaves your Mac.
 
 ## Install
 
-Grab `Nib.dmg` from [Releases](https://github.com/taranek/nib/releases), drag
-**Nib** into Applications.
-
-The build isn't notarized yet, so first launch shows *"Apple could not verify
-'Nib' is free of malware"*. To open it anyway:
-
-1. In the dialog, click **Done** (not "Move to Trash").
-2. **System Settings → Privacy & Security**, scroll down to *"Nib" was blocked*
-   → **Open Anyway**, then confirm.
-
-Or from a terminal: `xattr -dr com.apple.quarantine /Applications/Nib.app`
-
-**App doesn't show up after launch?** If the process starts but no menu-bar
-icon appears, the Gatekeeper assessment of the quarantined bundle has hung —
-the process is stuck before the app's code even runs. Fix: quit it (Activity
-Monitor or `pkill -9 Nib`), then strip the quarantine flag with the `xattr`
-command above and relaunch. The flag comes from downloading through a browser,
-so a clean alternative is installing from the terminal, which sets no
-quarantine at all:
+From a terminal:
 
 ```sh
 curl -sL -o /tmp/Nib.zip https://github.com/taranek/nib/releases/latest/download/Nib.zip
 ditto -xk /tmp/Nib.zip /tmp/nib-extract && ditto /tmp/nib-extract/Nib.app /Applications/Nib.app
+open /Applications/Nib.app
 ```
 
-In-app updates (Settings → Check → Update) never hit this — only fresh
-browser downloads do.
+The build isn't notarized yet, and a browser download would leave the app
+quarantined — Gatekeeper then blocks it (or, at worst, silently hangs the
+launch). Installing via `curl` sets no quarantine, so the app just opens.
+Updates from then on are in-app: **Settings → Check → Update**.
+
+If you prefer `Nib.dmg` from [Releases](https://github.com/taranek/nib/releases)
+instead: after the *"Apple could not verify 'Nib' is free of malware"* dialog,
+click **Done**, then **System Settings → Privacy & Security** → *"Nib" was
+blocked* → **Open Anyway** — or clear the flag with
+`xattr -dr com.apple.quarantine /Applications/Nib.app`.
 
 ## Development
 
