@@ -71,6 +71,7 @@ export function Settings() {
     onboardingCompleted: false,
     explainFixes: true,
     deepCheck: false,
+    blockedApps: [],
     downloadedModels: [],
     customModels: [],
     version: "dev",
@@ -153,6 +154,11 @@ export function Settings() {
               anchored under the menu-bar icon). */}
           <CardHeader />
 
+          {/* The sections scroll; the header stays put. A pixel cap, not a vh
+              one — the window is sized to this content, so a viewport-relative
+              height would chase itself. */}
+          <div className="flex max-h-[520px] flex-col gap-3.5 overflow-y-auto overscroll-contain pr-1">
+
           <section className={SECTION}>
             <div className={ROW}>
               <div className={FIELD}>
@@ -204,6 +210,37 @@ export function Settings() {
                 }}
               />
             </div>
+          </section>
+
+          <section className={SECTION}>
+            <div className={FIELD}>
+              <span className={LABEL}>Turned off in</span>
+              <span className={HINT}>
+                {state.blockedApps.length === 0
+                  ? "Right-click the menu-bar icon to switch Nib off for the app you're in."
+                  : "Nib stays quiet in these apps."}
+              </span>
+            </div>
+            {state.blockedApps.map((app) => (
+              <div key={app.id} className={ROW}>
+                <span className="min-w-0 truncate text-[13px] text-subtle">
+                  {app.name}
+                </span>
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={() => {
+                    setState((s) => ({
+                      ...s,
+                      blockedApps: s.blockedApps.filter((a) => a.id !== app.id),
+                    }));
+                    send({ type: "unblockApp", id: app.id });
+                  }}
+                >
+                  Turn on
+                </Button>
+              </div>
+            ))}
           </section>
 
           <section className={SECTION}>
@@ -399,7 +436,7 @@ export function Settings() {
               </Button>
             </div>
           </section>
-
+          </div>
         </div>
       )}
     </div>

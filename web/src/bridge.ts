@@ -69,6 +69,8 @@ export interface SettingsState {
   explainFixes: boolean;
   /** After the instant rule pass, also run the LLM for sense-level errors. */
   deepCheck: boolean;
+  /** Apps the user has switched Nib off for (menu-bar icon → right-click). */
+  blockedApps: { id: string; name: string }[];
   /** Catalog model ids already downloaded to the models dir. */
   downloadedModels: string[];
   /** User-supplied .gguf file names in the models dir (non-catalog). */
@@ -88,6 +90,7 @@ type OutboundMessage =
   | { type: "setTargetLanguage"; value: string }
   | { type: "setExplainFixes"; value: boolean }
   | { type: "setDeepCheck"; value: boolean }
+  | { type: "unblockApp"; id: string }
   | { type: "openAccessibility" }
   | { type: "chooseModel" }
   // Download a catalog model from Hugging Face (id from the curated list).

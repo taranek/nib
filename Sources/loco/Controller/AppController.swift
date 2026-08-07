@@ -36,6 +36,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// After Harper's instant rule pass, also run the LLM in the background to
     /// catch sense-level errors rules can't see (Settings toggle, default off).
     private var deepCheck = UserDefaults.standard.object(forKey: "deepCheck") as? Bool ?? false
+    /// Apps the user has switched Nib off for: bundle ID → display name.
+    private var blockedApps: [String: String] =
+        UserDefaults.standard.dictionary(forKey: "blockedApps") as? [String: String] ?? [:]
+    /// Last app that wasn't us — what the status-item menu offers to block, since
+    /// opening that menu can make us frontmost.
+    private var lastActiveApp: (id: String, name: String)?
 
     // The field + flagged words the UI currently targets.
     private var activeElement: AXUIElement?
@@ -400,6 +406,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             clearIfNeeded()
             return
         }
+        if isBlockedApp() {
+            clearIfNeeded()
+            return
+        }
         if frontmostIsSelf() {
             clearIfNeeded()
             return
@@ -758,7 +768,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func updateSelectionPill() {
-        guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(),
+        guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
               let element = AX.focusedElement(), let axFrame = AX.frame(element) else {
             hidePill(); return
         }
@@ -1250,9 +1260,28 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Whether Nib is switched off for the app in front right now.
+    private func isBlockedApp() -> Bool {
+        guard let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
+        return blockedApps[id] != nil
+    }
+
     private func showStatusMenu() {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
+        if let app = lastActiveApp ?? NSWorkspace.shared.frontmostApplication.flatMap({
+            guard let id = $0.bundleIdentifier, id != Bundle.main.bundleIdentifier else { return nil }
+            return (id, $0.localizedName ?? id)
+        }) {
+            let blocked = blockedApps[app.id] != nil
+            let item = NSMenuItem(title: blocked ? "Turn on for \(app.name)"
+                                                 : "Turn off for \(app.name)",
+                                  action: #selector(toggleBlockedApp), keyEquivalent: "")
+            item.target = self
+            item.representedObject = app.id
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
         let hud = NSMenuItem(title: PerfHUD.shared.visible ? "Hide Performance HUD" : "Show Performance HUD",
                              action: #selector(togglePerfHUD), keyEquivalent: "")
         hud.target = self
@@ -1264,6 +1293,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
         menu.popUp(positioning: nil,
                    at: NSPoint(x: 0, y: button.bounds.maxY + 4), in: button)
+    }
+
+    @objc private func toggleBlockedApp(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        if blockedApps.removeValue(forKey: id) == nil {
+            blockedApps[id] = lastActiveApp?.name ?? id
+            clearOverlay()          // stop marking what we just switched off
+        }
+        UserDefaults.standard.set(blockedApps, forKey: "blockedApps")
+        lastSignature = ""          // re-check on the next tick if it was unblocked
+        pushSettingsState()
     }
 
     @objc private func togglePerfHUD() {
@@ -1753,6 +1793,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
                                   explainFixes: explainFixes,
                                   deepCheck: deepCheck,
+                                  blockedApps: blockedApps.map { ["id": $0.key, "name": $0.value] },
                                   downloadedModels: downloadedModelIDs(),
                                   customModels: customModelFiles(),
                                   version: appVersion,
@@ -1785,6 +1826,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         case "setExplainFixes":
             explainFixes = (body["value"] as? NSNumber)?.boolValue ?? true
             UserDefaults.standard.set(explainFixes, forKey: "explainFixes")
+        case "unblockApp":
+            if let id = body["id"] as? String {
+                blockedApps.removeValue(forKey: id)
+                UserDefaults.standard.set(blockedApps, forKey: "blockedApps")
+                lastSignature = ""
+                pushSettingsState()
+            }
         case "setDeepCheck":
             deepCheck = (body["value"] as? NSNumber)?.boolValue ?? false
             UserDefaults.standard.set(deepCheck, forKey: "deepCheck")
