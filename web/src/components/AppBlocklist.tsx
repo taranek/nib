@@ -8,9 +8,11 @@ import { Toggle } from "@/components/ui/toggle";
  *  its place, so the card keeps its size and position. */
 export function AppBlocklist({
   blocked,
+  current,
   onBack,
 }: {
   blocked: { id: string; name: string }[];
+  current?: { id: string; name: string };
   onBack: () => void;
 }) {
   const [apps, setApps] = useState<AppInfo[] | null>(null);
@@ -53,6 +55,39 @@ export function AppBlocklist({
         <span className="text-[12px] text-muted-foreground">
           Turn an app off and Nib stays quiet there.
         </span>
+        {current && (
+          <div className="flex items-center gap-2.5 rounded-md bg-white/[0.03] px-2 py-1.5">
+            {apps?.find((a) => a.id === current.id)?.icon ? (
+              <img
+                src={apps?.find((a) => a.id === current.id)?.icon}
+                alt=""
+                className="size-5 shrink-0"
+              />
+            ) : (
+              <span className="size-5 shrink-0 rounded bg-white/5" />
+            )}
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[13px] text-foreground">
+                {current.name}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                The app you were just in
+              </span>
+            </div>
+            <Toggle
+              size="sm"
+              checked={!blockedIDs.has(current.id)}
+              onCheckedChange={(on) =>
+                send({
+                  type: "setAppBlocked",
+                  id: current.id,
+                  name: current.name,
+                  blocked: !on,
+                })
+              }
+            />
+          </div>
+        )}
         <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5">
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
           <input
@@ -85,6 +120,7 @@ export function AppBlocklist({
                 {app.name}
               </span>
               <Toggle
+                size="sm"
                 checked={!blockedIDs.has(app.id)}
                 onCheckedChange={(on) =>
                   send({

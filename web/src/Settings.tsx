@@ -156,6 +156,7 @@ export function Settings() {
           {route === "apps" ? (
             <AppBlocklist
               blocked={state.blockedApps}
+              current={state.currentApp}
               onBack={() => setRoute("main")}
             />
           ) : (

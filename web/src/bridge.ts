@@ -71,6 +71,8 @@ export interface SettingsState {
   deepCheck: boolean;
   /** Apps the user has switched Nib off for (menu-bar icon → right-click). */
   blockedApps: { id: string; name: string }[];
+  /** The app the user was last working in — offered for a one-tap switch off. */
+  currentApp?: { id: string; name: string };
   /** Catalog model ids already downloaded to the models dir. */
   downloadedModels: string[];
   /** User-supplied .gguf file names in the models dir (non-catalog). */

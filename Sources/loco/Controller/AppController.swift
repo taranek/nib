@@ -239,6 +239,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.handleMouseMove() }
         }
 
+        rememberActiveApp(NSWorkspace.shared.frontmostApplication)
         registerRephraseHotKey()
 
         // Event-driven: react to focus/value changes via AXObserver, and to app
@@ -386,6 +387,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// One pass: find focus, decide whether the text needs a fresh grammar check
     /// or just a re-locate of cached corrections. The heavy LLM call is debounced.
     private func tick() {
+        // Remember where the user is working. Tracking this only on activation
+        // notifications leaves it empty until they switch apps, which is exactly
+        // when the menu's "Turn off for …" item goes missing.
+        rememberActiveApp(NSWorkspace.shared.frontmostApplication)
+
         guard enabled else { return }
 
         // A card is open (and key, for hover) — its webview is the focused UI
@@ -1336,6 +1342,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         return rep.representation(using: .png, properties: [:])
     }
 
+    /// Record an app as "where the user is working", ignoring ourselves — the
+    /// settings window and the status menu both make us frontmost.
+    private func rememberActiveApp(_ app: NSRunningApplication?) {
+        guard let app, let id = app.bundleIdentifier,
+              id != Bundle.main.bundleIdentifier,
+              !id.hasPrefix("com.apple.loginwindow") else { return }
+        let name = app.localizedName ?? id
+        guard lastActiveApp?.id != id else { return }
+        lastActiveApp = (id, name)
+        // The settings screen offers a one-tap switch for this app.
+        if settingsPopover?.isShown == true { pushSettingsState() }
+    }
+
     /// Whether Nib is switched off for the app in front right now.
     private func isBlockedApp() -> Bool {
         guard let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
@@ -1870,6 +1889,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   explainFixes: explainFixes,
                                   deepCheck: deepCheck,
                                   blockedApps: blockedApps.map { ["id": $0.key, "name": $0.value] },
+                                  currentApp: lastActiveApp.map { ["id": $0.id, "name": $0.name] },
                                   downloadedModels: downloadedModelIDs(),
                                   customModels: customModelFiles(),
                                   version: appVersion,
