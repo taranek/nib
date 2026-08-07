@@ -769,7 +769,10 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func updateSelectionPill() {
         guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
-              let element = AX.focusedElement(), let axFrame = AX.frame(element) else {
+              let element = AX.focusedElement(), let axFrame = AX.frame(element),
+              AX.isEditable(element) else {
+            // Selecting a sentence in an email you're reading isn't an invitation
+            // to rewrite it — and we couldn't write the result back anyway.
             hidePill(); return
         }
         let fieldBox = toCocoa(axFrame)
@@ -1258,6 +1261,79 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else {
             openSettings()
         }
+    }
+
+    /// Every app the user could plausibly type in, for the settings list. Built
+    /// on demand (icons make it too heavy for the regular state push) off the
+    /// main thread, then handed back.
+    private func sendInstalledApps() {
+        let folders = ["/Applications", "/System/Applications",
+                       NSHomeDirectory() + "/Applications"]
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            var bundles: [URL] = []
+            for folder in folders {
+                guard let entries = try? fm.contentsOfDirectory(
+                    at: URL(fileURLWithPath: folder),
+                    includingPropertiesForKeys: nil) else { continue }
+                for entry in entries {
+                    if entry.pathExtension == "app" {
+                        bundles.append(entry)
+                    } else if (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?
+                        .isDirectory == true {
+                        // One level down catches /Applications/Utilities and the
+                        // folders people file their apps into.
+                        let nested = (try? fm.contentsOfDirectory(
+                            at: entry, includingPropertiesForKeys: nil)) ?? []
+                        bundles.append(contentsOf: nested.filter { $0.pathExtension == "app" })
+                    }
+                }
+            }
+            var seen = Set<String>()
+            var apps: [[String: Any]] = []
+            for url in bundles {
+                guard let bundle = Bundle(url: url),
+                      let id = bundle.bundleIdentifier,
+                      !seen.contains(id) else { continue }
+                seen.insert(id)
+                let named = [bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String,
+                             bundle.infoDictionary?["CFBundleDisplayName"] as? String,
+                             bundle.infoDictionary?["CFBundleName"] as? String]
+                // Some bundles carry an empty name key rather than none at all.
+                let name = named.compactMap { $0 }.first { !$0.isEmpty }
+                    ?? url.deletingPathExtension().lastPathComponent
+                var entry: [String: Any] = ["id": id, "name": name]
+                if let png = Self.iconPNG(forApp: url.path) {
+                    entry["icon"] = "data:image/png;base64," + png.base64EncodedString()
+                }
+                apps.append(entry)
+            }
+            apps.sort {
+                (($0["name"] as? String) ?? "").localizedCaseInsensitiveCompare(
+                    ($1["name"] as? String) ?? "") == .orderedAscending
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.settingsPopover?.setApps(apps) }
+            }
+        }
+    }
+
+    /// A 32pt app icon as PNG data. Drawn into a small bitmap on purpose:
+    /// setting NSImage.size leaves the underlying representation at full
+    /// resolution, so encoding it straight yields ~1MB per app (and minutes for
+    /// a whole disk's worth), against ~2KB this way.
+    private static func iconPNG(forApp path: String) -> Data? {
+        let side = 32
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
     }
 
     /// Whether Nib is switched off for the app in front right now.
@@ -1826,6 +1902,20 @@ final class AppController: NSObject, NSApplicationDelegate {
         case "setExplainFixes":
             explainFixes = (body["value"] as? NSNumber)?.boolValue ?? true
             UserDefaults.standard.set(explainFixes, forKey: "explainFixes")
+        case "listApps":
+            sendInstalledApps()
+        case "setAppBlocked":
+            if let id = body["id"] as? String, let blocked = body["blocked"] as? NSNumber {
+                if blocked.boolValue {
+                    blockedApps[id] = (body["name"] as? String) ?? id
+                    clearOverlay()
+                } else {
+                    blockedApps.removeValue(forKey: id)
+                }
+                UserDefaults.standard.set(blockedApps, forKey: "blockedApps")
+                lastSignature = ""
+                pushSettingsState()
+            }
         case "unblockApp":
             if let id = body["id"] as? String {
                 blockedApps.removeValue(forKey: id)

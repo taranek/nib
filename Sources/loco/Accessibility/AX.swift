@@ -42,6 +42,19 @@ enum AX {
     }
 
     /// On-screen frame of an element, in global (top-left origin) display coords.
+    /// Whether text in this element can actually be edited. A web area, a static
+    /// label or a rendered email body is readable but not writable — Nib has
+    /// nothing to offer there, and no way to apply it if it did.
+    static func isEditable(_ element: AXUIElement) -> Bool {
+        let role = string(element, kAXRoleAttribute) ?? ""
+        if ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role) {
+            return true
+        }
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element, kAXValueAttribute as CFString, &settable) == .success && settable.boolValue
+    }
+
     static func frame(_ element: AXUIElement) -> CGRect? {
         guard
             let posVal = copy(element, kAXPositionAttribute),

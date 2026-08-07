@@ -21,6 +21,7 @@ import {
   type Capability,
 } from "@/components/ModelCatalog";
 import { CardHeader } from "@/components/CardHeader";
+import { AppBlocklist } from "@/components/AppBlocklist";
 
 const LANGUAGES = [
   "English",
@@ -104,6 +105,8 @@ export function Settings() {
   const wrapRef = useRef<HTMLDivElement>(null);
   // "Change" expands the shared model catalog under the Local AI section.
   const [browsingModels, setBrowsingModels] = useState(false);
+  // Settings is one card with two screens; "apps" replaces the main one.
+  const [route, setRoute] = useState<"main" | "apps">("main");
   // A new model arrived (download, Use, or picker) — collapse the catalog.
   useEffect(() => {
     setBrowsingModels(false);
@@ -150,6 +153,13 @@ export function Settings() {
         <div
           className={`relative box-border flex w-[380px] flex-col gap-3.5 overflow-hidden rounded-[12px] border border-border bg-card p-4 text-[13px] text-subtle ${CARD_SHADOW}`}
         >
+          {route === "apps" ? (
+            <AppBlocklist
+              blocked={state.blockedApps}
+              onBack={() => setRoute("main")}
+            />
+          ) : (
+            <>
           {/* Same top bar as onboarding (not draggable — settings stays
               anchored under the menu-bar icon). */}
           <CardHeader />
@@ -213,34 +223,21 @@ export function Settings() {
           </section>
 
           <section className={SECTION}>
-            <div className={FIELD}>
-              <span className={LABEL}>Turned off in</span>
-              <span className={HINT}>
-                {state.blockedApps.length === 0
-                  ? "Right-click the menu-bar icon to switch Nib off for the app you're in."
-                  : "Nib stays quiet in these apps."}
-              </span>
-            </div>
-            {state.blockedApps.map((app) => (
-              <div key={app.id} className={ROW}>
-                <span className="min-w-0 truncate text-[13px] text-subtle">
-                  {app.name}
+            <div className={ROW}>
+              <div className={FIELD}>
+                <span className={LABEL}>Apps</span>
+                <span className={HINT}>
+                  {state.blockedApps.length === 0
+                    ? "Nib works everywhere. Turn it off per app here."
+                    : `Off in ${state.blockedApps
+                        .map((a) => a.name)
+                        .join(", ")}.`}
                 </span>
-                <Button
-                  size="sm"
-                  variant="default"
-                  onClick={() => {
-                    setState((s) => ({
-                      ...s,
-                      blockedApps: s.blockedApps.filter((a) => a.id !== app.id),
-                    }));
-                    send({ type: "unblockApp", id: app.id });
-                  }}
-                >
-                  Turn on
-                </Button>
               </div>
-            ))}
+              <Button size="sm" variant="default" onClick={() => setRoute("apps")}>
+                Manage
+              </Button>
+            </div>
           </section>
 
           <section className={SECTION}>
@@ -437,6 +434,8 @@ export function Settings() {
             </div>
           </section>
           </div>
+            </>
+          )}
         </div>
       )}
     </div>

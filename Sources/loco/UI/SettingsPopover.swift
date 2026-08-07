@@ -203,6 +203,15 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
         webView.evaluateJavaScript("window.loco && window.loco.setSettings && window.loco.setSettings(\(json))")
     }
 
+    /// Push the installed-app list (settings → the per-app on/off screen). Sent
+    /// on request rather than with every state push: it carries icons.
+    func setApps(_ apps: [[String: Any]]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: apps),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript(
+            "window.loco && window.loco.setApps && window.loco.setApps(\(json))")
+    }
+
     // MARK: - Onboarding sandbox (DOM bridge)
 
     /// Read the sandbox textarea's text and on-screen rect (for anchoring the

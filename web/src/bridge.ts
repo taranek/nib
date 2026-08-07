@@ -91,6 +91,9 @@ type OutboundMessage =
   | { type: "setExplainFixes"; value: boolean }
   | { type: "setDeepCheck"; value: boolean }
   | { type: "unblockApp"; id: string }
+  // Ask for the installed-app list; it arrives via setApps.
+  | { type: "listApps" }
+  | { type: "setAppBlocked"; id: string; name: string; blocked: boolean }
   | { type: "openAccessibility" }
   | { type: "chooseModel" }
   // Download a catalog model from Hugging Face (id from the curated list).
@@ -140,6 +143,14 @@ interface WebkitBridge {
   };
 }
 
+/** An installed app, for the per-app on/off screen. */
+export interface AppInfo {
+  id: string;
+  name: string;
+  /** 32pt icon as a data: URI, absent if it couldn't be read. */
+  icon?: string;
+}
+
 /** Progress of an in-flight catalog-model download, pushed from Swift. */
 export interface DownloadProgress {
   id: string;
@@ -177,6 +188,8 @@ interface LocoInbound {
   setPill?: (s: PillStatus) => void;
   /** Swift → JS: lint request (linter surface only); result posts back. */
   lint?: (text: string, id: number) => void;
+  /** Swift → JS: the installed-app list (answer to listApps). */
+  setApps?: (apps: AppInfo[]) => void;
 }
 
 declare global {
@@ -224,6 +237,11 @@ export function onDownloadProgress(
 /** Register the callback Swift invokes with an update check's result. */
 export function onUpdateStatus(handler: (s: UpdateStatus) => void): void {
   window.loco = { ...window.loco, updateStatus: handler };
+}
+
+/** Register the callback Swift invokes with the installed-app list. */
+export function onSetApps(handler: (apps: AppInfo[]) => void): void {
+  window.loco = { ...window.loco, setApps: handler };
 }
 
 /** Register the callback Swift invokes with the pill's state. */
