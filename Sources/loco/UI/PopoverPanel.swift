@@ -142,9 +142,13 @@ final class PopoverPanel: FloatingPanel, WKScriptMessageHandler, WKNavigationDel
         let nudgeX: CGFloat = 16
         let gap: CGFloat = 4      // breathing room between the card and the rect
         let edge: CGFloat = 8
-        let screen = NSScreen.screens.first {
-            $0.frame.contains(NSPoint(x: avoidRect.midX, y: avoidRect.midY))
-        } ?? NSScreen.main
+        // The display holding the thing we're avoiding; when that's unknown
+        // (an empty rect), the one under the pointer — never blindly the primary.
+        let anchor = avoidRect.isEmpty ? NSEvent.mouseLocation
+                                       : NSPoint(x: avoidRect.midX, y: avoidRect.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(anchor) }
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
 
         var origin = NSPoint(x: avoidRect.minX - shadowMargin + nudgeX, y: 0)
         // Below: the card's visual top sits just under the rect.

@@ -153,9 +153,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             """)
         }
 
-        let screen = NSScreen.screens.first ?? NSScreen.main!
-        window = OverlayWindow(screenFrame: screen.frame)
-        view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        // Span every display, not just the primary one: highlight rects are in
+        // global screen coords, and anything outside this window is clipped.
+        let desktop = Self.desktopFrame()
+        window = OverlayWindow(screenFrame: desktop)
+        view = OverlayView(frame: NSRect(origin: .zero, size: desktop.size))
         window.contentView = view
         window.orderFrontRegardless()
 
@@ -239,6 +241,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(activeAppChanged),
             name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.fitOverlayToDesktop() }
+            }
         rebuildObservers()
 
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -603,7 +610,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         activeElement = element
         flagged = words
         refreshPillState()
-        let highlights = words.map { Highlight(rect: $0.rect, color: .systemRed) }
+        // Rects are global; the overlay's origin is negative when a display sits
+        // left of or above the primary one.
+        let offset = window.frame.origin
+        let highlights = words.map {
+            Highlight(rect: $0.rect.offsetBy(dx: -offset.x, dy: -offset.y), color: .systemRed)
+        }
         let key = highlights
             .map { "\(Int($0.rect.minX)),\(Int($0.rect.minY)),\(Int($0.rect.width))" }
             .joined(separator: ";")
@@ -2049,6 +2061,22 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// AX gives global coords with a top-left origin; AppKit views use
     /// bottom-left. Flip against the primary screen's height. (Single-screen
     /// PoC — multi-monitor needs per-screen mapping.)
+    /// The union of every display, in global (bottom-left origin) coords.
+    private static func desktopFrame() -> NSRect {
+        NSScreen.screens.reduce(NSRect.null) { $0.union($1.frame) }
+    }
+
+    /// Resize the overlay after a display change, and re-render at the new origin.
+    private func fitOverlayToDesktop() {
+        let desktop = Self.desktopFrame()
+        guard desktop != window.frame else { return }
+        window.setFrame(desktop, display: true)
+        view.frame = NSRect(origin: .zero, size: desktop.size)
+        print("🖥️ displays changed — overlay now \(Int(desktop.width))×\(Int(desktop.height))")
+        lastHighlightsKey = ""          // force a redraw at the new origin
+        applyDetection(flagged, element: activeElement)
+    }
+
     private func toCocoa(_ axRect: CGRect) -> CGRect {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let y = primaryHeight - axRect.origin.y - axRect.size.height
