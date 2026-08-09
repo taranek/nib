@@ -598,7 +598,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         let ns = fullText as NSString
 
         // Changed-word ranges (offsets into fullText) + the sentence each belongs to.
-        struct Pending { let range: NSRange; let original: String; let corrected: String }
         var pendings: [Pending] = []
         for sc in corrections {
             let sentence = ns.range(of: sc.original)
@@ -621,9 +620,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             browser.rects(appName: appName,
                           ranges: pendingList.map { ($0.range.location, $0.range.length) }) {
                 [weak self] rs in
-                guard let self, let rs else { return }
+                guard let self else { return }
                 var found: [FlaggedWord] = []
-                for rr in rs where pendingList.indices.contains(rr.index) {
+                for rr in rs ?? [] where pendingList.indices.contains(rr.index) {
                     let p = pendingList[rr.index]
                     let rect = CGRect(x: fieldBox.minX + rr.x, y: fieldBox.maxY - rr.y - rr.height,
                                       width: rr.width, height: rr.height)
@@ -632,25 +631,23 @@ final class AppController: NSObject, NSApplicationDelegate {
                                              corrected: p.corrected, range: nil,
                                              sentenceID: p.original))
                 }
+                // The page bridge only sees contenteditable, so a plain
+                // <textarea> in a browser yields nothing — fall back to the AX
+                // geometry the native path uses rather than showing no
+                // squiggles at all.
+                if found.isEmpty {
+                    found = self.axWords(for: pendingList, in: ns, element: element,
+                                         fieldBox: fieldBox)
+                }
                 found = found.filter { !self.dismissed.contains($0.id) }
                 print("   highlighted \(found.count) on \(appName)")
+                // Applied even when empty: that's what clears stale squiggles.
                 self.applyDetection(found, element: element)
             }
             return
         } else {
             activeBrowserAppName = nil
-            for p in pendings {
-                let sentence = ns.range(of: p.original)
-                // AXBoundsForRange unions multi-line ranges into one giant box —
-                // split at newlines so each line gets its own highlight.
-                for sub in Self.splitAtNewlines(p.range, in: ns) {
-                    guard let rect = screenRect(for: sub, in: element),
-                          isSaneRect(rect, in: fieldBox) else { continue }
-                    words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
-                                             range: sentence.location != NSNotFound ? sentence : nil,
-                                             sentenceID: p.original))
-                }
-            }
+            words = axWords(for: pendings, in: ns, element: element, fieldBox: fieldBox)
         }
 
         words = words.filter { !dismissed.contains($0.id) }
@@ -1000,6 +997,29 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func cancelPillDwell() {
         pillDwell?.invalidate()
         pillDwell = nil
+    }
+
+    /// A changed-word range plus the sentence it belongs to, waiting to be
+    /// turned into a screen rect by whichever geometry source answers.
+    struct Pending { let range: NSRange; let original: String; let corrected: String }
+
+    /// Highlight rects straight from the Accessibility API, a line at a time.
+    /// AXBoundsForRange unions a multi-line range into one giant box, so ranges
+    /// are split at newlines first.
+    private func axWords(for pendings: [Pending], in ns: NSString,
+                         element: AXUIElement, fieldBox: CGRect) -> [FlaggedWord] {
+        var words: [FlaggedWord] = []
+        for p in pendings {
+            let sentence = ns.range(of: p.original)
+            for sub in Self.splitAtNewlines(p.range, in: ns) {
+                guard let rect = screenRect(for: sub, in: element),
+                      isSaneRect(rect, in: fieldBox) else { continue }
+                words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
+                                         range: sentence.location != NSNotFound ? sentence : nil,
+                                         sentenceID: p.original))
+            }
+        }
+        return words
     }
 
     /// Place the pill beside `r` — a selection grows it into a capsule spanning
