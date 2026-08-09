@@ -1034,7 +1034,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// into the field so a partly-scrolled selection doesn't strand it outside.
     private func showPill(at r: CGRect, in fieldBox: CGRect, hasSelection: Bool,
                           lineHeight: CGFloat? = nil) {
-        let width: CGFloat = 14
+        let width: CGFloat = 16
         // Only a selection that actually wraps gets a capsule. One line — however
         // many words — is the same disc as the caret, so the marker changes shape
         // when the selection changes shape, not merely when one exists.
