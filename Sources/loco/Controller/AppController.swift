@@ -861,6 +861,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Select-all: the only case where the element's own box is a truthful
         // answer to "where is the selection", rather than Chromium's stand-in.
         var selectionSpansField = false
+        /// Height of one line in this field, when we could measure it.
+        var lineHeight: CGFloat?
         // Write-back route: the browser DOM path (needs Automation) when it
         // succeeds, otherwise native AX write-back (set below to nil on fallback).
         var writeAppName = appName
@@ -885,6 +887,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             selRect = lineRect(AX.bounds(of: cf, in: element), fieldBox)
                 ?? lineRect(AX.selectionMarkerBounds(element), fieldBox)
                 ?? lineRect(AX.bounds(of: firstChar, in: element), fieldBox)
+            // One character's height is one line's height — the yardstick for
+            // telling a selection that wraps from one that doesn't. A union rect
+            // can't answer that on its own: a tall one might be three lines or
+            // one line in a large font.
+            lineHeight = lineRect(AX.bounds(of: firstChar, in: element), fieldBox)?.height
             let length = (AX.string(element, kAXValueAttribute) as NSString?)?.length ?? 0
             selectionSpansField = cf.location == 0 && cf.location + cf.length >= length && length > 0
             let selRange = NSRange(location: cf.location, length: cf.length)
@@ -962,7 +969,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // it into a capsule so it reads as acting on a passage rather than
         // marking a spot. Clamped into the field so a partly-scrolled selection
         // doesn't strand it outside.
-        showPill(at: r, in: fieldBox, hasSelection: hasSelection)
+        showPill(at: r, in: fieldBox, hasSelection: hasSelection, lineHeight: lineHeight)
         if let appName, hasSelection {
             refineSelectionFromDOM(appName: appName, element: element,
                                    fieldBox: fieldBox, axText: target)
@@ -1025,17 +1032,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Place the pill beside `r` — a selection grows it into a capsule spanning
     /// the passage; a bare caret keeps the disc, centred on its line. Clamped
     /// into the field so a partly-scrolled selection doesn't strand it outside.
-    private func showPill(at r: CGRect, in fieldBox: CGRect, hasSelection: Bool) {
+    private func showPill(at r: CGRect, in fieldBox: CGRect, hasSelection: Bool,
+                          lineHeight: CGFloat? = nil) {
         let width: CGFloat = 14
-        // A one-line selection is only a few points taller than the disc, which
-        // lands on an awkward almost-circle. A selection always reads as a
-        // capsule of at least 1:2, growing to span a multi-line selection.
-        let capsule: CGFloat = 28
-        let height = hasSelection
-            ? max(capsule, min(r.height, fieldBox.height - 4))
-            : width
-        let lineHeight = min(r.height, 24)          // union rects span many lines
-        let anchorY = hasSelection ? r.midY : r.maxY - lineHeight / 2
+        // Only a selection that actually wraps gets a capsule. One line — however
+        // many words — is the same disc as the caret, so the marker changes shape
+        // when the selection changes shape, not merely when one exists.
+        let line = lineHeight ?? r.height
+        let wraps = hasSelection && r.height > line * 1.5
+        let height = wraps ? min(r.height, fieldBox.height - 4) : width
+        let anchorY = wraps ? r.midY : r.maxY - min(r.height, line) / 2
         let x = max(2, fieldBox.minX - width - 4)
         let y = min(max(anchorY - height / 2, fieldBox.minY + 2),
                     max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
