@@ -67,6 +67,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// When the user last typed. The pill waits for a pause: a marker that
     /// appears and hops line to line mid-sentence is a distraction, and every
     /// move of it costs an AX geometry round-trip.
+    /// `AX.isInWebArea` walks ancestors with two AX round-trips per level, and
+    /// the answer can't change without the focus changing — so it's asked once
+    /// per element rather than twice per tick.
+    private var cachedWebArea: (element: AXUIElement, isWeb: Bool)?
+    /// A grammar check is actually running — the only time the pill animates.
+    private var isChecking = false {
+        didSet { if isChecking != oldValue { refreshPillState() } }
+    }
+    private var signalSources: [DispatchSourceSignal] = []
     private var lastTypedAt = Date.distantPast
     private let typingQuiet: TimeInterval = 0.6
     /// Whether the pill currently marks a selection (vs. just the caret).
@@ -245,6 +254,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
+        installSignalHandlers()
         registerRephraseHotKey()
 
         // Event-driven: react to focus/value changes via AXObserver, and to app
@@ -361,6 +371,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         lastAnchor = nil   // a new field's geometry has nothing to do with the old
         retriedAnchor = false
+        cachedWebArea = nil
         observedElement = AX.focusedElement()
         if let element = observedElement {
             AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
@@ -501,8 +512,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         if linterHost.ready,
            NLLanguageRecognizer.dominantLanguage(for: text) == .english {
             let checkStart = CFAbsoluteTimeGetCurrent()
+            isChecking = true
             linterHost.lint(text) { [weak self] lints in
                 guard let self else { return }
+                self.isChecking = false
                 // Only apply if the field still holds the text we checked.
                 let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
                 guard current == value else { return }
@@ -540,8 +553,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         print("📝 validating focused input (\(text.count) chars)…")
         grammarTask?.cancel()
         let checkStart = CFAbsoluteTimeGetCurrent()
+        isChecking = true
         grammarTask = Task { [weak self] in
             let corrections = await client.corrections(in: text)
+            await MainActor.run { self?.isChecking = false }
             if Task.isCancelled { return }
             await MainActor.run {
                 guard let self else { return }
@@ -622,8 +637,17 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// a static ring while it's open, plain blue when no model can serve it.
     private func pillState() -> PillState {
         if popoverMode == .rephrase { return .open }
-        let canCheck = linterHost.ready || server(for: .grammar).status == .ready
-        return canCheck ? .loading : .plain
+        // Deliberately does NOT call server(for:), which spawns a llama-server
+        // as a side effect — deciding how to draw the pill must not load a model.
+        let canCheck = linterHost.ready || grammarServerStatus() == .ready
+        if !canCheck { return .plain }
+        return isChecking ? .loading : .idle
+    }
+
+    /// Status of the grammar server if one already exists, without creating one.
+    private func grammarServerStatus() -> LLMServer.Status {
+        guard let path = taskModelPath(for: .grammar) else { return llmServer.status }
+        return taskServers[path]?.status ?? .stopped
     }
 
     /// Re-render the pill (if visible) with the current state.
@@ -804,7 +828,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let appName = browserAppName(for: element)
 
         // No rephrase pill on browser chrome (address bar etc.) either.
-        if appName != nil, !AX.isInWebArea(element) { hidePill(); return }
+        if appName != nil, !isInWebArea(element) { hidePill(); return }
 
         var text: String?
         var selRect: CGRect?
@@ -1374,6 +1398,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         if settingsPopover?.isShown == true { pushSettingsState() }
     }
 
+    private func isInWebArea(_ element: AXUIElement) -> Bool {
+        if let cached = cachedWebArea, CFEqual(cached.element, element) { return cached.isWeb }
+        let isWeb = AX.isInWebArea(element)
+        cachedWebArea = (element, isWeb)
+        return isWeb
+    }
+
     /// Whether Nib is switched off for the app in front right now.
     private func isBlockedApp() -> Bool {
         guard let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
@@ -1422,6 +1453,35 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc private func togglePerfHUD() {
         PerfHUD.shared.toggle()
+    }
+
+    /// ⌘Q, logout, or any quit that isn't our own menu item. Without this the
+    /// llama-server children outlive the app, reparent to launchd, and keep
+    /// multiple GB of model weights resident with nothing to reclaim them.
+    func applicationWillTerminate(_ notification: Notification) {
+        stopAllServers()
+    }
+
+    private func stopAllServers() {
+        llmServer.stop()
+        taskServers.values.forEach { $0.stop() }
+    }
+
+    /// AppKit's termination path doesn't run for a bare signal, so `kill`,
+    /// `pkill` and a crashing parent shell would all strand the model servers.
+    private func installSignalHandlers() {
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)          // let the dispatch source see it instead
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.stopAllServers()
+                    exit(0)
+                }
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     @objc private func quitFromMenu() {

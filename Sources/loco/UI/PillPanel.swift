@@ -5,6 +5,10 @@ import WebKit
 /// a static ring while the card is open, plain blue when no model is ready.
 enum PillState: Equatable {
     case plain
+    /// Ready, nothing in flight — the orb holds still. Distinct from `loading`
+    /// because an orb animating whenever a field is focused means a canvas
+    /// repainting at display refresh for as long as the user is writing.
+    case idle
     case loading
     case open
 }
@@ -111,6 +115,7 @@ final class PillPanel: NSObject, WKNavigationDelegate {
         guard loaded else { pending = (true, state); return }
         let name = switch state {
         case .plain: "plain"
+        case .idle: "idle"
         case .loading: "loading"
         case .open: "open"
         }

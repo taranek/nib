@@ -250,9 +250,16 @@ final class LLMServer {
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
+        outputPipe = pipe
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            if data.isEmpty { return }
+            if data.isEmpty {
+                // EOF: the child is gone. Without clearing this, Foundation's
+                // dispatch read source keeps firing on the dead pipe forever,
+                // burning a core per stopped server for the app's lifetime.
+                handle.readabilityHandler = nil
+                return
+            }
             // Tee llama-server output to a log file so model-load failures are
             // diagnosable even when the app is launched via Finder/`open` (no
             // stdout). Also reachable via Settings → Open log.
@@ -299,7 +306,17 @@ final class LLMServer {
         }
     }
 
+    /// Kept so the read source can be unregistered when the process goes away.
+    private var outputPipe: Pipe?
+
+    private func closeOutputPipe() {
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        try? outputPipe?.fileHandleForReading.close()
+        outputPipe = nil
+    }
+
     func stop() {
+        closeOutputPipe()
         if owns { process?.terminate() }   // never kill a server we merely attached to
         process = nil
         status = .stopped

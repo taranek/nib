@@ -7,6 +7,20 @@ import CoreGraphics
 // here deals in raw AXUIElement values pulled from the focused app.
 
 enum AX {
+    /// How long any single AX call may block. These are synchronous IPC into
+    /// another app; the system default is multiple seconds, so one busy or
+    /// beachballing target would freeze our overlay, pill, card and menu bar
+    /// along with it. Bounded, a slow answer costs a dropped frame instead.
+    private static let messagingTimeout: Float = 0.15
+
+    /// One system-wide element, not one per call: creating it is not free and
+    /// `focusedElement()` runs several times per tick.
+    private static let systemWide: AXUIElement = {
+        let element = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
+        return element
+    }()
+
     /// Copy a plain attribute (value, role, position, size, …) off an element.
     static func copy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
         var value: CFTypeRef?
@@ -16,10 +30,12 @@ enum AX {
 
     /// The element that currently has keyboard focus, system-wide.
     static func focusedElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
         guard let raw = copy(systemWide, kAXFocusedUIElementAttribute) else { return nil }
         guard CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
-        return (raw as! AXUIElement)
+        let element = raw as! AXUIElement
+        // The timeout is per element, so it has to be set on each one we take.
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
+        return element
     }
 
     static func string(_ element: AXUIElement, _ attribute: String) -> String? {
@@ -30,8 +46,11 @@ enum AX {
     /// rather than browser chrome like the address bar. Locale- and
     /// browser-independent: every engine exposes page content under a web area.
     static func isInWebArea(_ element: AXUIElement) -> Bool {
+        // Eight levels is well past any real contenteditable; the old limit of
+        // 30 meant browser chrome walked all 30 (two IPC calls each) to answer
+        // "no", every tick.
         var current: AXUIElement? = element
-        for _ in 0..<30 {
+        for _ in 0..<8 {
             guard let el = current else { return false }
             if string(el, kAXRoleAttribute) == "AXWebArea" { return true }
             guard let parent = copy(el, kAXParentAttribute),

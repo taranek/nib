@@ -164,7 +164,8 @@ export interface DownloadProgress {
 
 /** The selection pill's state, pushed from Swift. */
 export interface PillStatus {
-  state: "plain" | "loading" | "open";
+  /** `idle` = ready but nothing running: the orb holds still. */
+  state: "plain" | "idle" | "loading" | "open";
 }
 
 /** Result of an update check, pushed from Swift. */

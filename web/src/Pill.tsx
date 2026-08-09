@@ -80,11 +80,16 @@ export function Pill() {
         }}
       >
         <div style={{ transform: `scale(${scale})`, lineHeight: 0 }}>
+          {/* The orb is a canvas redrawn every animation frame, and the pill is
+              on screen for as long as the user is writing — so it only runs
+              while a check is actually in flight. Idle and card-open hold a
+              still frame. */}
           <ThinkingOrb
             state="breathing"
             size={20}
             speed={1.3}
             theme="dark"
+            paused={status.state !== "loading"}
             aria-label="Nib is checking"
           />
         </div>
