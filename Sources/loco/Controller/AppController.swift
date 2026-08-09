@@ -64,6 +64,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Last believable pill anchor, kept per focused element (see below).
     private var lastAnchor: (element: AXUIElement, rect: CGRect)?
     private var retriedAnchor = false            // one retry per failed anchor
+    /// When the user last typed. The pill waits for a pause: a marker that
+    /// appears and hops line to line mid-sentence is a distraction, and every
+    /// move of it costs an AX geometry round-trip.
+    private var lastTypedAt = Date.distantPast
+    private let typingQuiet: TimeInterval = 0.6
     /// Whether the pill currently marks a selection (vs. just the caret).
     private var pillOnSelection = false
     private var rephraseText: String?            // selection text the pill acts on
@@ -373,6 +378,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         if notification == kAXSelectedTextChangedNotification as String {
             scheduleSelectionUpdate()
+        }
+        if notification == kAXValueChangedNotification as String {
+            lastTypedAt = Date()
+            // Don't yank a card the user is working with — only the bare pill.
+            if popoverMode == .none { hidePill() }
+            scheduleSelectionUpdate(after: typingQuiet)
         }
         tick()
     }
@@ -766,9 +777,9 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Recompute the pill from the current selection (debounced off selection
     /// changes so we don't run JS on every caret move).
-    private func scheduleSelectionUpdate() {
+    private func scheduleSelectionUpdate(after delay: TimeInterval = 0.15) {
         selectionDebounce?.invalidate()
-        selectionDebounce = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+        selectionDebounce = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateSelectionPill() }
         }
     }
@@ -780,6 +791,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             // Selecting a sentence in an email you're reading isn't an invitation
             // to rewrite it — and we couldn't write the result back anyway.
             hidePill(); return
+        }
+
+        // Still typing: stay out of the way and come back when they pause.
+        let sinceTyping = Date().timeIntervalSince(lastTypedAt)
+        if sinceTyping < typingQuiet {
+            if popoverMode == .none { hidePill() }
+            scheduleSelectionUpdate(after: typingQuiet - sinceTyping)
+            return
         }
         let fieldBox = toCocoa(axFrame)
         let appName = browserAppName(for: element)
