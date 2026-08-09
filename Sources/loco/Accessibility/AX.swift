@@ -46,11 +46,14 @@ enum AX {
     /// rather than browser chrome like the address bar. Locale- and
     /// browser-independent: every engine exposes page content under a web area.
     static func isInWebArea(_ element: AXUIElement) -> Bool {
-        // Eight levels is well past any real contenteditable; the old limit of
-        // 30 meant browser chrome walked all 30 (two IPC calls each) to answer
-        // "no", every tick.
+        // Real pages nest far deeper than you'd guess: Gmail's compose body sits
+        // 18 levels under its web area, so a tight bound silently reports "not
+        // web content" and Nib goes dark on the exact fields it's for. The bound
+        // here is only a cycle guard, not a budget — a full walk costs ~1ms, and
+        // callers ask once per focused element (see AppController.isInWebArea),
+        // not once per tick, which is what made the walk expensive before.
         var current: AXUIElement? = element
-        for _ in 0..<8 {
+        for _ in 0..<60 {
             guard let el = current else { return false }
             if string(el, kAXRoleAttribute) == "AXWebArea" { return true }
             guard let parent = copy(el, kAXParentAttribute),

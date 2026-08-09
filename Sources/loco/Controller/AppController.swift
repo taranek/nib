@@ -462,7 +462,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         // Skip browser chrome (address bar, in-page search, …): only page
         // content — anything under an AXWebArea — is prose worth checking.
-        if appName != nil, !AX.isInWebArea(element) { clearIfNeeded(); return }
+        if appName != nil, !isInWebArea(element) { clearIfNeeded(); return }
 
         // Re-evaluate only when the text or the field's frame changes.
         let signature = "\(role)|\(NSStringFromRect(axFrame))|\(value.hashValue)"
@@ -1446,7 +1446,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// setting NSImage.size leaves the underlying representation at full
     /// resolution, so encoding it straight yields ~1MB per app (and minutes for
     /// a whole disk's worth), against ~2KB this way.
-    private static func iconPNG(forApp path: String) -> Data? {
+    private nonisolated static func iconPNG(forApp path: String) -> Data? {
         let side = 32
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
