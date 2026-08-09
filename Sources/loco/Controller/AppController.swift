@@ -1027,8 +1027,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// into the field so a partly-scrolled selection doesn't strand it outside.
     private func showPill(at r: CGRect, in fieldBox: CGRect, hasSelection: Bool) {
         let width: CGFloat = 14
+        // A one-line selection is only a few points taller than the disc, which
+        // lands on an awkward almost-circle. A selection always reads as a
+        // capsule of at least 1:2, growing to span a multi-line selection.
+        let capsule: CGFloat = 28
         let height = hasSelection
-            ? max(width, min(r.height, fieldBox.height - 4))
+            ? max(capsule, min(r.height, fieldBox.height - 4))
             : width
         let lineHeight = min(r.height, 24)          // union rects span many lines
         let anchorY = hasSelection ? r.midY : r.maxY - lineHeight / 2
