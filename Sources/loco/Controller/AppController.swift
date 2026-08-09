@@ -497,8 +497,21 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// triggered this pass (used for the change token + staleness check); for
     /// browsers we validate the DOM text so phrases match what `locate` searches.
     private func recheck(value: String, appName: String?) {
+        // In a browser the text comes from the DOM (its offsets line up with the
+        // rects we ask for later), and that's an Apple Event — off the main
+        // thread, then continue when it lands.
+        guard let appName else { recheck(value: value, appName: nil, text: value); return }
+        browser.focusedText(appName: appName) { [weak self] domText in
+            guard let self else { return }
+            // The field may have moved on while the browser was answering.
+            let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
+            guard current == value else { return }
+            self.recheck(value: value, appName: appName, text: domText ?? value)
+        }
+    }
+
+    private func recheck(value: String, appName: String?, text: String) {
         let token = value.hashValue
-        let text = appName.flatMap { browser.focusedText(appName: $0) } ?? value
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             currentCorrections = []
             currentFullText = text
@@ -602,16 +615,28 @@ final class AppController: NSObject, NSApplicationDelegate {
         var words: [FlaggedWord] = []
         if let appName {
             activeBrowserAppName = appName
-            if let rs = browser.rects(appName: appName, ranges: pendings.map { ($0.range.location, $0.range.length) }) {
-                for rr in rs where pendings.indices.contains(rr.index) {
-                    let p = pendings[rr.index]
+            // Another Apple Event, so it can't run here: the highlights land a
+            // beat later instead of freezing everything until the browser answers.
+            let pendingList = pendings
+            browser.rects(appName: appName,
+                          ranges: pendingList.map { ($0.range.location, $0.range.length) }) {
+                [weak self] rs in
+                guard let self, let rs else { return }
+                var found: [FlaggedWord] = []
+                for rr in rs where pendingList.indices.contains(rr.index) {
+                    let p = pendingList[rr.index]
                     let rect = CGRect(x: fieldBox.minX + rr.x, y: fieldBox.maxY - rr.y - rr.height,
                                       width: rr.width, height: rr.height)
-                    guard isInsideField(rect, fieldBox) else { continue }
-                    words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
-                                             range: nil, sentenceID: p.original))
+                    guard self.isSaneRect(rect, in: fieldBox) else { continue }
+                    found.append(FlaggedWord(rect: rect, original: p.original,
+                                             corrected: p.corrected, range: nil,
+                                             sentenceID: p.original))
                 }
+                found = found.filter { !self.dismissed.contains($0.id) }
+                print("   highlighted \(found.count) on \(appName)")
+                self.applyDetection(found, element: element)
             }
+            return
         } else {
             activeBrowserAppName = nil
             for p in pendings {
@@ -843,13 +868,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         // succeeds, otherwise native AX write-back (set below to nil on fallback).
         var writeAppName = appName
 
-        if let appName, let sel = browser.selection(appName: appName) {
-            hasSelection = true
-            // Multi-line selection → rephrase the whole sentence(s) it sits in.
-            text = (sel.multiline && !sel.sentence.isEmpty) ? sel.sentence : sel.text
-            selRect = CGRect(x: fieldBox.minX + sel.x, y: fieldBox.maxY - sel.y - sel.height,
-                             width: sel.width, height: sel.height)
-        } else if let t = AX.string(element, kAXSelectedTextAttribute),
+        // AX first, always. The browser's DOM answer is better (exact rects, and
+        // a write-back route that Chromium honours) but it costs an Apple Event,
+        // so it can't be on the path that decides whether to draw the pill —
+        // `refineFromDOM` below fetches it off-main and refines what we drew.
+        if let t = AX.string(element, kAXSelectedTextAttribute),
                   !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let cf = AX.selectedRange(element) {
             // AX fallback — works for native fields AND browsers that don't grant
@@ -942,21 +965,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         // it into a capsule so it reads as acting on a passage rather than
         // marking a spot. Clamped into the field so a partly-scrolled selection
         // doesn't strand it outside.
-        let width: CGFloat = 14
-        // A selection grows the pill to span it, so it reads as bracketing the
-        // passage it acts on; a bare caret keeps the disc, centred on its line.
-        let height = hasSelection
-            ? max(width, min(r.height, fieldBox.height - 4))
-            : width
-        let lineHeight = min(r.height, 24)          // union rects span many lines
-        let anchorY = hasSelection ? r.midY : r.maxY - lineHeight / 2
-        let x = max(2, fieldBox.minX - width - 4)
-        let y = min(max(anchorY - height / 2, fieldBox.minY + 2),
-                    max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
-        let pill = CGRect(x: x, y: y, width: width, height: height)
-        pillRect = pill
-        pillOnSelection = hasSelection
-        pillPanel.show(at: pill, state: pillState())
+        showPill(at: r, in: fieldBox, hasSelection: hasSelection)
+        if let appName, hasSelection {
+            refineSelectionFromDOM(appName: appName, element: element,
+                                   fieldBox: fieldBox, axText: target)
+        }
 
         // A selection means the card is likely next — spawn any cold task
         // servers now so their models are loading before the user hovers.
@@ -987,6 +1000,48 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func cancelPillDwell() {
         pillDwell?.invalidate()
         pillDwell = nil
+    }
+
+    /// Place the pill beside `r` — a selection grows it into a capsule spanning
+    /// the passage; a bare caret keeps the disc, centred on its line. Clamped
+    /// into the field so a partly-scrolled selection doesn't strand it outside.
+    private func showPill(at r: CGRect, in fieldBox: CGRect, hasSelection: Bool) {
+        let width: CGFloat = 14
+        let height = hasSelection
+            ? max(width, min(r.height, fieldBox.height - 4))
+            : width
+        let lineHeight = min(r.height, 24)          // union rects span many lines
+        let anchorY = hasSelection ? r.midY : r.maxY - lineHeight / 2
+        let x = max(2, fieldBox.minX - width - 4)
+        let y = min(max(anchorY - height / 2, fieldBox.minY + 2),
+                    max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
+        let pill = CGRect(x: x, y: y, width: width, height: height)
+        pillRect = pill
+        pillOnSelection = hasSelection
+        pillPanel.show(at: pill, state: pillState())
+    }
+
+    /// Ask the page where the selection actually is, off the main thread, and
+    /// adjust the pill once it answers. The DOM's rects are exact where
+    /// Chromium's AX geometry is guesswork, and its write-back route (execCommand)
+    /// is the one the editor's own model notices — but neither is worth blocking
+    /// the main thread for, so we draw from AX first and correct ourselves here.
+    private func refineSelectionFromDOM(appName: String, element: AXUIElement,
+                                        fieldBox: CGRect, axText: String) {
+        browser.selection(appName: appName) { [weak self] sel in
+            guard let self, let sel, self.pillRect != nil,
+                  self.popoverMode != .rephrase,       // don't move a card's anchor
+                  AX.focusedElement().map({ CFEqual($0, element) }) == true,
+                  // The user may have selected something else in the meantime.
+                  AX.string(element, kAXSelectedTextAttribute) == axText else { return }
+            let rect = CGRect(x: fieldBox.minX + sel.x, y: fieldBox.maxY - sel.y - sel.height,
+                              width: sel.width, height: sel.height)
+            guard self.isInsideField(rect, fieldBox) else { return }
+            self.rephraseText = (sel.multiline && !sel.sentence.isEmpty) ? sel.sentence : sel.text
+            self.rephraseAppName = appName          // write back through the DOM
+            self.rephraseRange = nil
+            self.showPill(at: rect, in: fieldBox, hasSelection: true)
+        }
     }
 
     private func hidePill() {

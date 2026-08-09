@@ -43,6 +43,37 @@ final class BrowserBridge {
 
     private var warned = false
 
+    /// AppleScript runs here, never on the main thread. Every call is a blocking
+    /// Apple Event that makes the browser compile and run JS — measured at
+    /// 100–1500ms in the wild, and the main thread has an overlay, a pill and a
+    /// card to keep at 60fps. Serial because an NSAppleScript must not be used
+    /// concurrently.
+    private let queue = DispatchQueue(label: "com.nib.browser-bridge", qos: .userInitiated)
+
+    /// Off-main variants of the three hot-path queries. Results come back on the
+    /// main thread; callers must re-check that the field hasn't moved on.
+    func focusedText(appName: String, completion: @escaping (String?) -> Void) {
+        queue.async { [weak self] in
+            let text = self?.focusedText(appName: appName)
+            DispatchQueue.main.async { completion(text) }
+        }
+    }
+
+    func rects(appName: String, ranges: [(Int, Int)],
+               completion: @escaping ([RawRect]?) -> Void) {
+        queue.async { [weak self] in
+            let rects = self?.rects(appName: appName, ranges: ranges)
+            DispatchQueue.main.async { completion(rects) }
+        }
+    }
+
+    func selection(appName: String, completion: @escaping (RawSelection?) -> Void) {
+        queue.async { [weak self] in
+            let selection = self?.selection(appName: appName)
+            DispatchQueue.main.async { completion(selection) }
+        }
+    }
+
     /// The plain text of the focused contenteditable, taken from the DOM so its
     /// offsets line up with `rects`. Returns nil when focus isn't editable.
     func focusedText(appName: String) -> String? {
