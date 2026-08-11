@@ -478,10 +478,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Debounce the grammar check so fast typing doesn't fire a request per key.
     private func scheduleRecheck(value: String, appName: String?) {
         grammarDebounce?.invalidate()
-        // Long, because this now reads whole sentences with an LLM instead of
-        // matching words against rules: checking mid-sentence judges half a
-        // thought, and spends a GPU pass doing it.
-        grammarDebounce = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+        // Long enough that a check isn't spent on half a written thought — this
+        // reads whole sentences with an LLM now, not words against rules.
+        grammarDebounce = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.recheck(value: value, appName: appName) }
         }
     }
