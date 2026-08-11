@@ -1042,7 +1042,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         let wraps = hasSelection && r.height > line * 1.5
         let height = wraps ? min(r.height, fieldBox.height - 4) : width
         let anchorY = wraps ? r.midY : r.maxY - min(r.height, line) / 2
-        let x = max(2, fieldBox.minX - width - 4)
+        // Clamp to the display the field is on, not to x=2. A screen left of the
+        // primary has negative coordinates, and a hardcoded floor drags the pill
+        // — and the card that anchors to it — onto the primary screen.
+        let screen = NSScreen.screens.first { $0.frame.intersects(fieldBox) }
+            ?? NSScreen.screens.first { $0.frame.contains(NSPoint(x: fieldBox.midX, y: fieldBox.midY)) }
+        let leftEdge = (screen?.visibleFrame.minX ?? 0) + 2
+        let x = max(leftEdge, fieldBox.minX - width - 4)
         let y = min(max(anchorY - height / 2, fieldBox.minY + 2),
                     max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
         let pill = CGRect(x: x, y: y, width: width, height: height)
