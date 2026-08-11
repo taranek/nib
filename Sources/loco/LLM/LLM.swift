@@ -379,17 +379,22 @@ struct LLMClient {
     var maxGrowth: Double = 2.0
 
     private static let correctPrompt = """
-    You correct a single sentence. Fix ONLY clear spelling, grammar, and \
-    punctuation errors, changing as little as possible. Put the result in the \
+    You improve one sentence from a message someone is writing. Read the whole \
+    sentence before changing anything, and return your version in the \
     "corrected" field.
 
+    Fix spelling, grammar and punctuation — and also fix the sentence when it \
+    reads badly: awkward word order, a clumsy or roundabout phrasing, a word \
+    that doesn't say what the writer means. Make it read the way a careful \
+    writer would have written it the first time.
+
     Rules:
-    - Keep contractions (don't, doesn't, it's, I'm, they're, etc.) — never expand them.
-    - Keep sentence-ending punctuation (. ! ?) exactly as written.
-    - Preserve ALL of the original wording and content: never delete or reword \
-    parentheticals (…), quotes, names, code, or anything that is already correct.
-    - Do not rewrite for style or concision. If the sentence has no clear error, \
-    return it exactly unchanged.
+    - Keep the writer's meaning, facts and intent exactly. Never add information.
+    - Keep their voice and register: casual stays casual, terse stays terse. \
+    Keep contractions (don't, it's, I'm) — never expand them.
+    - Leave names, quotes, code, URLs and parentheticals alone.
+    - Don't pad. A shorter, plainer sentence is better than a longer one.
+    - If the sentence already reads well, return it exactly unchanged.
     """
 
     /// Worked examples — small models follow these far better than rules alone
@@ -399,6 +404,12 @@ struct LLMClient {
         ["role": "assistant", "content": #"{"corrected":"She doesn't like it much."}"#],
         ["role": "user", "content": "i has went to teh store yesterday."],
         ["role": "assistant", "content": #"{"corrected":"I went to the store yesterday."}"#],
+        // Word order and phrasing, not just spelling — the point of reading the
+        // whole sentence rather than checking words one at a time.
+        ["role": "user", "content": "Tomorrow can we the meeting move to 3pm because a conflict I have."],
+        ["role": "assistant", "content": #"{"corrected":"Can we move tomorrow's meeting to 3pm? I have a conflict."}"#],
+        ["role": "user", "content": "I am writing this email for the purpose of asking whether it would be possible for you to send the report."],
+        ["role": "assistant", "content": #"{"corrected":"Could you send me the report?"}"#],
         ["role": "user", "content": "Context for the other agent (the actual fix): this config is correct"],
         ["role": "assistant", "content": #"{"corrected":"Context for the other agent (the actual fix): this config is correct"}"#],
     ]

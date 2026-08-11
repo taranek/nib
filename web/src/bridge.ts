@@ -67,8 +67,6 @@ export interface SettingsState {
   onboardingCompleted: boolean;
   /** Whether to show the per-change rule explainers under grammar fixes. */
   explainFixes: boolean;
-  /** After the instant rule pass, also run the LLM for sense-level errors. */
-  deepCheck: boolean;
   /** Apps the user has switched Nib off for (menu-bar icon → right-click). */
   blockedApps: { id: string; name: string }[];
   /** The app the user was last working in — offered for a one-tap switch off. */
@@ -91,7 +89,6 @@ type OutboundMessage =
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }
   | { type: "setExplainFixes"; value: boolean }
-  | { type: "setDeepCheck"; value: boolean }
   | { type: "unblockApp"; id: string }
   // Ask for the installed-app list; it arrives via setApps.
   | { type: "listApps" }
@@ -189,8 +186,6 @@ interface LocoInbound {
   updateStatus?: (s: UpdateStatus) => void;
   /** Swift → JS: selection pill state (pill surface only). */
   setPill?: (s: PillStatus) => void;
-  /** Swift → JS: lint request (linter surface only); result posts back. */
-  lint?: (text: string, id: number) => void;
   /** Swift → JS: the installed-app list (answer to listApps). */
   setApps?: (apps: AppInfo[]) => void;
 }

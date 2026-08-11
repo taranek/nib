@@ -180,7 +180,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
     /// Push state into the settings UI.
     func setState(enabled: Bool, accessibilityTrusted: Bool, llmStatus: String,
                   model: String, targetLanguage: String, onboardingCompleted: Bool,
-                  explainFixes: Bool, deepCheck: Bool, blockedApps: [[String: String]],
+                  explainFixes: Bool, blockedApps: [[String: String]],
                   currentApp: [String: String]?, downloadedModels: [String],
                   customModels: [String], version: String, taskModels: [String: String]) {
         let payload: [String: Any] = [
@@ -191,7 +191,6 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
             "targetLanguage": targetLanguage,
             "onboardingCompleted": onboardingCompleted,
             "explainFixes": explainFixes,
-            "deepCheck": deepCheck,
             "blockedApps": blockedApps,
             "currentApp": currentApp as Any,
             "downloadedModels": downloadedModels,

@@ -33,9 +33,6 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var targetLanguage = UserDefaults.standard.string(forKey: "targetLanguage") ?? "English"
     /// Show the per-change rule explainers under grammar fixes (Settings toggle).
     private var explainFixes = UserDefaults.standard.object(forKey: "explainFixes") as? Bool ?? true
-    /// After Harper's instant rule pass, also run the LLM in the background to
-    /// catch sense-level errors rules can't see (Settings toggle, default off).
-    private var deepCheck = UserDefaults.standard.object(forKey: "deepCheck") as? Bool ?? false
     /// Apps the user has switched Nib off for: bundle ID → display name.
     private var blockedApps: [String: String] =
         UserDefaults.standard.dictionary(forKey: "blockedApps") as? [String: String] ?? [:]
@@ -128,10 +125,6 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // Local LLM grammar checking.
     private let llmServer = LLMServer()
-    // Rule-based fast path: Harper (WASM) lints English instantly on CPU, so
-    // the always-on squiggle pipeline doesn't touch the GPU; the LLM remains
-    // the path for other languages and for the rewrite card.
-    private var linterHost: LinterHost!
     private var llmClient: LLMClient?
     private var llmReady = false
     private var currentCorrections: [SentenceCorrection] = []
@@ -206,8 +199,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         setupStatusItem()
         print("▸ status item installed")
 
-        // Rule-based linter (offscreen webview) — ready a moment after launch.
-        linterHost = LinterHost(url: Self.webURL())
 
         // Pre-create the settings popover so its web UI preloads before the first
         // open (otherwise the panel shows empty on launch).
@@ -487,7 +478,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Debounce the grammar check so fast typing doesn't fire a request per key.
     private func scheduleRecheck(value: String, appName: String?) {
         grammarDebounce?.invalidate()
-        grammarDebounce = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+        // Long, because this now reads whole sentences with an LLM instead of
+        // matching words against rules: checking mid-sentence judges half a
+        // thought, and spends a GPU pass doing it.
+        grammarDebounce = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.recheck(value: value, appName: appName) }
         }
     }
@@ -520,32 +514,6 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Fast path: English goes through Harper (rules, ~ms, CPU-only, exact
-        // spans). Other languages fall through to the LLM below.
-        if linterHost.ready,
-           NLLanguageRecognizer.dominantLanguage(for: text) == .english {
-            let checkStart = CFAbsoluteTimeGetCurrent()
-            isChecking = true
-            linterHost.lint(text) { [weak self] lints in
-                guard let self else { return }
-                self.isChecking = false
-                // Only apply if the field still holds the text we checked.
-                let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
-                guard current == value else { return }
-                let corrections = self.corrections(fromLints: lints, in: text)
-                print("⚡ harper: \(lints.count) lint(s) → \(corrections.count) sentence fix(es)")
-                PerfHUD.shared.lastGrammarMs = Int((CFAbsoluteTimeGetCurrent() - checkStart) * 1000)
-                self.currentCorrections = corrections
-                self.currentFullText = text
-                self.checkedValueHash = token
-                self.renderSentenceFixes(corrections, fullText: text, appName: appName)
-                if self.deepCheck {
-                    self.runDeepCheck(value: value, text: text, token: token,
-                                      appName: appName, base: corrections)
-                }
-            }
-            return
-        }
 
         // LLM path — grammar may be pinned to its own model/server (per-task
         // routing); the serving model's manifest quirks drive validation.
@@ -661,7 +629,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if popoverMode == .rephrase { return .open }
         // Deliberately does NOT call server(for:), which spawns a llama-server
         // as a side effect — deciding how to draw the pill must not load a model.
-        let canCheck = linterHost.ready || grammarServerStatus() == .ready
+        let canCheck = grammarServerStatus() == .ready || llmServer.status == .ready
         if !canCheck { return .plain }
         return isChecking ? .loading : .idle
     }
@@ -977,14 +945,9 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         // A selection means the card is likely next — spawn any cold task
         // servers now so their models are loading before the user hovers.
-        // (Grammar only needs the LLM when Harper won't cover the text.)
         guard hasSelection else { return }
         _ = server(for: .compose)
-        if deepCheck
-            || !(linterHost.ready
-                 && NLLanguageRecognizer.dominantLanguage(for: target) == .english) {
-            _ = server(for: .grammar)
-        }
+        _ = server(for: .grammar)
     }
 
     /// Hovering the pill opens the card after a short dwell, so brushing past it
@@ -1104,31 +1067,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverMode = .rephrase
         rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
                                       element: rephraseElement, range: rephraseRange)
-        // English selections get their Grammar tab from Harper — computed here,
-        // shown instantly, no LLM involved.
-        if linterHost.ready, NLLanguageRecognizer.dominantLanguage(for: text) == .english {
-            linterHost.lint(text) { [weak self] lints in
-                guard let self, self.popoverMode == .rephrase,
-                      self.rephraseText == text else { return }
-                let ns = text as NSString
-                var corrected = ns
-                for lint in lints.sorted(by: { $0.range.location > $1.range.location })
-                where !lint.suggestions.isEmpty {
-                    guard lint.range.location + lint.range.length <= corrected.length else { continue }
-                    corrected = corrected.replacingCharacters(
-                        in: lint.range, with: lint.suggestions[0]) as NSString
-                }
-                self.presentRephraseCard(text: text, grammarResult: corrected as String)
-            }
-        } else {
-            presentRephraseCard(text: text, grammarResult: nil)
-        }
+        presentRephraseCard(text: text)
     }
 
-    private func presentRephraseCard(text: String, grammarResult: String?) {
+    private func presentRephraseCard(text: String) {
         let routing = cardRouting()
-        var models = routing.models
-        if grammarResult != nil { models["grammar"] = "Harper (rules)" }
+        let models = routing.models
         var payload: [String: Any] = [
             "mode": "rewrite",
             "original": text,
@@ -1142,7 +1086,6 @@ final class AppController: NSObject, NSApplicationDelegate {
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ]
-        if let grammarResult { payload["grammarResult"] = grammarResult }
         popoverPanel.setCard(payload)
         popoverPanel.present(avoiding: pillRect ?? .zero)
         refreshPillState()   // loading → open (static ring) while the card is up
@@ -2057,7 +2000,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   targetLanguage: targetLanguage,
                                   onboardingCompleted: LLMPaths.onboardingCompleted(),
                                   explainFixes: explainFixes,
-                                  deepCheck: deepCheck,
                                   blockedApps: blockedApps.map { ["id": $0.key, "name": $0.value] },
                                   currentApp: lastActiveApp.map { ["id": $0.id, "name": $0.name] },
                                   downloadedModels: downloadedModelIDs(),
@@ -2113,12 +2055,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                 lastSignature = ""
                 pushSettingsState()
             }
-        case "setDeepCheck":
-            deepCheck = (body["value"] as? NSNumber)?.boolValue ?? false
-            UserDefaults.standard.set(deepCheck, forKey: "deepCheck")
-            // Re-evaluate the field with the new mode.
-            lastSignature = ""
-            checkedValueHash = 0
         case "sandbox":
             // The sandbox reads/writes its own textarea through the webview DOM
             // (JS), not AX — WebKit doesn't expose our own webview's text to AX.
@@ -2263,71 +2199,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             && rect.minX <= field.maxX
     }
 
-    /// Convert Harper lints into sentence-level corrections (the shape the
-    /// whole downstream pipeline — diffing, rects, the card, write-back —
-    /// already speaks): group lints by containing sentence and apply each
-    /// lint's first suggestion right-to-left.
-    private func corrections(fromLints lints: [HarperLint], in text: String) -> [SentenceCorrection] {
-        let ns = text as NSString
-        var bySentence: [NSRange: [HarperLint]] = [:]
-        for lint in lints where !lint.suggestions.isEmpty {
-            guard lint.range.location + lint.range.length <= ns.length else { continue }
-            let sentence = sentenceRange(covering: lint.range, in: ns)
-            bySentence[sentence, default: []].append(lint)
-        }
-        var out: [SentenceCorrection] = []
-        for (sentence, sentenceLints) in bySentence {
-            let original = ns.substring(with: sentence)
-            var corrected = original as NSString
-            for lint in sentenceLints.sorted(by: { $0.range.location > $1.range.location }) {
-                let rel = NSRange(location: lint.range.location - sentence.location,
-                                  length: lint.range.length)
-                guard rel.location >= 0,
-                      rel.location + rel.length <= corrected.length else { continue }
-                corrected = corrected.replacingCharacters(in: rel, with: lint.suggestions[0]) as NSString
-            }
-            let trimmedOriginal = original.trimmingCharacters(in: .whitespacesAndNewlines)
-            let trimmedCorrected = (corrected as String).trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedOriginal != trimmedCorrected {
-                out.append(SentenceCorrection(original: trimmedOriginal, corrected: trimmedCorrected))
-            }
-        }
-        return out
-    }
 
-    /// Deep check: after Harper's rule pass, run the LLM over the same text in
-    /// the background and merge its sentence fixes on top (LLM supersedes
-    /// Harper for a sentence both touched — its fix includes the mechanical
-    /// corrections anyway). Trailing, never blocking: squiggles from rules are
-    /// already on screen when this starts.
-    private func runDeepCheck(value: String, text: String, token: Int,
-                              appName: String?, base: [SentenceCorrection]) {
-        let grammarServer = server(for: .grammar)
-        guard grammarServer.status == .ready else { return }
-        let grammarFile = taskModelFile(for: .grammar)
-        let quirks = ModelManifest.byFile(grammarFile)?.validate
-        let client = LLMClient(chatURL: grammarServer.chatURL,
-                               echoMarkers: quirks?.echoMarkers ?? [],
-                               maxGrowth: quirks?.maxGrowth ?? 2.0)
-        grammarTask?.cancel()
-        grammarTask = Task { [weak self] in
-            let llm = await client.corrections(in: text)
-            if Task.isCancelled { return }
-            await MainActor.run {
-                guard let self else { return }
-                let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
-                guard current == value, self.checkedValueHash == token else { return }
-                var bySentence = Dictionary(base.map { ($0.original, $0) },
-                                            uniquingKeysWith: { _, new in new })
-                for correction in llm { bySentence[correction.original] = correction }
-                let merged = Array(bySentence.values)
-                guard merged.count != base.count || llm.count != 0 else { return }
-                print("🔬 deep check: +\(merged.count - base.count) sentence fix(es)")
-                self.currentCorrections = merged
-                self.renderSentenceFixes(merged, fullText: text, appName: appName)
-            }
-        }
-    }
 
     /// Split a range into per-line subranges at hard newlines (empty segments
     /// dropped) so multi-line ranges don't render as one union box.

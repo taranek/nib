@@ -13,26 +13,18 @@ import "./styles.css";
 const flags = window as unknown as {
   __locoSettings?: boolean;
   __locoPill?: boolean;
-  __locoLinter?: boolean;
 };
 const hash = window.location.hash.replace(/^#/, "");
 const isSettings = flags.__locoSettings === true || hash === "settings";
 const isPill = flags.__locoPill === true || hash === "pill";
-const isLinter = flags.__locoLinter === true || hash === "linter";
 
-// The linter surface is headless — no React; the module wires window.loco.lint.
-if (isLinter) {
-  void import("./linter");
-}
 
 // reducedMotion="user" makes Motion drop transforms/height animation (keeping
 // opacity) when the OS "Reduce motion" setting is on.
-if (!isLinter) {
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <MotionConfig reducedMotion="user">
-        {isPill ? <Pill /> : isSettings ? <Settings /> : <App />}
-      </MotionConfig>
-    </StrictMode>,
-  );
-}
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <MotionConfig reducedMotion="user">
+      {isPill ? <Pill /> : isSettings ? <Settings /> : <App />}
+    </MotionConfig>
+  </StrictMode>,
+);

@@ -10,12 +10,12 @@ leaves your Mac.
 
 ## What it does
 
-- **Inline grammar checking** — mistakes get a squiggle right in the app you're
-  typing in (via the macOS Accessibility API + a transparent, click-through
-  overlay). Hover a squiggle for the fix. English is checked instantly (~30ms,
-  CPU-only) by [Harper](https://writewithharper.com)'s rule engine; other
-  languages use the local LLM, and the optional **Deep checking** mode layers
-  the LLM on top of the rules to catch errors rules can't see.
+- **Inline checking** — mistakes get a squiggle right in the app you're typing
+  in (via the macOS Accessibility API + a transparent, click-through overlay).
+  Hover a squiggle for the fix. The local model reads a whole sentence at a
+  time, so it catches more than typos: awkward word order, roundabout phrasing,
+  a word that doesn't say what you meant. It runs when you pause, not on every
+  keystroke.
 - **Explained fixes** — each correction names the grammar rule in plain words
   ("Verb form after 'can'"), with wrong → right examples on demand. Toggleable
   in Settings.
@@ -108,15 +108,6 @@ catalog models:
 | EuroLLM 9B Instruct | Apache-2.0 |
 | GRMR V3 4B | Apache-2.0 (derivative of Gemma 3 — Gemma Terms also apply) |
 
-### Harper
-
-Nib's instant English grammar checking is powered by
-[Harper](https://writewithharper.com)
-([GitHub](https://github.com/Automattic/harper), Apache-2.0) via the
-[harper.js](https://www.npmjs.com/package/harper.js) WASM bindings — a
-fast, private, rule-based grammar checker. In our JFLEG benchmark it scored
-within ~2 GLEU of 4B-class LLMs at roughly 30× their speed.
-
 ### CoEdIT
 
 During model evaluation, this project tested
@@ -134,7 +125,6 @@ responsible for complying with its non-commercial terms.
 | Piece | Where |
 |---|---|
 | Controller: focus watching, detection, cards, settings | `Sources/loco/Controller/AppController.swift` |
-| Harper rule engine host (offscreen WASM webview) | `Sources/loco/LLM/LinterHost.swift` + `web/src/linter.ts` |
 | Accessibility helpers (`AXBoundsForRange`, web-area checks) | `Sources/loco/Accessibility/AX.swift` |
 | Click-through overlay (squiggles + pill) | `Sources/loco/Overlay/` |
 | llama-server lifecycle + paths | `Sources/loco/LLM/LLM.swift` |
