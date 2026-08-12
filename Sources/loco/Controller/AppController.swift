@@ -68,6 +68,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// the answer can't change without the focus changing — so it's asked once
     /// per element rather than twice per tick.
     private var cachedWebArea: (element: AXUIElement, isWeb: Bool)?
+    /// The modelled text layout for the field we're on, kept while its text is
+    /// unchanged (see modelledRects).
+    private var modelledLayout: (element: AXUIElement, text: String, block: CGRect, fontSize: CGFloat)?
     /// A grammar check is actually running — the only time the pill animates.
     private var isChecking = false {
         didSet { if isChecking != oldValue { refreshPillState() } }
@@ -528,7 +531,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
-        Log.info(.detect, "checking field", ["chars": text.count, "app": appName ?? "native"])
+        Log.info(.detect, "checking field", [
+            "chars": text.count,
+            "app": appName ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown",
+        ])
         grammarTask?.cancel()
         let checkStart = CFAbsoluteTimeGetCurrent()
         isChecking = true
@@ -614,6 +620,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                     Log.info(.detect, "highlights drawn",
                              ["count": found.count, "app": appName, "source": "page"])
                 }
+                if found.isEmpty, !corrections.isEmpty {
+                    Log.warn(.detect, "fixes found but nothing could be drawn", [
+                        "app": appName, "fixes": corrections.count,
+                        "ranges": pendingList.count,
+                        "reason": rs == nil ? "page bridge gave no rects"
+                                            : "rects rejected as implausible",
+                    ])
+                }
                 // Applied even when empty: that's what clears stale squiggles.
                 self.applyDetection(found, element: element)
             }
@@ -624,9 +638,23 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         words = words.filter { !dismissed.contains($0.id) }
+        let host = appName ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown"
         if !corrections.isEmpty || !flagged.isEmpty {
             Log.info(.detect, "highlights drawn",
-                     ["count": words.count, "app": appName ?? "native", "source": "accessibility"])
+                     ["count": words.count, "app": host, "source": "accessibility"])
+        }
+        // Corrections with nowhere to draw them: the user sees nothing and has
+        // no way to know why. Say which app and how the geometry failed, so the
+        // next occurrence explains itself.
+        if words.isEmpty, !corrections.isEmpty {
+            let asked = pendings.count
+            let answered = pendings.filter { screenRect(for: $0.range, in: element) != nil }.count
+            Log.warn(.detect, "fixes found but nothing could be drawn", [
+                "app": host, "fixes": corrections.count, "ranges": asked,
+                "withGeometry": answered,
+                "reason": answered == 0 ? "AXBoundsForRange returned nothing"
+                                        : "rects rejected as implausible",
+            ])
         }
         applyDetection(words, element: element)
     }
@@ -990,14 +1018,53 @@ final class AppController: NSObject, NSApplicationDelegate {
         for p in pendings {
             let sentence = ns.range(of: p.original)
             for sub in Self.splitAtNewlines(p.range, in: ns) {
-                guard let rect = screenRect(for: sub, in: element),
-                      isSaneRect(rect, in: fieldBox) else { continue }
-                words.append(FlaggedWord(rect: rect, original: p.original, corrected: p.corrected,
-                                         range: sentence.location != NSNotFound ? sentence : nil,
-                                         sentenceID: p.original))
+                var rects: [CGRect] = []
+                if let rect = screenRect(for: sub, in: element), isSaneRect(rect, in: fieldBox) {
+                    rects = [rect]
+                } else {
+                    rects = modelledRects(for: sub, in: ns, element: element, fieldBox: fieldBox)
+                }
+                for rect in rects {
+                    words.append(FlaggedWord(rect: rect, original: p.original,
+                                             corrected: p.corrected,
+                                             range: sentence.location != NSNotFound ? sentence : nil,
+                                             sentenceID: p.original))
+                }
             }
         }
         return words
+    }
+
+    /// Last resort for apps that expose text but no per-character geometry —
+    /// Electron ones, Slack above all: AXBoundsForRange answers with an empty
+    /// rect, and the line queries call a visibly wrapped message a single line.
+    /// The layout is modelled instead, from the text block's frame and the font
+    /// size the app does report. Cached per element and text so a re-render
+    /// doesn't lay the message out again.
+    private func modelledRects(for range: NSRange, in ns: NSString,
+                               element: AXUIElement, fieldBox: CGRect) -> [CGRect] {
+        let text = ns as String
+        let sameField = modelledLayout.map { CFEqual($0.element, element) && $0.text == text } ?? false
+        if !sameField {
+            modelledLayout = nil
+            guard let block = AX.textBlock(element), let axFrame = AX.frame(block) else { return [] }
+            let size = AX.fontSize(element) ?? 13
+            guard TextLayout.plausible(text: text, block: axFrame, fontSize: size) else {
+                Log.debug(.detect, "modelled layout rejected", [
+                    "reason": "block height doesn't match the text laid out in it",
+                    "blockHeight": Int(axFrame.height), "fontSize": size,
+                ])
+                return []
+            }
+            modelledLayout = (element, text, axFrame, size)
+            Log.debug(.detect, "modelling layout for an app without range geometry",
+                      ["fontSize": size, "blockWidth": Int(axFrame.width)])
+        }
+        guard let layout = modelledLayout else { return [] }
+        return TextLayout.rects(for: range, in: text, block: layout.block,
+                                fontSize: layout.fontSize)
+            .map(toCocoa)
+            .filter { isSaneRect($0, in: fieldBox) }
     }
 
     /// Place the pill beside `r` — a selection grows it into a capsule spanning

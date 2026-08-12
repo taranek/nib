@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import CoreGraphics
 
@@ -61,6 +62,34 @@ enum AX {
             current = (parent as! AXUIElement)
         }
         return false
+    }
+
+    /// The text block inside an element that actually holds the glyphs. Electron
+    /// apps put the message text in an AXStaticText child whose frame is the
+    /// only geometry they expose.
+    static func textBlock(_ element: AXUIElement, depth: Int = 0) -> AXUIElement? {
+        guard depth < 4 else { return nil }
+        for child in (copy(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+            if string(child, kAXRoleAttribute) == "AXStaticText" { return child }
+            if let found = textBlock(child, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    /// Font size the element reports for its text, when it reports one.
+    static func fontSize(_ element: AXUIElement, at location: Int = 0) -> CGFloat? {
+        var range = CFRange(location: location, length: 1)
+        guard let value = AXValueCreate(.cfRange, &range) else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element, "AXAttributedStringForRange" as CFString, value, &out) == .success,
+            let attributed = out as? NSAttributedString, attributed.length > 0 else { return nil }
+        let attrs = attributed.attributes(at: 0, effectiveRange: nil)
+        if let font = attrs[.font] as? NSFont { return font.pointSize }
+        // Chromium reports a dictionary rather than an NSFont.
+        if let dict = attrs[NSAttributedString.Key("AXFont")] as? [String: Any],
+           let size = dict["AXFontSize"] as? CGFloat { return size }
+        return nil
     }
 
     /// On-screen frame of an element, in global (top-left origin) display coords.
