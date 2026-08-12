@@ -242,6 +242,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
+        PerfMonitor.shared.start()
         installSignalHandlers()
         registerRephraseHotKey()
 

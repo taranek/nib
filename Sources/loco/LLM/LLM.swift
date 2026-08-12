@@ -91,7 +91,6 @@ enum LLMPaths {
     static var modelsDir: URL { supportDir.appendingPathComponent("models", isDirectory: true) }
     static var logsDir: URL { supportDir.appendingPathComponent("logs", isDirectory: true) }
     /// llama-server output (model load/connect failures land here).
-    static var llamaLogURL: URL { logsDir.appendingPathComponent("llama-server.log") }
 
     /// First-run onboarding flag, persisted as JSON alongside bin/ and models/ so
     /// it survives relaunches. Delete the file (or set the flag false) to replay
@@ -277,15 +276,6 @@ final class LLMServer {
         }
 
         // Start the log fresh for the main server; task servers append (they
-        // share the file).
-        try? FileManager.default.createDirectory(
-            at: LLMPaths.logsDir, withIntermediateDirectories: true)
-        let header = Data("▶ llama-server -m \(model) --port \(port)\n".utf8)
-        if fixedModelPath == nil {
-            try? header.write(to: LLMPaths.llamaLogURL)
-        } else if let h = try? FileHandle(forWritingTo: LLMPaths.llamaLogURL) {
-            h.seekToEndOfFile(); h.write(header); try? h.close()
-        }
 
         do {
             try p.run()
@@ -431,12 +421,40 @@ struct LLMClient {
         guard trimmed.count > 1 else { return [] }
 
         let sentences = Self.sentences(in: text)
+        // Bounded: one request per sentence, all at once, means a long field
+        // fires dozens of concurrent completions at a single GPU. Measured on a
+        // 12,000-character field: 22 requests in flight, every one of them
+        // failing after 1.2s while the machine stuttered. A few at a time
+        // finishes sooner and leaves the GPU to the compositor.
+        let inFlight = 3
         var out: [SentenceCorrection] = []
+        let started = DispatchTime.now()
+        if sentences.count > inFlight {
+            Log.debug(.llm, "checking a long field in batches",
+                      ["sentences": sentences.count, "inFlight": inFlight])
+        }
+        var index = 0
         await withTaskGroup(of: SentenceCorrection?.self) { group in
-            for sentence in sentences {
+            // Prime the group, then keep exactly `inFlight` running: as each
+            // finishes, the next starts.
+            while index < min(inFlight, sentences.count) {
+                let sentence = sentences[index]
                 group.addTask { await correctSentence(sentence) }
+                index += 1
             }
-            for await result in group { if let result { out.append(result) } }
+            while let result = await group.next() {
+                if let result { out.append(result) }
+                if index < sentences.count {
+                    let sentence = sentences[index]
+                    group.addTask { await correctSentence(sentence) }
+                    index += 1
+                }
+            }
+        }
+        if sentences.count > inFlight {
+            Log.info(.llm, "long field checked", ["sentences": sentences.count,
+                                                  "fixes": out.count,
+                                                  "ms": Log.ms(since: started)])
         }
         return out
     }

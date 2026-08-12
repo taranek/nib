@@ -35,6 +35,7 @@ enum Log {
         case ax         // accessibility oddities worth knowing about
         case browser    // the page bridge
         case ui         // panels, pill, overlay
+        case perf       // what the app is costing the machine
     }
 
     // MARK: - Filtering
