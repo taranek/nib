@@ -1464,24 +1464,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             let source = CGEventSource(stateID: .combinedSessionState)
             let utf16 = Array(text.utf16)
-            // One UTF-16 unit per event — real typing, one character at a time.
-            // Slack's editor collapses a selection on a batched multi-character
-            // unicode event but drops the text, so a long sentence never applied;
-            // per-character events are indistinguishable from a person typing and
-            // it honours every one. The first replaces the selection; the rest
-            // insert at the caret.
-            func post(_ i: Int) {
-                guard i < utf16.count else { return }
-                var unit = utf16[i]
+            // CGEvent carries ~20 UTF-16 units per event; chunk longer text.
+            var start = 0
+            while start < utf16.count {
+                let chunk = Array(utf16[start..<min(start + 20, utf16.count)])
                 let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
+                down?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
                 down?.post(tap: .cghidEventTap)
                 let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-                up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
                 up?.post(tap: .cghidEventTap)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { post(i + 1) }
+                start += 20
             }
-            post(0)
         }
     }
 

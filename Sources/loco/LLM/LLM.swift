@@ -545,12 +545,50 @@ struct LLMClient {
             return nil
         }
 
-        let changed = corrected != trimmed
+        // The model normalizes typography: straight quotes where the field uses
+        // curly ones. Left alone, a sentence that differs only in that is flagged
+        // as a change, and accepting it does nothing visible — or the app's own
+        // smart-quote substitution undoes it. That is the "doesn't -> doesn't"
+        // no-op. Match the model's punctuation back to the field's first.
+        let normalized = Self.matchTypography(of: corrected, to: trimmed)
+        let changed = normalized != trimmed
         Log.info(.llm, changed ? "sentence rewritten" : "sentence already fine",
                  ["req": req, "ms": Log.ms(since: started), "chars": trimmed.count])
-        if changed { Log.debug(.llm, "rewrite", ["req": req, "in": trimmed, "out": corrected]) }
-        await GrammarCache.shared.set(trimmed, corrected)
-        return changed ? SentenceCorrection(original: trimmed, corrected: corrected) : nil
+        if changed { Log.debug(.llm, "rewrite", ["req": req, "in": trimmed, "out": normalized]) }
+        await GrammarCache.shared.set(trimmed, normalized)
+        return changed ? SentenceCorrection(original: trimmed, corrected: normalized) : nil
+    }
+
+    /// Restore the field's own typography in the model's output. Models answer
+    /// with straight quotes ('), straight double quotes, and hyphens; a field
+    /// often uses curly quotes and dashes. Swapping them back keeps real edits
+    /// while dropping the invisible ones the diff would otherwise flag — and
+    /// stops the app's smart-quote substitution from undoing an accept. Only a
+    /// character the field itself favours is ever introduced.
+    static func matchTypography(of corrected: String, to original: String) -> String {
+        var out = corrected
+        let curlyApostrophe = "\u{2019}", curlyOpenSingle = "\u{2018}"
+        let curlyOpenDouble = "\u{201C}", curlyCloseDouble = "\u{201D}"
+        if original.contains(curlyApostrophe) {
+            out = out.replacingOccurrences(of: "'", with: curlyApostrophe)
+        }
+        if original.contains(curlyOpenSingle) {
+            out = out.replacingOccurrences(of: "`", with: curlyOpenSingle)
+        }
+        if original.contains(curlyOpenDouble) || original.contains(curlyCloseDouble) {
+            // Models emit matched pairs of straight double quotes; alternate.
+            var result = "", open = true
+            for ch in out where true {
+                if ch == "\"" {
+                    result += open ? curlyOpenDouble : curlyCloseDouble
+                    open.toggle()
+                } else {
+                    result.append(ch)
+                }
+            }
+            out = result
+        }
+        return out
     }
 
     /// Generic prompt fragments that only appear when a model echoes our own
