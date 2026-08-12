@@ -201,7 +201,7 @@ final class LLMServer {
         if await isHealthy() {
             owns = false
             status = .ready
-            print("🧠 LLM: attached to running server on port \(port)")
+            Log.info(.server, "attached to a server already running", ["port": port])
             return
         }
         spawn()
@@ -219,13 +219,13 @@ final class LLMServer {
     private func spawn() {
         guard let bin = LLMPaths.resolveBinary() else {
             status = .failed("llama-server binary not found")
-            print("⚠️ LLM: no llama-server binary. Set LOCO_LLAMA_SERVER or place it in \(LLMPaths.binDir.path)")
+            Log.error(.server, "no llama-server binary", ["expected": LLMPaths.binDir.path])
             return
         }
         guard let model = fixedModelPath ?? LLMPaths.resolveModel(),
               FileManager.default.fileExists(atPath: model) else {
             status = .failed("no GGUF model found")
-            print("⚠️ LLM: no model. Set LOCO_MODEL or place a .gguf in \(LLMPaths.modelsDir.path)")
+            Log.error(.server, "no model available", ["expected": LLMPaths.modelsDir.path])
             return
         }
 
@@ -263,16 +263,9 @@ final class LLMServer {
             // Tee llama-server output to a log file so model-load failures are
             // diagnosable even when the app is launched via Finder/`open` (no
             // stdout). Also reachable via Settings → Open log.
-            let url = LLMPaths.llamaLogURL
-            if let h = try? FileHandle(forWritingTo: url) {
-                h.seekToEndOfFile(); h.write(data); try? h.close()
-            } else {
-                try? data.write(to: url)
-            }
-            if ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil,
-               let s = String(data: data, encoding: .utf8) {
-                FileHandle.standardError.write(Data("[llama] \(s)".utf8))
-            }
+            // Into the same file as everything else, in order: the model
+            // server's own output is half the story when a check is slow.
+            if let text = String(data: data, encoding: .utf8) { Log.raw(.llama, text) }
         }
         p.terminationHandler = { [weak self] _ in
             Task { @MainActor in
@@ -298,16 +291,20 @@ final class LLMServer {
             try p.run()
             process = p
             owns = true
-            print("🧠 LLM: starting llama-server (model: \(URL(fileURLWithPath: model).lastPathComponent))")
+            launchedAt = DispatchTime.now()
+            Log.info(.server, "starting llama-server", [
+                "model": URL(fileURLWithPath: model).lastPathComponent, "port": port])
             Task { await pollUntilReady() }
         } catch {
             status = .failed(error.localizedDescription)
-            print("⚠️ LLM: failed to launch: \(error.localizedDescription)")
+            Log.error(.server, "failed to launch llama-server", ["error": error.localizedDescription])
         }
     }
 
     /// Kept so the read source can be unregistered when the process goes away.
     private var outputPipe: Pipe?
+    /// When the current process was launched, so "ready" can report the wait.
+    private var launchedAt = DispatchTime.now()
 
     private func closeOutputPipe() {
         outputPipe?.fileHandleForReading.readabilityHandler = nil
@@ -359,7 +356,7 @@ final class LLMServer {
                (response as? HTTPURLResponse)?.statusCode == 200,
                String(data: data, encoding: .utf8)?.contains("\"ok\"") == true {
                 status = .ready
-                print("🧠 LLM: ready on port \(port)")
+                Log.info(.server, "server ready", ["port": port, "ms": Log.ms(since: launchedAt)])
                 return
             }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -451,8 +448,15 @@ struct LLMClient {
         guard trimmed.count > 1 else { return nil }
 
         if let cached = await GrammarCache.shared.get(trimmed) {
+            Log.debug(.llm, "grammar cache hit", ["chars": trimmed.count,
+                                                  "changed": cached != trimmed])
             return cached == trimmed ? nil : SentenceCorrection(original: trimmed, corrected: cached)
         }
+
+        let req = Log.nextRequestID()
+        let started = DispatchTime.now()
+        Log.debug(.llm, "grammar request", ["req": req, "chars": trimmed.count,
+                                            "port": chatURL.port ?? 0])
 
         let messages: [[String: Any]] = [["role": "system", "content": Self.correctPrompt]]
             + Self.fewShot
@@ -472,8 +476,18 @@ struct LLMClient {
         request.timeoutInterval = 30
 
         // A failed request returns nil WITHOUT caching.
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
+        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
+            Log.warn(.llm, "grammar request failed", ["req": req, "ms": Log.ms(since: started),
+                                                      "port": chatURL.port ?? 0])
+            return nil
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            Log.warn(.llm, "grammar request rejected", ["req": req, "status": status,
+                                                        "ms": Log.ms(since: started)])
+            return nil
+        }
+        guard
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
@@ -493,13 +507,21 @@ struct LLMClient {
         // handle, e.g. non-English) echo the prompt instructions back as the
         // "correction". Never surface those — treat the sentence as clean.
         guard isPlausibleCorrection(corrected, of: trimmed) else {
-            print("   ⚠️ implausible correction discarded (prompt echo?)")
+            Log.warn(.llm, "discarded implausible correction", [
+                "req": req, "ms": Log.ms(since: started),
+                "reason": "prompt echo or runaway length",
+                "in": String(trimmed.prefix(60)), "out": String(corrected.prefix(60)),
+            ])
             await GrammarCache.shared.set(trimmed, trimmed)
             return nil
         }
 
+        let changed = corrected != trimmed
+        Log.info(.llm, changed ? "sentence rewritten" : "sentence already fine",
+                 ["req": req, "ms": Log.ms(since: started), "chars": trimmed.count])
+        if changed { Log.debug(.llm, "rewrite", ["req": req, "in": trimmed, "out": corrected]) }
         await GrammarCache.shared.set(trimmed, corrected)
-        return corrected == trimmed ? nil : SentenceCorrection(original: trimmed, corrected: corrected)
+        return changed ? SentenceCorrection(original: trimmed, corrected: corrected) : nil
     }
 
     /// Generic prompt fragments that only appear when a model echoes our own

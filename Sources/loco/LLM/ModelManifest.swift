@@ -35,7 +35,7 @@ enum ModelManifest {
         guard let url = Bundle.module.url(forResource: "models", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let root = try? JSONDecoder().decode(Root.self, from: data) else {
-            print("⚠️ models.json missing or malformed — catalog empty")
+            Log.error(.app, "models.json missing or malformed, catalog is empty")
             return []
         }
         return root.models

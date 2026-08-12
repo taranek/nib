@@ -156,14 +156,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     ]
 
     func start() {
-        print("▸ controller starting (accessibility trusted: \(AXIsProcessTrusted()))")
+        Log.info(.app, "controller starting", ["accessibility": AXIsProcessTrusted()])
         if !ensureAccessibilityPermission() {
-            print("""
-            ⏳ Accessibility permission required.
-               1. Open System Settings → Privacy & Security → Accessibility
-               2. Enable the entry for this binary (or your terminal app)
-               3. Re-run:  swift run loco
-            """)
+            Log.warn(.app, "accessibility permission not granted", [
+                "fix": "System Settings > Privacy & Security > Accessibility, enable this binary",
+            ])
         }
 
         // Span every display, not just the primary one: highlight rects are in
@@ -197,7 +194,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         setupStatusItem()
-        print("▸ status item installed")
+        Log.debug(.app, "status item installed")
 
 
         // Pre-create the settings popover so its web UI preloads before the first
@@ -234,8 +231,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             PerfHUD.shared.show()
         }
 
-        print("✅ Nib running. Grammar checked by a local LLM; hover a highlight to apply a fix.")
-        print("   Card UI from: \(Self.webURL().absoluteString)\n")
+        Log.info(.app, "running", ["webUI": Self.webURL().absoluteString])
+        
 
         // Hover detection over the click-through overlay: a global mouse monitor
         // (fires for other apps; our accessory app is never frontmost) checks the
@@ -530,7 +527,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
-        print("📝 validating focused input (\(text.count) chars)…")
+        Log.info(.detect, "checking field", ["chars": text.count, "app": appName ?? "native"])
         grammarTask?.cancel()
         let checkStart = CFAbsoluteTimeGetCurrent()
         isChecking = true
@@ -540,11 +537,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             if Task.isCancelled { return }
             await MainActor.run {
                 guard let self else { return }
-                print("   → \(corrections.count) sentence fix(es)")
+                Log.info(.detect, "check finished", [
+                    "fixes": corrections.count,
+                    "ms": Int((CFAbsoluteTimeGetCurrent() - checkStart) * 1000),
+                ])
                 PerfHUD.shared.lastGrammarMs = Int((CFAbsoluteTimeGetCurrent() - checkStart) * 1000)
                 // Only apply if the field still holds the text we checked.
                 let current = AX.focusedElement().flatMap { AX.string($0, kAXValueAttribute) }
-                guard current == value else { print("   (stale — field changed)"); return }
+                guard current == value else { Log.debug(.detect, "check discarded, field changed"); return }
                 self.currentCorrections = corrections
                 self.currentFullText = text
                 self.checkedValueHash = token
@@ -607,7 +607,12 @@ final class AppController: NSObject, NSApplicationDelegate {
                                          fieldBox: fieldBox)
                 }
                 found = found.filter { !self.dismissed.contains($0.id) }
-                print("   highlighted \(found.count) on \(appName)")
+                // Only when there's something to say: a clean field re-renders
+                // several times a second and would drown the file.
+                if !found.isEmpty || !self.flagged.isEmpty {
+                    Log.info(.detect, "highlights drawn",
+                             ["count": found.count, "app": appName, "source": "page"])
+                }
                 // Applied even when empty: that's what clears stale squiggles.
                 self.applyDetection(found, element: element)
             }
@@ -618,7 +623,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         words = words.filter { !dismissed.contains($0.id) }
-        if !corrections.isEmpty { print("   highlighted \(words.count) on \(appName ?? "native")") }
+        if !corrections.isEmpty || !flagged.isEmpty {
+            Log.info(.detect, "highlights drawn",
+                     ["count": words.count, "app": appName ?? "native", "source": "accessibility"])
+        }
         applyDetection(words, element: element)
     }
 
@@ -1100,7 +1108,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.triggerRephraseHotKey() }
         }
         if rephraseHotKey == nil {
-            print("⚠️ Couldn't register the rephrase hotkey (another app may own it).")
+            Log.warn(.app, "could not register the rephrase hotkey", ["reason": "another app may own it"])
         }
     }
 
@@ -1202,10 +1210,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                 let selected = AX.string(element, kAXSelectedTextAttribute) ?? ""
                 guard selected.trimmingCharacters(in: .whitespacesAndNewlines)
                     == target.original.trimmingCharacters(in: .whitespacesAndNewlines) else {
-                    print("⚠️ AX write-back ignored and selection mismatch — not pasting")
+                    Log.warn(.action, "write-back abandoned", ["reason": "accessibility write ignored and selection moved"])
                     return
                 }
-                print("⌨️ AX write-back ignored — typing instead")
+                Log.info(.action, "write-back falling back to typing", ["reason": "accessibility write ignored"])
                 typeReplace(text)
             }
         }
@@ -1275,7 +1283,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             finishRephrase()
         case "typeThrough":
             if let text = body["text"] as? String, !text.isEmpty {
-                print("⌨️ typing through: \(text) — closing the card")
+                Log.info(.action, "typing through, closing the card", ["key": text])
                 typeThrough(text)
             }
         case "dismiss":
@@ -1314,7 +1322,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         a11yEnabledPids.insert(pid)
-        print("🌐 enabled AX tree for \(bundleID) (pid \(pid)) — refocus the field")
+        Log.info(.ax, "asked browser to build its accessibility tree", ["app": bundleID, "pid": pid])
     }
 
     // MARK: - Menu bar + settings
@@ -1713,7 +1721,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         taskServers[path] = server
         server.start()
-        print("🧠 LLM: task server for \(URL(fileURLWithPath: path).lastPathComponent) on port \(server.port)")
+        Log.info(.server, "task server spawned", ["model": URL(fileURLWithPath: path).lastPathComponent, "port": server.port])
         return server
     }
 
@@ -1738,7 +1746,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         for (path, server) in taskServers where !needed.contains(path) {
             server.stop()
             taskServers[path] = nil
-            print("🧠 LLM: stopped task server for \(URL(fileURLWithPath: path).lastPathComponent)")
+            Log.info(.server, "task server stopped", ["model": URL(fileURLWithPath: path).lastPathComponent, "reason": "no longer pinned"])
         }
     }
 
@@ -1750,7 +1758,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         where Date().timeIntervalSince(server.lastUsed) > 600 {
             server.stop()
             taskServers[path] = nil
-            print("🧠 LLM: idle task server stopped (\(URL(fileURLWithPath: path).lastPathComponent))")
+            Log.info(.server, "task server stopped", ["model": URL(fileURLWithPath: path).lastPathComponent, "reason": "idle"])
         }
     }
 
@@ -1813,7 +1821,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             selectModel(id: id)
             return
         }
-        print("⬇️ downloading \(model.file)…")
+        Log.info(.action, "model download started", ["file": model.file])
 
         let task = URLSession.shared.downloadTask(with: model.url) { [weak self] tmp, response, error in
             // Move the file off-main (it can be a cross-volume copy of gigabytes);
@@ -1845,7 +1853,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                         self.settingsPopover?.setDownload(id: id, progress: 0, error: moveError)
                         return
                     }
-                    print("⬇️ downloaded \(model.file)")
+                    Log.info(.action, "model download finished", ["file": model.file])
                     UserDefaults.standard.set(dest.path, forKey: "modelPath")
                     self.settingsPopover?.setDownload(id: id, progress: 1, done: true)
                     self.llmReady = false
@@ -1901,7 +1909,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
                 page = finalURL.absoluteString
             } else if let error {
-                print("⚠️ update check failed: \(error.localizedDescription)")
+                Log.warn(.app, "update check failed", ["error": error.localizedDescription])
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -1961,7 +1969,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     }
                     guard let staged else { return }
                     self.settingsPopover?.setDownload(id: progressID, progress: 1, done: true)
-                    print("⬆️ update \(version) staged — swapping on exit")
+                    Log.info(.app, "update staged, swapping on exit", ["version": version])
                     self.relaunch(swapping: staged, into: bundlePath)
                 }
             }
@@ -2292,7 +2300,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard desktop != window.frame else { return }
         window.setFrame(desktop, display: true)
         view.frame = NSRect(origin: .zero, size: desktop.size)
-        print("🖥️ displays changed — overlay now \(Int(desktop.width))×\(Int(desktop.height))")
+        Log.info(.ui, "displays changed, overlay resized", ["width": Int(desktop.width), "height": Int(desktop.height)])
         lastHighlightsKey = ""          // force a redraw at the new origin
         applyDetection(flagged, element: activeElement)
     }

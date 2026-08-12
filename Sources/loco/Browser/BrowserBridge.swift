@@ -154,11 +154,9 @@ final class BrowserBridge {
     private func warnOnce(_ error: NSDictionary) {
         guard !warned else { return }
         warned = true
-        print("""
-        ⚠️ Browser JS unavailable. To enable in-browser highlighting:
-           1. In Brave/Chrome: View → Developer → Allow JavaScript from Apple Events
-           2. Grant Automation permission for loco to control the browser when prompted
-           (\(error[NSAppleScript.errorMessage] ?? error))
-        """)
+        Log.warn(.browser, "page bridge unavailable, falling back to accessibility", [
+            "fix": "In the browser: View > Developer > Allow JavaScript from Apple Events, and grant Automation",
+            "error": "\(error[NSAppleScript.errorMessage] ?? error)",
+        ])
     }
 }
