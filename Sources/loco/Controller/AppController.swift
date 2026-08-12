@@ -71,6 +71,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The modelled text layout for the field we're on, kept while its text is
     /// unchanged (see modelledRects).
     private var modelledLayout: (element: AXUIElement, text: String, block: CGRect, font: NSFont)?
+    /// True while we are moving the selection ourselves to measure geometry.
+    private var measuringSelection = false
+    /// The last selection-measured field (caret + ranges) and its result, so a
+    /// re-render doesn't flick the caret again for the same layout.
+    private var lastMeasuredSignature = ""
+    private var lastMeasuredRects: [(Int, CGRect)] = []
     /// A grammar check is actually running — the only time the pill animates.
     private var isChecking = false {
         didSet { if isChecking != oldValue { refreshPillState() } }
@@ -372,6 +378,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func handleAXNotification(_ notification: String) {
+        if measuringSelection { return }   // our own measurement moving the caret
         if notification == kAXFocusedUIElementChangedNotification as String {
             attachToFocusedElement()
             // The pill sits at the caret, so a newly focused field needs one
@@ -384,6 +391,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         if notification == kAXValueChangedNotification as String {
             lastTypedAt = Date()
+            lastMeasuredSignature = ""   // text changing invalidates measured geometry
             // Don't yank a card the user is working with — only the bare pill.
             if popoverMode == .none { hidePill() }
             scheduleSelectionUpdate(after: typingQuiet)
@@ -1015,24 +1023,115 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func axWords(for pendings: [Pending], in ns: NSString,
                          element: AXUIElement, fieldBox: CGRect) -> [FlaggedWord] {
         var words: [FlaggedWord] = []
+        var unmeasured: [(NSRange, Pending, NSRange)] = []
         for p in pendings {
             let sentence = ns.range(of: p.original)
             for sub in Self.splitAtNewlines(p.range, in: ns) {
-                var rects: [CGRect] = []
-                if let rect = screenRect(for: sub, in: element), isSaneRect(rect, in: fieldBox) {
-                    rects = [rect]
-                } else {
-                    rects = modelledRects(for: sub, in: ns, element: element, fieldBox: fieldBox)
-                }
-                for rect in rects {
+                let rect = screenRect(for: sub, in: element)
+                if let rect, isSaneRect(rect, in: fieldBox) {
                     words.append(FlaggedWord(rect: rect, original: p.original,
                                              corrected: p.corrected,
                                              range: sentence.location != NSNotFound ? sentence : nil,
                                              sentenceID: p.original))
+                } else {
+                    unmeasured.append((sub, p, sentence))
+                }
+            }
+        }
+        // Everything AXBoundsForRange couldn't answer, measured in ONE selection
+        // session — save the caret once, walk the ranges, restore once. Doing it
+        // per range interleaved six saves and restores, and the last restore
+        // lost its race against Slack's own updates.
+        if !unmeasured.isEmpty {
+            let measured = measuredRects(for: unmeasured.map { $0.0 }, in: element,
+                                         fieldBox: fieldBox)
+            for (index, rect) in measured {
+                let (_, p, sentence) = unmeasured[index]
+                words.append(FlaggedWord(rect: rect, original: p.original,
+                                         corrected: p.corrected,
+                                         range: sentence.location != NSNotFound ? sentence : nil,
+                                         sentenceID: p.original))
+            }
+            // Only if selection measurement produced nothing at all, model.
+            if measured.isEmpty {
+                for (sub, p, sentence) in unmeasured {
+                    for rect in modelledRects(for: sub, in: ns, element: element,
+                                              fieldBox: fieldBox) {
+                        words.append(FlaggedWord(rect: rect, original: p.original,
+                                                 corrected: p.corrected,
+                                                 range: sentence.location != NSNotFound ? sentence : nil,
+                                                 sentenceID: p.original))
+                    }
                 }
             }
         }
         return words
+    }
+
+    /// Measure a range by briefly selecting it. In Electron apps every direct
+    /// geometry query fails, but the *selection's* marker bounds are truthful —
+    /// so select the range, read where the selection is, and put the caret
+    /// back. This is what Grammarly's Slack accessor does (their binary carries
+    /// setSelectedTextRange, trackSyntheticSelectionStrategy and a
+    /// returnCursorToInitialPosition flag). The selection flickers for under a
+    /// millisecond per range, faster than a frame.
+    ///
+    /// `measuringSelection` makes our own AX handlers ignore the storm of
+    /// selection-changed notifications this produces — they're us.
+    private func measuredRects(for ranges: [NSRange], in element: AXUIElement,
+                               fieldBox: CGRect) -> [(Int, CGRect)] {
+        // Moving the selection under the user is only acceptable when they've
+        // clearly stopped — a longer quiet than the check's own, so a check that
+        // fires the instant you pause doesn't immediately grab the caret.
+        guard Date().timeIntervalSince(lastTypedAt) > 1.0 else { return [] }
+        var saved = CFRange()
+        guard let savedValue = AX.copy(element, kAXSelectedTextRangeAttribute) else { return [] }
+        AXValueGetValue(savedValue as! AXValue, .cfRange, &saved)
+        // A non-empty selection is the user's, mid-action. Never touch it.
+        guard saved.length == 0 else { return [] }
+        // Don't re-run the whole selection dance on a field we already measured
+        // at this caret — re-renders (scroll, window move) would otherwise keep
+        // flicking the caret with nothing changed.
+        let signature = "\(saved.location):\(ranges.map { "\($0.location),\($0.length)" }.joined(separator: ";"))"
+        if signature == lastMeasuredSignature { return lastMeasuredRects }
+
+        // Electron applies a selection write asynchronously: read the bounds
+        // right after the write and you get the PREVIOUS selection's answer,
+        // which is exactly the one-behind smearing this replaced. So after every
+        // write, wait until the element reports the selection we asked for.
+        func select(_ range: CFRange) -> Bool {
+            var target = range
+            guard let value = AXValueCreate(.cfRange, &target),
+                  AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString,
+                                               value) == .success else { return false }
+            for _ in 0..<25 {
+                if let now = AX.selectedRange(element),
+                   now.location == range.location, now.length == range.length { return true }
+                usleep(2000)
+            }
+            return false
+        }
+
+        measuringSelection = true
+        var out: [(Int, CGRect)] = []
+        for (index, range) in ranges.enumerated() {
+            guard select(CFRange(location: range.location, length: range.length)),
+                  let bounds = AX.selectionMarkerBounds(element) else { continue }
+            let rect = toCocoa(bounds)
+            if isSaneRect(rect, in: fieldBox) { out.append((index, rect)) }
+        }
+        // Restore, and verify the restore actually landed — an unverified one
+        // is how the user's caret ended up somewhere else entirely.
+        if !select(saved) {
+            _ = select(saved)
+            Log.warn(.ax, "could not verify caret restore after measuring", [
+                "wanted": saved.location,
+            ])
+        }
+        measuringSelection = false
+        lastMeasuredSignature = signature
+        lastMeasuredRects = out
+        return out
     }
 
     /// Last resort for apps that expose text but no per-character geometry —
@@ -1294,31 +1393,48 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let appName = target.appName {
             browser.replaceText(appName: appName, original: target.original, replacement: text)
         } else if let element = target.element {
+            // Mark the text to replace. Electron applies a selection write
+            // asynchronously, so wait until the field reports the range we asked
+            // for before doing anything that depends on it — otherwise the paste
+            // fallback runs against the OLD selection and is abandoned.
+            var selectionSet = true
             if let range = target.range {
                 var cf = CFRange(location: range.location, length: range.length)
                 if let axRange = AXValueCreate(.cfRange, &cf) {
                     AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+                    selectionSet = false
+                    for _ in 0..<25 {
+                        if let now = AX.selectedRange(element),
+                           now.location == range.location, now.length == range.length {
+                            selectionSet = true; break
+                        }
+                        usleep(2000)
+                    }
                 }
             }
             let before = AX.string(element, kAXValueAttribute)
             AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString)
             // Chromium/Electron (Slack, VS Code, …) report success but silently
             // ignore AX text writes. If the field value didn't change, fall back
-            // to pasting over the selection — the range set above (or the user's
-            // own selection) marks the text to replace.
+            // to typing over the selection we just set.
             let after = AX.string(element, kAXValueAttribute)
             if before == after {
-                // Paste replaces the current selection — only safe if it holds
-                // exactly the text we're replacing (guards against the range set
-                // above also having been ignored, which would paste at the caret).
+                // Only safe once the selection holds exactly the text we're
+                // replacing — else typing would land at the caret. With the
+                // wait above this now succeeds in Slack.
                 let selected = AX.string(element, kAXSelectedTextAttribute) ?? ""
                 guard selected.trimmingCharacters(in: .whitespacesAndNewlines)
                     == target.original.trimmingCharacters(in: .whitespacesAndNewlines) else {
-                    Log.warn(.action, "write-back abandoned", ["reason": "accessibility write ignored and selection moved"])
+                    Log.warn(.action, "write-back abandoned", [
+                        "reason": "selection didn't hold the text to replace",
+                        "selected": String(selected.prefix(40)),
+                        "wanted": String(target.original.prefix(40)),
+                        "selectionSet": selectionSet,
+                    ])
                     return
                 }
                 Log.info(.action, "write-back falling back to typing", ["reason": "accessibility write ignored"])
-                typeReplace(text)
+                typeReplace(text, in: element)
             }
         }
     }
@@ -1344,21 +1460,28 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// replaces it, and unlike a ⌘V fallback the clipboard is never touched.
     /// Delayed a beat so the card panel has closed and key focus is back in the
     /// target app before the events land.
-    private func typeReplace(_ text: String) {
+    private func typeReplace(_ text: String, in element: AXUIElement? = nil) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             let source = CGEventSource(stateID: .combinedSessionState)
             let utf16 = Array(text.utf16)
-            // CGEvent carries ~20 UTF-16 units per event; chunk longer text.
-            var start = 0
-            while start < utf16.count {
-                let chunk = Array(utf16[start..<min(start + 20, utf16.count)])
+            // One UTF-16 unit per event — real typing, one character at a time.
+            // Slack's editor collapses a selection on a batched multi-character
+            // unicode event but drops the text, so a long sentence never applied;
+            // per-character events are indistinguishable from a person typing and
+            // it honours every one. The first replaces the selection; the rest
+            // insert at the caret.
+            func post(_ i: Int) {
+                guard i < utf16.count else { return }
+                var unit = utf16[i]
                 let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                down?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
                 down?.post(tap: .cghidEventTap)
                 let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+                up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
                 up?.post(tap: .cghidEventTap)
-                start += 20
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { post(i + 1) }
             }
+            post(0)
         }
     }
 
