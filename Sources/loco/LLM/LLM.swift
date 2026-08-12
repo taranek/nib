@@ -494,14 +494,25 @@ struct LLMClient {
         request.timeoutInterval = 30
 
         // A failed request returns nil WITHOUT caching.
-        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
-            Log.warn(.llm, "grammar request failed", ["req": req, "ms": Log.ms(since: started),
-                                                      "port": chatURL.port ?? 0])
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            // A superseded check cancels its request; that is the system working,
+            // not a failure, and logging it as one buries the real ones.
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                Log.debug(.llm, "request cancelled, field moved on", ["req": req])
+            } else {
+                Log.warn(.llm, "request failed", ["req": req, "ms": Log.ms(since: started),
+                                                  "port": chatURL.port ?? 0,
+                                                  "error": error.localizedDescription])
+            }
             return nil
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else {
-            Log.warn(.llm, "grammar request rejected", ["req": req, "status": status,
+            Log.warn(.llm, "request rejected by the server", ["req": req, "status": status,
                                                         "ms": Log.ms(since: started)])
             return nil
         }
