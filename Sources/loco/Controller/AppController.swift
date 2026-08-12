@@ -1211,6 +1211,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The user started writing while the card was open: close it and put the
+    /// character they typed into the field, so the card gets out of the way
+    /// without swallowing the first letter of what they wanted to say.
+    private func typeThrough(_ text: String) {
+        // Dismissing restores the selection, and typing over a selection
+        // replaces it — so collapse to the caret first.
+        if let element = rephraseElement, let range = rephraseRange {
+            var caret = CFRange(location: range.location + range.length, length: 0)
+            if let value = AXValueCreate(.cfRange, &caret) {
+                AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
+            }
+        }
+        hidePill()
+        typeReplace(text)
+    }
+
     /// Replace the focused app's current selection by synthesizing `text` as
     /// keyboard input (CGEvent unicode strings) — typing over a selection
     /// replaces it, and unlike a ⌘V fallback the clipboard is never touched.
@@ -1257,6 +1273,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         case "applyRewrite":
             if let text = body["text"] as? String { applyRewrite(text: text) }
             finishRephrase()
+        case "typeThrough":
+            if let text = body["text"] as? String, !text.isEmpty {
+                print("⌨️ typing through: \(text) — closing the card")
+                typeThrough(text)
+            }
         case "dismiss":
             // For grammar, suppress the sentence so it stops being flagged.
             if popoverMode == .grammar, let word = activeWord { dismissed.insert(word.id) }

@@ -59,6 +59,17 @@ const CHIPS: { label: string; instruction: string }[] = [
 const CONTENT = "px-2 pt-3 pb-1";
 
 // Which routing task serves each rewrite style.
+/** A plain character with no modifier — the user carrying on with their own
+ *  message rather than driving the card. Shortcuts (⌘, ⌃, ⌥) and named keys
+ *  like Tab, Escape and the arrows are left to the card. */
+function isTyping(e: KeyboardEvent): boolean {
+  if (e.metaKey || e.ctrlKey || e.altKey) return false;
+  if (e.key.length !== 1) return false;   // named keys are all longer
+  const t = e.target;
+  // Typing in the instruction box is for the card, not the field.
+  return !(t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement);
+}
+
 const STYLE_TASK: Record<string, "grammar" | "compose" | "translate"> = {
   grammar: "grammar",
   rephrase: "compose",
@@ -146,6 +157,9 @@ function GrammarBody({ card }: { card: CardData }) {
       } else if (e.key === "Tab" && canAccept) {
         e.preventDefault();
         send({ type: "applyRewrite", text: card.result });
+      } else if (isTyping(e)) {
+        e.preventDefault();
+        send({ type: "typeThrough", text: e.key });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -399,6 +413,9 @@ function RewriteBody({ card }: { card: CardData }) {
       } else if (e.key === "Tab" && canAccept) {
         e.preventDefault();
         send({ type: "applyRewrite", text: activeText });
+      } else if (isTyping(e)) {
+        e.preventDefault();
+        send({ type: "typeThrough", text: e.key });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -550,7 +567,6 @@ function RewriteBody({ card }: { card: CardData }) {
               placeholder="Tell the model what to change…"
               value={feedback}
               disabled={refining}
-              autoFocus
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {

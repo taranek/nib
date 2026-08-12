@@ -85,6 +85,9 @@ type OutboundMessage =
   | { type: "ready" }
   | { type: "applyRewrite"; text: string }
   | { type: "dismiss" }
+  // The user typed a printable character while the card was open: close it and
+  // put that character in the field they were writing in.
+  | { type: "typeThrough"; text: string }
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }
