@@ -139,6 +139,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     // PIDs we've already force-enabled accessibility on (Chromium/Electron
     // build their AX tree lazily and only for an attached AT — we have to ask).
     private var a11yEnabledPids = Set<pid_t>()
+    private var lastForcedFlip: [pid_t: Date] = [:]
+    /// Apps whose own AX server is wedged (kAXErrorAPIDisabled) — warned once.
+    private var axDisabledApps = Set<pid_t>()
 
     private let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
 
@@ -255,6 +258,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(activeAppChanged),
             name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        // Sleep collapses Electron/Chromium accessibility trees. Forget which
+        // pids we flipped so they're rebuilt when the user returns to them.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.a11yEnabledPids.removeAll()
+                    self?.axDisabledApps.removeAll()
+                    Log.info(.ax, "woke from sleep, rebuilding accessibility trees")
+                }
+            }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -435,7 +448,16 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let element = AX.focusedElement() else { clearIfNeeded(); return }
+        guard let element = AX.focusedElement() else {
+            // An Electron/Chromium app with no focused element has a collapsed
+            // accessibility tree — first launch, or after sleep, when the pid is
+            // still marked as flipped but the tree is gone. Force it to rebuild;
+            // the next tick picks up the field.
+            if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+                enableBrowserAccessibility(pid: pid, force: true)
+            }
+            clearIfNeeded(); return
+        }
 
         if observedElement == nil || !CFEqual(observedElement!, element) {
             attachToFocusedElement()
@@ -1448,18 +1470,36 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Same, keyed off a pid directly — called on app activation, because a
     /// fresh Chromium/Electron process may expose NO focused element until the
     /// switch is flipped (so the element-based path never triggers).
-    private func enableBrowserAccessibility(pid: pid_t) {
-        guard !a11yEnabledPids.contains(pid),
+    private func enableBrowserAccessibility(pid: pid_t, force: Bool = false) {
+        guard force || !a11yEnabledPids.contains(pid),
               let app = NSRunningApplication(processIdentifier: pid),
               let bundleID = app.bundleIdentifier,
               Self.browserBundleIDs.contains(bundleID)
         else { return }
+        // A forced re-flip runs from tick's no-focus path (4Hz); don't hammer it.
+        let now = Date()
+        if force, let last = lastForcedFlip[pid], now.timeIntervalSince(last) < 2 { return }
+        if force { lastForcedFlip[pid] = now }
 
         let appElement = AXUIElementCreateApplication(pid)
-        AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        let err = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         a11yEnabledPids.insert(pid)
-        Log.info(.ax, "asked browser to build its accessibility tree", ["app": bundleID, "pid": pid])
+
+        // kAXErrorAPIDisabled means the app's OWN accessibility server is wedged
+        // — not our permission (other apps answer fine at the same moment). It
+        // survives our flip and only the app restarting clears it. Seen after
+        // sleep, on Slack especially. Say it once per pid, not four times a sec.
+        if err == AXError(rawValue: -25211) {
+            if axDisabledApps.insert(pid).inserted {
+                Log.warn(.ax, "app's accessibility is wedged; only restarting it recovers", [
+                    "app": bundleID, "hint": "quit and reopen the app",
+                ])
+            }
+            return
+        }
+        axDisabledApps.remove(pid)
+        Log.debug(.ax, "asked app to build its accessibility tree", ["app": bundleID, "forced": force])
     }
 
     // MARK: - Menu bar + settings
