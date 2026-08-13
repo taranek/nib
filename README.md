@@ -108,6 +108,15 @@ catalog models:
 | EuroLLM 9B Instruct | Apache-2.0 |
 | GRMR V3 4B | Apache-2.0 (derivative of Gemma 3 — Gemma Terms also apply) |
 
+### Lato (bundled font)
+
+Nib bundles [Lato](https://www.latofonts.com/) (Łukasz Dziedzic), licensed
+under the [SIL Open Font License 1.1](https://openfontlicense.org). It's the
+typeface Slack renders its composer in; Nib lays text out in it to place
+inline squiggles accurately in apps that don't expose per-word geometry
+(Slack and other Electron apps). The font file lives at
+`Sources/loco/Resources/fonts/Lato-Regular.ttf`.
+
 ### CoEdIT
 
 During model evaluation, this project tested

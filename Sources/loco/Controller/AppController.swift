@@ -163,6 +163,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func start() {
         Log.info(.app, "controller starting", ["accessibility": AXIsProcessTrusted()])
+        TextLayout.registerBundledFonts()
         if !ensureAccessibilityPermission() {
             Log.warn(.app, "accessibility permission not granted", [
                 "fix": "System Settings > Privacy & Security > Accessibility, enable this binary",
@@ -1098,24 +1099,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                 ])
                 return []
             }
-            // One more pass against the caret: it reports a true x for a known
-            // character, which is enough to tell whether our glyphs are too wide
-            // or too narrow, and to re-lay the text out at a size that matches.
-            var tuned = font
-            if let caretRange = AX.selectedRange(element), caretRange.length == 0,
-               let caret = AX.selectionMarkerBounds(element),
-               let size = TextLayout.calibratedSize(forCaretAt: caretRange.location,
-                                                    caretX: caret.minX, text: text,
-                                                    block: axFrame, font: font),
-               let resized = NSFont(descriptor: font.fontDescriptor, size: size),
-               TextLayout.plausible(text: text, block: axFrame, font: resized) {
-                tuned = resized
-                Log.debug(.detect, "calibrated glyph width against the caret",
-                          ["from": font.pointSize, "to": size])
-            }
-            modelledLayout = (element, text, axFrame, tuned)
+            // No size search: fitting the size to the end caret over-fits, and a
+            // trailing space re-fits and slides the whole line. With Slack's real
+            // font (Lato) at the reported size, laid out from the block's exact
+            // origin, the model is right on its own.
+            modelledLayout = (element, text, axFrame, font)
             Log.debug(.detect, "modelling layout for an app without range geometry",
-                      ["font": tuned.fontName, "size": tuned.pointSize,
+                      ["font": font.fontName, "size": font.pointSize,
                        "blockWidth": Int(axFrame.width), "blockHeight": Int(axFrame.height)])
         }
         guard let layout = modelledLayout else { return [] }
@@ -1123,20 +1113,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         // real rect for a character index we know. Comparing that against where
         // the model puts the same index gives a correction for the whole field,
         // which removes the systematic drift a guessed font leaves behind.
-        var offset = CGPoint.zero
-        if let caretRange = AX.selectedRange(element), caretRange.length == 0,
-           let caret = AX.selectionMarkerBounds(element),
-           let modelled = TextLayout.origin(ofIndex: caretRange.location, in: text,
-                                            block: layout.block, font: layout.font) {
-            let dx = caret.minX - modelled.x
-            let dy = caret.minY - modelled.y
-            // Only a nudge, never a leap: a large correction means the model
-            // wrapped the text differently, and shifting everything by it would
-            // move squiggles somewhere arbitrary.
-            if abs(dx) < 40, abs(dy) < 40 { offset = CGPoint(x: dx, y: dy) }
-        }
         return TextLayout.rects(for: range, in: text, block: layout.block,
-                                font: layout.font, offset: offset)
+                                font: layout.font)
             .map(toCocoa)
             .filter { isSaneRect($0, in: fieldBox) }
     }

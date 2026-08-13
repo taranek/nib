@@ -14,6 +14,9 @@ let package = Package(
                 .copy("Resources/nib-menubar-36.png"),
                 // Shared model manifest (also imported by the web bundle).
                 .copy("Resources/models.json"),
+                // Lato (SIL OFL 1.1) — Slack renders in it; registered at launch
+                // so the modelled-layout squiggles match its metrics exactly.
+                .copy("Resources/fonts/Lato-Regular.ttf"),
             ]
         )
     ],
