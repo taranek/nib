@@ -142,6 +142,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var lastForcedFlip: [pid_t: Date] = [:]
     /// Apps whose own AX server is wedged (kAXErrorAPIDisabled) — warned once.
     private var axDisabledApps = Set<pid_t>()
+    /// The app the user is in whose accessibility server is wedged — Nib can't
+    /// see its text until it's restarted. Drives the red menu-bar badge and the
+    /// "Reopen …" affordance. nil when everything's healthy.
+    private var wedgedApp: (id: String, name: String)? {
+        didSet {
+            if wedgedApp?.id == oldValue?.id { return }
+            updateStatusBadge()
+        }
+    }
 
     private let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
 
@@ -459,6 +468,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             clearIfNeeded(); return
         }
+        wedgedApp = nil   // we can see a focused element: nothing is wedged
 
         if observedElement == nil || !CFEqual(observedElement!, element) {
             attachToFocusedElement()
@@ -1474,9 +1484,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                     "app": bundleID, "hint": "quit and reopen the app",
                 ])
             }
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                wedgedApp = (bundleID, app.localizedName ?? bundleID)
+            }
             return
         }
         axDisabledApps.remove(pid)
+        if wedgedApp?.id == bundleID { wedgedApp = nil }   // recovered
         Log.debug(.ax, "asked app to build its accessibility tree", ["app": bundleID, "forced": force])
     }
 
@@ -1499,6 +1513,25 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     /// Put a small icon in the menu bar; clicking it opens the settings popover.
+    /// A red dot over the menu-bar icon when the app the user is in has a
+    /// wedged accessibility server (Nib is blind there until it's restarted).
+    private func updateStatusBadge() {
+        guard let button = statusItem?.button else { return }
+        button.subviews.filter { $0.identifier?.rawValue == "nib-wedge-dot" }
+            .forEach { $0.removeFromSuperview() }
+        button.toolTip = wedgedApp.map { "Nib can't read \($0.name) — reopen it (right-click)" }
+            ?? "Nib — writing suggestions"
+        guard wedgedApp != nil else { return }
+        let dot = NSView(frame: NSRect(x: button.bounds.maxX - 7, y: button.bounds.maxY - 7,
+                                       width: 6, height: 6))
+        dot.identifier = NSUserInterfaceItemIdentifier("nib-wedge-dot")
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = NSColor.systemRed.cgColor
+        dot.layer?.cornerRadius = 3
+        dot.autoresizingMask = [.minXMargin, .minYMargin]
+        button.addSubview(dot)
+    }
+
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
@@ -1631,6 +1664,18 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func showStatusMenu() {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
+        if let wedged = wedgedApp {
+            let item = NSMenuItem(title: "Reopen \(wedged.name) to check your text",
+                                  action: #selector(reopenWedgedApp), keyEquivalent: "")
+            item.target = self
+            // A red dot in the menu too, so the item reads as the alert it is.
+            let dot = NSImage(size: NSSize(width: 8, height: 8), flipped: false) { r in
+                NSColor.systemRed.setFill(); NSBezierPath(ovalIn: r).fill(); return true
+            }
+            item.image = dot
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
         if let app = lastActiveApp ?? NSWorkspace.shared.frontmostApplication.flatMap({
             guard let id = $0.bundleIdentifier, id != Bundle.main.bundleIdentifier else { return nil }
             return (id, $0.localizedName ?? id)
@@ -1666,6 +1711,27 @@ final class AppController: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(blockedApps, forKey: "blockedApps")
         lastSignature = ""          // re-check on the next tick if it was unblocked
         pushSettingsState()
+    }
+
+    @objc private func reopenWedgedApp() {
+        guard let wedged = wedgedApp,
+              let app = NSWorkspace.shared.runningApplications
+                .first(where: { $0.bundleIdentifier == wedged.id }),
+              let url = app.bundleURL else { return }
+        Log.info(.action, "reopening app to clear its wedged accessibility", ["app": wedged.id])
+        app.terminate()
+        // Relaunch once it has actually exited (poll briefly).
+        var tries = 0
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+            tries += 1
+            let gone = NSRunningApplication
+                .runningApplications(withBundleIdentifier: wedged.id).isEmpty
+            if gone || tries > 20 {
+                timer.invalidate()
+                let cfg = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.openApplication(at: url, configuration: cfg)
+            }
+        }
     }
 
     @objc private func togglePerfHUD() {
