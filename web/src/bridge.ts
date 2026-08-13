@@ -137,6 +137,9 @@ type OutboundMessage =
       w: number;
       h: number;
     }
+  // Reopen the app whose accessibility is wedged; dismiss the alert.
+  | { type: "reopenApp" }
+  | { type: "dismissAlert" }
   | { type: "quit" };
 
 interface WebkitBridge {
@@ -160,6 +163,12 @@ export interface DownloadProgress {
   progress: number;
   done: boolean;
   error?: string;
+}
+
+/** The wedged-app alert's data, pushed from Swift. */
+export interface AlertData {
+  /** The app whose accessibility server isn't responding. */
+  appName: string;
 }
 
 /** The selection pill's state, pushed from Swift. */
@@ -189,6 +198,8 @@ interface LocoInbound {
   updateStatus?: (s: UpdateStatus) => void;
   /** Swift → JS: selection pill state (pill surface only). */
   setPill?: (s: PillStatus) => void;
+  /** Swift → JS: wedged-app alert data (alert surface only). */
+  setAlert?: (d: AlertData) => void;
   /** Swift → JS: the installed-app list (answer to listApps). */
   setApps?: (apps: AppInfo[]) => void;
 }
@@ -248,4 +259,9 @@ export function onSetApps(handler: (apps: AppInfo[]) => void): void {
 /** Register the callback Swift invokes with the pill's state. */
 export function onSetPill(handler: (s: PillStatus) => void): void {
   window.loco = { ...window.loco, setPill: handler };
+}
+
+/** Register the callback Swift invokes with the wedged-app alert data. */
+export function onSetAlert(handler: (d: AlertData) => void): void {
+  window.loco = { ...window.loco, setAlert: handler };
 }

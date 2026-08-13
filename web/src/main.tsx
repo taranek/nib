@@ -4,6 +4,7 @@ import { MotionConfig } from "motion/react";
 import { App } from "./App";
 import { Settings } from "./Settings";
 import { Pill } from "./Pill";
+import { Alert } from "./Alert";
 import "./styles.css";
 
 // One bundle, three surfaces: the per-word card (default), the settings
@@ -13,10 +14,12 @@ import "./styles.css";
 const flags = window as unknown as {
   __locoSettings?: boolean;
   __locoPill?: boolean;
+  __locoAlert?: boolean;
 };
 const hash = window.location.hash.replace(/^#/, "");
 const isSettings = flags.__locoSettings === true || hash === "settings";
 const isPill = flags.__locoPill === true || hash === "pill";
+const isAlert = flags.__locoAlert === true || hash === "alert";
 
 
 // reducedMotion="user" makes Motion drop transforms/height animation (keeping
@@ -24,7 +27,15 @@ const isPill = flags.__locoPill === true || hash === "pill";
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <MotionConfig reducedMotion="user">
-      {isPill ? <Pill /> : isSettings ? <Settings /> : <App />}
+      {isAlert ? (
+        <Alert />
+      ) : isPill ? (
+        <Pill />
+      ) : isSettings ? (
+        <Settings />
+      ) : (
+        <App />
+      )}
     </MotionConfig>
   </StrictMode>,
 );

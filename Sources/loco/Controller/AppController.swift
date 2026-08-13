@@ -149,8 +149,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         didSet {
             if wedgedApp?.id == oldValue?.id { return }
             updateStatusBadge()
+            if let w = wedgedApp, let button = statusItem?.button {
+                wedgeAlert.onReopen = { [weak self] in self?.reopenWedgedApp() }
+                wedgeAlert.show(appName: w.name, below: button)
+            } else {
+                wedgeAlert.reset()
+            }
         }
     }
+    private lazy var wedgeAlert = WedgeAlert(url: Self.webURL())
 
     private let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
 
@@ -1522,13 +1529,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         button.toolTip = wedgedApp.map { "Nib can't read \($0.name) — reopen it (right-click)" }
             ?? "Nib — writing suggestions"
         guard wedgedApp != nil else { return }
-        let dot = NSView(frame: NSRect(x: button.bounds.maxX - 7, y: button.bounds.maxY - 7,
-                                       width: 6, height: 6))
+        // Anchor the dot to the icon's top-right corner. The icon is centred in
+        // a wider button (measured 18pt image in a 34x22 button), so derive the
+        // image rect rather than using the button edge.
+        let size = button.image?.size ?? NSSize(width: 18, height: 18)
+        let imgX = (button.bounds.width - size.width) / 2
+        let imgTop = (button.bounds.height + size.height) / 2
+        let d: CGFloat = 6
+        // Pulled in from the corner so it hugs the glyph, which doesn't fill the
+        // image's transparent padding.
+        let dot = NSView(frame: NSRect(x: imgX + size.width - d - 2, y: imgTop - d - 2, width: d, height: d))
         dot.identifier = NSUserInterfaceItemIdentifier("nib-wedge-dot")
         dot.wantsLayer = true
         dot.layer?.backgroundColor = NSColor.systemRed.cgColor
-        dot.layer?.cornerRadius = 3
+        dot.layer?.cornerRadius = d / 2
         dot.autoresizingMask = [.minXMargin, .minYMargin]
+        button.wantsLayer = true
         button.addSubview(dot)
     }
 
