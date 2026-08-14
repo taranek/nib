@@ -562,6 +562,10 @@ struct LLMClient {
         // smart-quote substitution undoes it. That is the "doesn't -> doesn't"
         // no-op. Match the model's punctuation back to the field's first.
         var normalized = Self.matchTypography(of: corrected, to: trimmed)
+        // Put back any contraction the writer used but the model expanded
+        // ("That's" -> "That is") — expanding them is exactly the formalising
+        // they didn't ask for.
+        normalized = Self.preserveContractions(of: normalized, to: trimmed)
         // Small models formalise casual chat — "thanks" -> "Thanks.", "on my
         // way" -> "On my way." — which is annoying, not a correction. If the
         // model's only change is a leading capital and/or an added terminal
@@ -576,6 +580,59 @@ struct LLMClient {
         if changed { Log.debug(.llm, "rewrite", ["req": req, "in": trimmed, "out": normalized]) }
         await GrammarCache.shared.set(trimmed, normalized)
         return changed ? SentenceCorrection(original: trimmed, corrected: normalized) : nil
+    }
+
+    /// Contractions the writer might use, and the expanded forms a model turns
+    /// them into. Order matters only in that longer expansions are safe to run
+    /// first; there's no overlap here.
+    private static let contractions: [(short: String, long: String)] = [
+        ("don't", "do not"), ("doesn't", "does not"), ("didn't", "did not"),
+        ("isn't", "is not"), ("aren't", "are not"), ("wasn't", "was not"),
+        ("weren't", "were not"), ("won't", "will not"), ("wouldn't", "would not"),
+        ("couldn't", "could not"), ("shouldn't", "should not"), ("can't", "cannot"),
+        ("can't", "can not"), ("haven't", "have not"), ("hasn't", "has not"),
+        ("hadn't", "had not"), ("it's", "it is"), ("that's", "that is"),
+        ("there's", "there is"), ("here's", "here is"), ("what's", "what is"),
+        ("who's", "who is"), ("he's", "he is"), ("she's", "she is"),
+        ("i'm", "i am"), ("you're", "you are"), ("we're", "we are"),
+        ("they're", "they are"), ("i've", "i have"), ("you've", "you have"),
+        ("we've", "we have"), ("they've", "they have"), ("i'll", "i will"),
+        ("you'll", "you will"), ("we'll", "we will"), ("they'll", "they will"),
+        ("let's", "let us"),
+    ]
+
+    /// Re-contract in `corrected` any expansion whose contraction the writer
+    /// actually used in `original`, so a model can't quietly formalise the
+    /// writer's own contractions. Only touches forms the writer already
+    /// contracted — text they genuinely wrote expanded is left expanded.
+    static func preserveContractions(of corrected: String, to original: String) -> String {
+        let lowerOriginal = original.lowercased()
+        var out = corrected
+        for (short, long) in contractions where lowerOriginal.contains(short) {
+            out = replacePreservingLeadingCase(long, with: short, in: out)
+        }
+        return out
+    }
+
+    /// Case-insensitive whole-word replace of `find` with `replacement`, keeping
+    /// the case of the matched text's first letter (so "That is" -> "That's").
+    private static func replacePreservingLeadingCase(_ find: String, with replacement: String,
+                                                     in text: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "\\b" + NSRegularExpression.escapedPattern(for: find) + "\\b",
+            options: [.caseInsensitive]) else { return text }
+        let ns = text as NSString
+        var result = text
+        // Work right-to-left so ranges stay valid.
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        for m in matches.reversed() {
+            let matched = ns.substring(with: m.range)
+            let capitalised = matched.first?.isUppercase == true
+            let rep = capitalised ? replacement.prefix(1).uppercased() + replacement.dropFirst()
+                                  : replacement
+            result = (result as NSString).replacingCharacters(in: m.range, with: rep)
+        }
+        return result
     }
 
     /// True when `corrected` differs from `original` only by capitalising the
