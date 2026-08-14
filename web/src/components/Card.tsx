@@ -191,6 +191,26 @@ function GrammarBody({ card }: { card: CardData }) {
   );
 }
 
+/** The card's tab-switching shortcut, inline in the footer beside Accept. */
+function ShortcutHints({ visible }: { visible: boolean }) {
+  const key =
+    "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-border bg-white/[0.06] px-1 text-[11px] font-medium text-foreground/80 shadow-[0_1px_1px_rgba(0,0,0,0.35),inset_0_1px_0_rgba(255,255,255,0.08)]";
+  return (
+    <div
+      className={`mr-auto flex items-center gap-1.5 text-[11px] text-muted-foreground transition-opacity duration-150 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
+      aria-hidden={!visible}
+    >
+      <kbd className={key}>⌘</kbd>
+      <span className="text-muted-foreground/60">+</span>
+      <kbd className={key}>←</kbd>
+      <kbd className={key}>→</kbd>
+      <span className="ml-0.5">Switch tabs</span>
+    </div>
+  );
+}
+
 /** The friendly "why" under a grammar fix — one row per change, so multi-fix
  *  corrections are fully covered, each with on-demand examples. */
 function FixExplanations({
@@ -279,6 +299,7 @@ function RewriteBody({ card }: { card: CardData }) {
   const [refiningStyle, setRefiningStyle] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
   const [activeChip, setActiveChip] = useState<string | null>(null);
+  const [tabsHovered, setTabsHovered] = useState(false);
   const onResult = useCallback(
     (id: string, s: RewriteState) => setResults((p) => ({ ...p, [id]: s })),
     [],
@@ -309,19 +330,20 @@ function RewriteBody({ card }: { card: CardData }) {
     [visibleIds],
   );
 
-  // ←/→ cycle the tabs (skipped while an input is focused — the composer handles
-  // its own arrows so it can cycle too).
+  // ⌘←/⌘→ cycle the tabs. A plain ←/→ isn't ours — it's the user moving the
+  // caret in the field they were writing in, so pass it through (closes the
+  // card, like typing does). Inputs handle their own arrows.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target;
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement)
         return;
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        cycle(-1);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        cycle(1);
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      if (e.metaKey) {
+        cycle(e.key === "ArrowLeft" ? -1 : 1);
+      } else {
+        send({ type: "passThroughKey", key: e.key, shift: e.shiftKey });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -445,7 +467,11 @@ function RewriteBody({ card }: { card: CardData }) {
   return (
     <>
       <Tabs value={current} onValueChange={setActive} className="gap-0">
-        <div className="flex items-center justify-between gap-2 border-b border-border p-2">
+        <div
+          className="flex items-center justify-between gap-2 border-b border-border p-2"
+          onMouseEnter={() => setTabsHovered(true)}
+          onMouseLeave={() => setTabsHovered(false)}
+        >
           <TabsList
             className="h-7 bg-transparent p-0"
             activeClassName="bg-accent shadow-none ring-1 ring-border"
@@ -560,6 +586,9 @@ function RewriteBody({ card }: { card: CardData }) {
       </AnimatePresence>
 
       <div className="flex items-center justify-end gap-2 p-2">
+        {current !== "rephrase" && visibleStyles.length > 1 && (
+          <ShortcutHints visible={tabsHovered} />
+        )}
         {current === "rephrase" && (
           <>
             <input
@@ -572,12 +601,14 @@ function RewriteBody({ card }: { card: CardData }) {
                 if (e.key === "Enter") {
                   e.preventDefault();
                   submitFeedback();
-                } else if (e.key === "ArrowLeft") {
+                } else if (
+                  (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+                  e.metaKey
+                ) {
+                  // ⌘←/⌘→ switches tabs; a plain arrow moves the caret within
+                  // the instruction box (default input behaviour).
                   e.preventDefault();
-                  cycle(-1);
-                } else if (e.key === "ArrowRight") {
-                  e.preventDefault();
-                  cycle(1);
+                  cycle(e.key === "ArrowLeft" ? -1 : 1);
                 } else if (e.key === "Tab" && canAccept) {
                   // The composer is autofocused, and the window-level handler
                   // skips events aimed at inputs — without this, the first Tab

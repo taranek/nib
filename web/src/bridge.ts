@@ -88,6 +88,9 @@ type OutboundMessage =
   // The user typed a printable character while the card was open: close it and
   // put that character in the field they were writing in.
   | { type: "typeThrough"; text: string }
+  // A plain ←/→ while the card is open: close it and move the caret in the
+  // field. `shift` preserves selection-extending.
+  | { type: "passThroughKey"; key: "ArrowLeft" | "ArrowRight"; shift: boolean }
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }

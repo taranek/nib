@@ -379,9 +379,15 @@ struct LLMClient {
     - Keep the writer's meaning, facts and intent exactly. Never add information.
     - Keep their voice and register: casual stays casual, terse stays terse. \
     Keep contractions (don't, it's, I'm) — never expand them.
+    - Match how they capitalise and punctuate. Do NOT add a capital letter or a \
+    full stop the writer left off — a short chat message like "thanks", "on my \
+    way", or "sounds good" is complete as written; return it unchanged.
+    - Only fix capitalisation or punctuation when leaving it would be a real \
+    error in their own register (a misspelling, "i" for "I" mid-sentence, a \
+    missing apostrophe in a contraction), never to make casual text look formal.
     - Leave names, quotes, code, URLs and parentheticals alone.
     - Don't pad. A shorter, plainer sentence is better than a longer one.
-    - If the sentence already reads well, return it exactly unchanged.
+    - If the message already reads well, return it exactly unchanged.
     """
 
     /// Worked examples — small models follow these far better than rules alone
@@ -399,6 +405,11 @@ struct LLMClient {
         ["role": "assistant", "content": #"{"corrected":"Could you send me the report?"}"#],
         ["role": "user", "content": "Context for the other agent (the actual fix): this config is correct"],
         ["role": "assistant", "content": #"{"corrected":"Context for the other agent (the actual fix): this config is correct"}"#],
+        // Casual chat: no capital, no full stop added — it's complete as written.
+        ["role": "user", "content": "thanks"],
+        ["role": "assistant", "content": #"{"corrected":"thanks"}"#],
+        ["role": "user", "content": "on my way, be there in 5"],
+        ["role": "assistant", "content": #"{"corrected":"on my way, be there in 5"}"#],
     ]
 
     private static let correctSchema: [String: Any] = [
@@ -550,13 +561,35 @@ struct LLMClient {
         // as a change, and accepting it does nothing visible — or the app's own
         // smart-quote substitution undoes it. That is the "doesn't -> doesn't"
         // no-op. Match the model's punctuation back to the field's first.
-        let normalized = Self.matchTypography(of: corrected, to: trimmed)
+        var normalized = Self.matchTypography(of: corrected, to: trimmed)
+        // Small models formalise casual chat — "thanks" -> "Thanks.", "on my
+        // way" -> "On my way." — which is annoying, not a correction. If the
+        // model's only change is a leading capital and/or an added terminal
+        // stop, keep what the writer actually wrote. A change that also fixes a
+        // real error survives (its remaining diff isn't just casing/punctuation).
+        if Self.differsOnlyByCasingOrTerminalStop(normalized, from: trimmed) {
+            normalized = trimmed
+        }
         let changed = normalized != trimmed
         Log.info(.llm, changed ? "sentence rewritten" : "sentence already fine",
                  ["req": req, "ms": Log.ms(since: started), "chars": trimmed.count])
         if changed { Log.debug(.llm, "rewrite", ["req": req, "in": trimmed, "out": normalized]) }
         await GrammarCache.shared.set(trimmed, normalized)
         return changed ? SentenceCorrection(original: trimmed, corrected: normalized) : nil
+    }
+
+    /// True when `corrected` differs from `original` only by capitalising the
+    /// first letter and/or adding one trailing sentence-ending mark — the
+    /// formalising a chat message doesn't ask for. Any other difference (a real
+    /// spelling or grammar fix) makes this false, so genuine corrections pass.
+    static func differsOnlyByCasingOrTerminalStop(_ corrected: String, from original: String) -> Bool {
+        func canonical(_ s: String) -> String {
+            var t = Substring(s)
+            while let last = t.last, ".!?".contains(last) { t = t.dropLast() }
+            let lowered = t.isEmpty ? t : t.first!.lowercased() + t.dropFirst()
+            return String(lowered)
+        }
+        return corrected != original && canonical(corrected) == canonical(original)
     }
 
     /// Restore the field's own typography in the model's output. Models answer

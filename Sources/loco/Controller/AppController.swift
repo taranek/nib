@@ -1376,6 +1376,28 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The user started writing while the card was open: close it and put the
     /// character they typed into the field, so the card gets out of the way
     /// without swallowing the first letter of what they wanted to say.
+    /// A plain arrow pressed while the card was open belongs to the field, not
+    /// the card: close the card and synthesize the keystroke so the caret moves
+    /// where the user meant it to. Shift is preserved so selection-extending
+    /// still works.
+    private func passThroughArrow(_ key: String, shift: Bool) {
+        let code: CGKeyCode
+        switch key {
+        case "ArrowLeft": code = 0x7B
+        case "ArrowRight": code = 0x7C
+        default: return
+        }
+        hidePill()   // returns key focus to the field
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            let source = CGEventSource(stateID: .combinedSessionState)
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+                if shift { event?.flags = .maskShift }
+                event?.post(tap: .cghidEventTap)
+            }
+        }
+    }
+
     private func typeThrough(_ text: String) {
         // Dismissing restores the selection, and typing over a selection
         // replaces it — so collapse to the caret first.
@@ -1435,6 +1457,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         case "applyRewrite":
             if let text = body["text"] as? String { applyRewrite(text: text) }
             finishRephrase()
+        case "passThroughKey":
+            if let key = body["key"] as? String {
+                passThroughArrow(key, shift: (body["shift"] as? NSNumber)?.boolValue ?? false)
+            }
         case "typeThrough":
             if let text = body["text"] as? String, !text.isEmpty {
                 Log.info(.action, "typing through, closing the card", ["key": text])
