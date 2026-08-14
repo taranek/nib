@@ -137,10 +137,12 @@ function NavRow({
   title,
   subtitle,
   onClick,
+  status,
 }: {
   title: string;
   subtitle: string;
   onClick: () => void;
+  status?: boolean;
 }) {
   return (
     <button
@@ -148,7 +150,10 @@ function NavRow({
       className="group flex w-full cursor-pointer items-center justify-between gap-3 border-t border-border py-3.5 text-left"
     >
       <span className="flex min-w-0 flex-col gap-0.5 transition-transform duration-200 ease-out group-hover:translate-x-1 group-hover:delay-75">
-        <span className={LABEL}>{title}</span>
+        <span className={LABEL}>
+          {status !== undefined && <StatusDot ok={status} />}
+          {title}
+        </span>
         <span className={HINT}>{subtitle}</span>
       </span>
       <span className="mr-1 flex items-center gap-1.5">
@@ -526,6 +531,7 @@ export function Settings() {
                 title="Models"
                 subtitle="Local model and per-task assignments."
                 onClick={() => goTo("models")}
+                status={llmReady}
               />
           <NavRow
                 title="Apps"

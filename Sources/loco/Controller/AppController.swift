@@ -1683,7 +1683,33 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Every app the user could plausibly type in, for the settings list. Built
     /// on demand (icons make it too heavy for the regular state push) off the
     /// main thread, then handed back.
+    /// The last scanned app list, kept in memory so reopening the Apps screen is
+    /// instant. Seeded from disk on the first request within a launch.
+    private var cachedApps: [[String: Any]]?
+
+    private static var appsCacheURL: URL {
+        LLMPaths.supportDir.appendingPathComponent("apps-cache.json", isDirectory: false)
+    }
+
+    /// An id+name fingerprint of a scan, to decide whether a fresh scan differs
+    /// from what the UI already shows — icons are ignored so a re-render (and its
+    /// stagger) only happens when apps were actually installed or removed.
+    private static func appsSignature(_ apps: [[String: Any]]) -> [String] {
+        apps.map { (($0["id"] as? String) ?? "") + "\u{1}" + (($0["name"] as? String) ?? "") }
+    }
+
     private func sendInstalledApps() {
+        // Serve whatever we already have instantly — memory first, then the disk
+        // cache — so the list appears with no wait. A fresh scan still runs below
+        // and replaces it only if the set of installed apps changed.
+        if let cached = cachedApps {
+            settingsPopover?.setApps(cached)
+        } else if let data = try? Data(contentsOf: Self.appsCacheURL),
+                  let disk = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            cachedApps = disk
+            settingsPopover?.setApps(disk)
+        }
+
         let folders = ["/Applications", "/System/Applications",
                        NSHomeDirectory() + "/Applications"]
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1729,8 +1755,21 @@ final class AppController: NSObject, NSApplicationDelegate {
                 (($0["name"] as? String) ?? "").localizedCaseInsensitiveCompare(
                     ($1["name"] as? String) ?? "") == .orderedAscending
             }
+            // Persist for the next launch, off the main thread.
+            try? FileManager.default.createDirectory(
+                at: LLMPaths.supportDir, withIntermediateDirectories: true)
+            if let data = try? JSONSerialization.data(withJSONObject: apps) {
+                try? data.write(to: Self.appsCacheURL)
+            }
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self.settingsPopover?.setApps(apps) }
+                MainActor.assumeIsolated {
+                    // Only re-push if the scan differs from what's already shown,
+                    // so an unchanged list doesn't flicker and restagger.
+                    let changed = self.cachedApps
+                        .map { Self.appsSignature($0) != Self.appsSignature(apps) } ?? true
+                    self.cachedApps = apps
+                    if changed { self.settingsPopover?.setApps(apps) }
+                }
             }
         }
     }

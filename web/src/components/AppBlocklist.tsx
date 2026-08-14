@@ -1,7 +1,97 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "motion/react";
 import { Search } from "lucide-react";
 import { type AppInfo, onSetApps, send } from "@/bridge";
 import { Toggle } from "@/components/ui/toggle";
+
+// The entrance stagger is a first-impression, not a per-visit effect. This
+// survives route navigation (the settings surface stays loaded), so the list
+// cascades in once and then just appears on every later visit.
+let hasStaggeredOnce = false;
+
+/** Pulsing stand-in rows shown while the app list is still being gathered, so
+ *  the panel has its shape immediately instead of a bare line of text. */
+function SkeletonRow({ width }: { width: string }) {
+  return (
+    <div className="flex items-center gap-2.5 py-1 pl-2 pr-1">
+      <span className="size-5 shrink-0 animate-pulse rounded bg-white/5" />
+      <span
+        className="h-3 animate-pulse rounded bg-white/5"
+        style={{ width }}
+      />
+      <span className="ml-auto h-4 w-8 shrink-0 animate-pulse rounded-full bg-white/5" />
+    </div>
+  );
+}
+
+// Varied widths so the placeholder reads as a list of names, not a grid.
+const SKELETON_WIDTHS = ["52%", "38%", "64%", "44%", "58%", "34%", "48%", "60%"];
+
+// The idle intensity of an edge fade when there's content past it — both edges
+// hold this whenever the list is scrolled off at that end, and the one you're
+// scrolling toward blooms up to EDGE_ACTIVE. The gap between the two is kept
+// small so the intensify reads as a nudge, not a flash.
+const EDGE_REST = 0.65;
+const EDGE_ACTIVE = 0.85;
+
+// A gradual fade at the top edge of the list, so rows dissolve as they scroll
+// up under the search field instead of clipping at a hard line. Two parts,
+// stacked: several masked backdrop-blur layers (each blurrier than the last)
+// that smear the content, and — painted on top — a wash of the card colour so
+// the rows melt into the background rather than glowing through the blur. Only
+// shown once the list is actually scrolled (opacity is driven by scrollTop).
+const BLUR_LAYERS = [
+  { blur: 0.5, stops: "black 0%, black 87.5%, transparent 100%" },
+  { blur: 1, stops: "black 0%, black 62.5%, transparent 87.5%" },
+  { blur: 2, stops: "black 0%, black 37.5%, transparent 62.5%" },
+  { blur: 3.5, stops: "black 0%, black 12.5%, transparent 37.5%" },
+];
+
+function ProgressiveBlur({
+  opacity,
+  edge = "top",
+  settling = false,
+}: {
+  opacity: number;
+  edge?: "top" | "bottom";
+  // A long, gentle ease when relaxing back to rest; a short one while blooming
+  // so the active edge still tracks the scroll responsively.
+  settling?: boolean;
+}) {
+  // The bottom variant is the top one mirrored: gradients run the other way and
+  // it hugs the bottom of the list.
+  const dir = edge === "top" ? "to bottom" : "to top";
+  const pos = edge === "top" ? "top-0" : "bottom-0";
+  const wash =
+    edge === "top"
+      ? "bg-gradient-to-b from-card via-card/70 to-card/0"
+      : "bg-gradient-to-t from-card via-card/70 to-card/0";
+  return (
+    <div
+      className={`pointer-events-none absolute inset-x-0 ${pos} z-10 h-12 transition-opacity ease-out`}
+      style={{ opacity, transitionDuration: settling ? "1100ms" : "260ms" }}
+    >
+      {BLUR_LAYERS.map((l, i) => {
+        const mask = `linear-gradient(${dir}, ${l.stops})`;
+        return (
+          <div
+            key={i}
+            className="absolute inset-0"
+            style={{
+              backdropFilter: `blur(${l.blur}px)`,
+              WebkitBackdropFilter: `blur(${l.blur}px)`,
+              maskImage: mask,
+              WebkitMaskImage: mask,
+            }}
+          />
+        );
+      })}
+      {/* Card-colour wash so content fades into the background, not just blurs
+          (a pure blur brightens the smeared text instead of hiding it). */}
+      <div className={`absolute inset-0 ${wash}`} />
+    </div>
+  );
+}
 
 /** The per-app on/off screen: every installed app with a switch. Off means Nib
  *  stays quiet there — no squiggles, no pill. Reached from Settings and shown in
@@ -15,11 +105,81 @@ export function AppBlocklist({
 }) {
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [query, setQuery] = useState("");
+  // Whether *this* mount should play the entrance stagger — captured once, so a
+  // re-render (toggling a switch) never replays it, and neither does a return
+  // visit once it's been seen.
+  const animateIn = useRef(!hasStaggeredOnce);
+  // The edge fades sit at a low resting intensity whenever there's content past
+  // that edge, and bloom to full on the edge you're actively scrolling toward —
+  // down lights the top, up lights the bottom — settling back to resting a beat
+  // after you stop (rather than vanishing).
+  const [topFade, setTopFade] = useState(0);
+  const [bottomFade, setBottomFade] = useState(0);
+  const [settling, setSettling] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const lastTop = useRef(0);
+  const raf = useRef<number | null>(null);
+  const latest = useRef({ top: 0, max: 0 });
+  const fadeTimer = useRef<number | null>(null);
+
+  // Settle both edges to their resting level for the current scroll position,
+  // over the long ease.
+  const restEdges = () => {
+    const { top, max } = latest.current;
+    setSettling(true);
+    setTopFade(top > 2 ? EDGE_REST : 0);
+    setBottomFade(top < max - 2 ? EDGE_REST : 0);
+  };
+
+  // Coalesce the scroll storm to one update per frame; measuring is cheap but
+  // setState + the mask repaint aren't, so this keeps a fast flick smooth.
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    latest.current = { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+    if (raf.current != null) return;
+    raf.current = requestAnimationFrame(() => {
+      raf.current = null;
+      const { top, max } = latest.current;
+      const dir = top - lastTop.current;
+      lastTop.current = top;
+      const canTop = top > 2;
+      const canBottom = top < max - 2;
+      setSettling(false);
+      if (dir > 0) {
+        setTopFade(canTop ? EDGE_ACTIVE : 0);
+        setBottomFade(canBottom ? EDGE_REST : 0);
+      } else if (dir < 0) {
+        setBottomFade(canBottom ? EDGE_ACTIVE : 0);
+        setTopFade(canTop ? EDGE_REST : 0);
+      }
+      if (fadeTimer.current) clearTimeout(fadeTimer.current);
+      fadeTimer.current = window.setTimeout(restEdges, 240);
+    });
+  };
 
   useEffect(() => {
     onSetApps(setApps);
     send({ type: "listApps" });
+    return () => {
+      if (raf.current != null) cancelAnimationFrame(raf.current);
+      if (fadeTimer.current) clearTimeout(fadeTimer.current);
+    };
   }, []);
+
+  // Seed the resting fades once the list is measurable, so a long list shows a
+  // dim bottom edge before it's ever scrolled.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    latest.current = { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+    restEdges();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apps, query]);
+
+  // Mark the stagger spent once the real list has shown at least once.
+  useEffect(() => {
+    if (apps && apps.length > 0 && animateIn.current) hasStaggeredOnce = true;
+  }, [apps]);
 
   const blockedIDs = useMemo(() => new Set(blocked.map((b) => b.id)), [blocked]);
 
@@ -36,7 +196,9 @@ export function AppBlocklist({
 
   return (
     <>
-      <div className="flex flex-col gap-2.5 border-t border-border pt-3.5">
+      {/* pr-1 mirrors the scrollbar gutter the list below loses on its right,
+          so the header's toggles line up with the rows' toggles. */}
+      <div className="flex flex-col gap-2.5 border-t border-border pt-3.5 pr-1">
         <span className="text-[12px] text-muted-foreground">
           Turn an app off and Nib stays quiet there.
         </span>
@@ -84,18 +246,43 @@ export function AppBlocklist({
         </div>
       </div>
 
-      <div className="thin-scroll-xs -mr-4 flex max-h-[420px] flex-col gap-1 overflow-y-auto overscroll-contain pr-4">
+      <div className="relative">
+      <ProgressiveBlur edge="top" opacity={topFade} settling={settling} />
+      <ProgressiveBlur edge="bottom" opacity={bottomFade} settling={settling} />
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="thin-scroll-xs -mr-4 flex max-h-[420px] flex-col gap-1 overflow-y-auto overscroll-contain pr-3"
+      >
         {apps === null ? (
-          <span className="py-3 text-[13px] text-muted-foreground">
-            Looking for installed apps…
-          </span>
+          SKELETON_WIDTHS.map((w, i) => <SkeletonRow key={i} width={w} />)
         ) : shown.length === 0 ? (
           <span className="py-3 text-[13px] text-muted-foreground">
             No app matches “{query}”.
           </span>
         ) : (
-          shown.map((app) => (
-            <div key={app.id} className="flex items-center gap-2.5 py-1">
+          shown.map((app, i) => (
+            <motion.div
+              key={app.id}
+              initial={animateIn.current ? { opacity: 0, y: 4 } : false}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: 0.18,
+                ease: "easeOut",
+                // Only stagger the first screenful; a search re-filter shouldn't
+                // ripple through a long list.
+                delay: query ? 0 : Math.min(i * 0.022, 0.35),
+              }}
+              onClick={() =>
+                send({
+                  type: "setAppBlocked",
+                  id: app.id,
+                  name: app.name,
+                  blocked: !blockedIDs.has(app.id),
+                })
+              }
+              className="flex cursor-pointer items-center gap-2.5 rounded-md py-1 pl-2 pr-1 transition-colors hover:bg-white/[0.03]"
+            >
               {app.icon ? (
                 <img src={app.icon} alt="" className="size-5 shrink-0" />
               ) : (
@@ -104,21 +291,29 @@ export function AppBlocklist({
               <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
                 {app.name}
               </span>
-              <Toggle
-                size="sm"
-                checked={!blockedIDs.has(app.id)}
-                onCheckedChange={(on) =>
-                  send({
-                    type: "setAppBlocked",
-                    id: app.id,
-                    name: app.name,
-                    blocked: !on,
-                  })
-                }
-              />
-            </div>
+              {/* The switch shares the row's handler; stop the click here so a
+                  direct hit doesn't also bubble to the row and cancel itself. */}
+              <span
+                className="flex items-center self-center"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Toggle
+                  size="sm"
+                  checked={!blockedIDs.has(app.id)}
+                  onCheckedChange={(on) =>
+                    send({
+                      type: "setAppBlocked",
+                      id: app.id,
+                      name: app.name,
+                      blocked: !on,
+                    })
+                  }
+                />
+              </span>
+            </motion.div>
           ))
         )}
+      </div>
       </div>
     </>
   );
