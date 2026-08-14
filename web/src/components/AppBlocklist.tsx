@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { type AppInfo, onSetApps, send } from "@/bridge";
 import { Toggle } from "@/components/ui/toggle";
 
@@ -9,11 +9,9 @@ import { Toggle } from "@/components/ui/toggle";
 export function AppBlocklist({
   blocked,
   current,
-  onBack,
 }: {
   blocked: { id: string; name: string }[];
   current?: { id: string; name: string };
-  onBack: () => void;
 }) {
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [query, setQuery] = useState("");
@@ -38,19 +36,6 @@ export function AppBlocklist({
 
   return (
     <>
-      <div className="relative z-20 flex items-center gap-1.5">
-        <button
-          aria-label="Back to settings"
-          onClick={onBack}
-          className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" />
-        </button>
-        <span className="text-[14px] font-semibold tracking-[-0.01em] text-foreground/90">
-          Apps
-        </span>
-      </div>
-
       <div className="flex flex-col gap-2.5 border-t border-border pt-3.5">
         <span className="text-[12px] text-muted-foreground">
           Turn an app off and Nib stays quiet there.
@@ -99,7 +84,7 @@ export function AppBlocklist({
         </div>
       </div>
 
-      <div className="flex max-h-[420px] flex-col gap-1 overflow-y-auto overscroll-contain pr-1">
+      <div className="thin-scroll-xs -mr-4 flex max-h-[420px] flex-col gap-1 overflow-y-auto overscroll-contain pr-4">
         {apps === null ? (
           <span className="py-3 text-[13px] text-muted-foreground">
             Looking for installed apps…

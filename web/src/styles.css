@@ -161,3 +161,49 @@ body,
     scroll-behavior: auto !important;
   }
 }
+
+/* Thin, unobtrusive scrollbar for scrollable panels (settings). WebKit only —
+   which is all we render in (WKWebView). */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.thin-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  /* Inset the thumb inside the track so it doesn't kiss the card border. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Extra-thin scrollbar for dense lists (the Apps list). */
+.thin-scroll-xs {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+.thin-scroll-xs::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.thin-scroll-xs::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll-xs::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.16);
+  border-radius: 2px;
+}
+.thin-scroll-xs::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.28);
+}

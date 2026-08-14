@@ -55,7 +55,9 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // Rephrase: a pill near the current selection; hover it for a proposal.
     private enum PopoverMode { case none, grammar, rephrase }
-    private var popoverMode: PopoverMode = .none
+    private var popoverMode: PopoverMode = .none {
+        didSet { if popoverMode != oldValue { refreshPillState() } }
+    }
     private var pillRect: CGRect?
     private var pillDwell: Timer?                // hover-to-open delay
     /// Last believable pill anchor, kept per focused element (see below).
@@ -718,8 +720,14 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Re-render the pill (if visible) with the current state.
     private func refreshPillState() {
-        guard pillRect != nil else { return }
-        pillPanel.setState(pillState())
+        guard let pill = pillRect else { return }
+        // While the card is open, the trigger has done its job — hide it so it
+        // doesn't sit beside the card. It comes back when the card closes.
+        if popoverMode == .rephrase {
+            pillPanel.hide()
+        } else {
+            pillPanel.show(at: pill, state: pillState())
+        }
     }
 
     /// Commit a set of flagged words to the overlay (and close a stale card).
@@ -1232,11 +1240,79 @@ final class AppController: NSObject, NSApplicationDelegate {
         ]
         popoverPanel.setCard(payload)
         popoverPanel.present(avoiding: pillRect ?? .zero)
-        refreshPillState()   // loading → open (static ring) while the card is up
+        refreshPillState()   // card is up → hide the trigger
     }
 
     /// Register the global shortcut that opens the rephrase card on the current
     /// selection. Default ⌘` (backtick); overridable via UserDefaults.
+    /// JS `KeyboardEvent.code` → macOS virtual key (kVK_*), for the shortcut
+    /// recorder in Settings. Covers the keys a shortcut is plausibly bound to.
+    private static let jsCodeToVirtualKey: [String: Int] = {
+        var m: [String: Int] = [
+            "Space": kVK_Space, "Backquote": kVK_ANSI_Grave, "Minus": kVK_ANSI_Minus,
+            "Equal": kVK_ANSI_Equal, "BracketLeft": kVK_ANSI_LeftBracket,
+            "BracketRight": kVK_ANSI_RightBracket, "Backslash": kVK_ANSI_Backslash,
+            "Semicolon": kVK_ANSI_Semicolon, "Quote": kVK_ANSI_Quote,
+            "Comma": kVK_ANSI_Comma, "Period": kVK_ANSI_Period, "Slash": kVK_ANSI_Slash,
+            "Enter": kVK_Return, "Tab": kVK_Tab,
+            "ArrowLeft": kVK_LeftArrow, "ArrowRight": kVK_RightArrow,
+            "ArrowUp": kVK_UpArrow, "ArrowDown": kVK_DownArrow,
+        ]
+        let letters: [String: Int] = [
+            "A": kVK_ANSI_A, "B": kVK_ANSI_B, "C": kVK_ANSI_C, "D": kVK_ANSI_D,
+            "E": kVK_ANSI_E, "F": kVK_ANSI_F, "G": kVK_ANSI_G, "H": kVK_ANSI_H,
+            "I": kVK_ANSI_I, "J": kVK_ANSI_J, "K": kVK_ANSI_K, "L": kVK_ANSI_L,
+            "M": kVK_ANSI_M, "N": kVK_ANSI_N, "O": kVK_ANSI_O, "P": kVK_ANSI_P,
+            "Q": kVK_ANSI_Q, "R": kVK_ANSI_R, "S": kVK_ANSI_S, "T": kVK_ANSI_T,
+            "U": kVK_ANSI_U, "V": kVK_ANSI_V, "W": kVK_ANSI_W, "X": kVK_ANSI_X,
+            "Y": kVK_ANSI_Y, "Z": kVK_ANSI_Z,
+        ]
+        for (k, v) in letters { m["Key\(k)"] = v }
+        let digits: [String: Int] = [
+            "0": kVK_ANSI_0, "1": kVK_ANSI_1, "2": kVK_ANSI_2, "3": kVK_ANSI_3,
+            "4": kVK_ANSI_4, "5": kVK_ANSI_5, "6": kVK_ANSI_6, "7": kVK_ANSI_7,
+            "8": kVK_ANSI_8, "9": kVK_ANSI_9,
+        ]
+        for (k, v) in digits { m["Digit\(k)"] = v }
+        return m
+    }()
+
+    /// A human-readable glyph for the saved shortcut, e.g. "⌘`" or "⌥⇧R".
+    private func hotKeyDisplay() -> String {
+        let d = UserDefaults.standard
+        let code = d.object(forKey: "rephraseHotKeyCode") as? Int ?? kVK_ANSI_Grave
+        let mods = d.object(forKey: "rephraseHotKeyModifiers") as? Int ?? cmdKey
+        var out = ""
+        if mods & controlKey != 0 { out += "⌃" }
+        if mods & optionKey != 0 { out += "⌥" }
+        if mods & shiftKey != 0 { out += "⇧" }
+        if mods & cmdKey != 0 { out += "⌘" }
+        out += Self.jsCodeToVirtualKey.first { $0.value == code }?.key
+            .replacingOccurrences(of: "Key", with: "")
+            .replacingOccurrences(of: "Digit", with: "")
+            .replacingOccurrences(of: "Backquote", with: "`")
+            .replacingOccurrences(of: "Space", with: "␣") ?? "?"
+        return out
+    }
+
+    /// Re-bind the rephrase shortcut from the Settings recorder.
+    private func setHotKey(code: String, cmd: Bool, shift: Bool, option: Bool, control: Bool) {
+        guard let keyCode = Self.jsCodeToVirtualKey[code] else { return }
+        var mods = 0
+        if cmd { mods |= cmdKey }
+        if shift { mods |= shiftKey }
+        if option { mods |= optionKey }
+        if control { mods |= controlKey }
+        guard mods != 0 else { return }   // a shortcut needs at least one modifier
+        let d = UserDefaults.standard
+        d.set(keyCode, forKey: "rephraseHotKeyCode")
+        d.set(mods, forKey: "rephraseHotKeyModifiers")
+        // Registration happens on endHotkeyRecording (the recorder is still open
+        // and the old hotkey is unregistered while it is).
+        Log.info(.app, "rephrase shortcut rebound", ["shortcut": hotKeyDisplay()])
+        pushSettingsState()
+    }
+
     private func registerRephraseHotKey() {
         let d = UserDefaults.standard
         let keyCode = UInt32(d.object(forKey: "rephraseHotKeyCode") as? Int ?? kVK_ANSI_Grave)
@@ -2293,6 +2369,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   explainFixes: explainFixes,
                                   blockedApps: blockedApps.map { ["id": $0.key, "name": $0.value] },
                                   currentApp: lastActiveApp.map { ["id": $0.id, "name": $0.name] },
+                                  hotkey: hotKeyDisplay(),
                                   downloadedModels: downloadedModelIDs(),
                                   customModels: customModelFiles(),
                                   version: appVersion,
@@ -2316,6 +2393,18 @@ final class AppController: NSObject, NSApplicationDelegate {
                 tick()
             } else {
                 clearOverlay()
+            }
+        case "beginHotkeyRecording":
+            rephraseHotKey = nil   // free it so the recorder can capture any combo
+        case "endHotkeyRecording":
+            registerRephraseHotKey()   // re-bind (new combo if one was set)
+        case "setHotkey":
+            if let code = body["code"] as? String {
+                setHotKey(code: code,
+                          cmd: (body["cmd"] as? NSNumber)?.boolValue ?? false,
+                          shift: (body["shift"] as? NSNumber)?.boolValue ?? false,
+                          option: (body["option"] as? NSNumber)?.boolValue ?? false,
+                          control: (body["control"] as? NSNumber)?.boolValue ?? false)
             }
         case "setTargetLanguage":
             if let value = body["value"] as? String, !value.isEmpty {

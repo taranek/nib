@@ -79,6 +79,8 @@ export interface SettingsState {
   version: string;
   /** Catalog model id assigned per task ("default" = the active model). */
   taskModels: { grammar: string; compose: string; translate: string };
+  /** The open-card shortcut, as a display string (e.g. "⌘`"). */
+  hotkey: string;
 }
 
 type OutboundMessage =
@@ -94,6 +96,18 @@ type OutboundMessage =
   | { type: "resize"; width: number; height: number }
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }
+  // Rebind the open-card shortcut. `code` is a JS KeyboardEvent.code.
+  | {
+      type: "setHotkey";
+      code: string;
+      cmd: boolean;
+      shift: boolean;
+      option: boolean;
+      control: boolean;
+    }
+  // Free / restore the global hotkey while the shortcut recorder is open.
+  | { type: "beginHotkeyRecording" }
+  | { type: "endHotkeyRecording" }
   | { type: "setExplainFixes"; value: boolean }
   | { type: "unblockApp"; id: string }
   // Ask for the installed-app list; it arrives via setApps.

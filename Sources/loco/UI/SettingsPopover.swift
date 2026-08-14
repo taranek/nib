@@ -181,7 +181,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
     func setState(enabled: Bool, accessibilityTrusted: Bool, llmStatus: String,
                   model: String, targetLanguage: String, onboardingCompleted: Bool,
                   explainFixes: Bool, blockedApps: [[String: String]],
-                  currentApp: [String: String]?, downloadedModels: [String],
+                  currentApp: [String: String]?, hotkey: String, downloadedModels: [String],
                   customModels: [String], version: String, taskModels: [String: String]) {
         let payload: [String: Any] = [
             "enabled": enabled,
@@ -193,6 +193,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
             "explainFixes": explainFixes,
             "blockedApps": blockedApps,
             "currentApp": currentApp as Any,
+            "hotkey": hotkey,
             "downloadedModels": downloadedModels,
             "customModels": customModels,
             "version": version,

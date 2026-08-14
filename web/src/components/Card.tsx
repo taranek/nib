@@ -467,14 +467,12 @@ function RewriteBody({ card }: { card: CardData }) {
   return (
     <>
       <Tabs value={current} onValueChange={setActive} className="gap-0">
-        <div
-          className="flex items-center justify-between gap-2 border-b border-border p-2"
-          onMouseEnter={() => setTabsHovered(true)}
-          onMouseLeave={() => setTabsHovered(false)}
-        >
+        <div className="flex items-center justify-between gap-2 border-b border-border p-2">
           <TabsList
             className="h-7 bg-transparent p-0"
             activeClassName="bg-accent shadow-none ring-1 ring-border"
+            onMouseEnter={() => setTabsHovered(true)}
+            onMouseLeave={() => setTabsHovered(false)}
           >
             {visibleStyles.map((s) => {
               const r = results[s.id];
