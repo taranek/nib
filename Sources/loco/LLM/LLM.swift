@@ -386,6 +386,13 @@ struct LLMClient {
     error in their own register (a misspelling, "i" for "I" mid-sentence, a \
     missing apostrophe in a contraction), never to make casual text look formal.
     - Leave names, quotes, code, URLs and parentheticals alone.
+    - Leave numbers and abbreviations exactly as written — never flag or change \
+    them. Don't spell out digits ("5" stays "5", not "five"), don't rewrite \
+    dates, times, versions or measurements, and don't expand or "correct" \
+    abbreviations, acronyms or initialisms (e.g., FYI, ASAP, EOD, approx, etc.).
+    - Never reformat a run of digits: keep a phone number, code, ID or account \
+    number exactly as typed — do not add or remove dashes, spaces, commas, \
+    brackets or any grouping ("123456789" stays "123456789", not "123-456-789").
     - Don't pad. A shorter, plainer sentence is better than a longer one.
     - If the message already reads well, return it exactly unchanged.
     """
@@ -410,6 +417,13 @@ struct LLMClient {
         ["role": "assistant", "content": #"{"corrected":"thanks"}"#],
         ["role": "user", "content": "on my way, be there in 5"],
         ["role": "assistant", "content": #"{"corrected":"on my way, be there in 5"}"#],
+        // Numbers and abbreviations pass through untouched, even when the rest of
+        // the sentence is fixed.
+        ["role": "user", "content": "pls send the v2 report by EOD, approx 500 rows"],
+        ["role": "assistant", "content": #"{"corrected":"Please send the v2 report by EOD, approx 500 rows."}"#],
+        // A run of digits is never regrouped — no dashes or spaces added.
+        ["role": "user", "content": "call me on 123456789 when your free"],
+        ["role": "assistant", "content": #"{"corrected":"Call me on 123456789 when you're free."}"#],
     ]
 
     private static let correctSchema: [String: Any] = [

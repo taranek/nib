@@ -27,72 +27,6 @@ function SkeletonRow({ width }: { width: string }) {
 // Varied widths so the placeholder reads as a list of names, not a grid.
 const SKELETON_WIDTHS = ["52%", "38%", "64%", "44%", "58%", "34%", "48%", "60%"];
 
-// The idle intensity of an edge fade when there's content past it — both edges
-// hold this whenever the list is scrolled off at that end, and the one you're
-// scrolling toward blooms up to EDGE_ACTIVE. The gap between the two is kept
-// small so the intensify reads as a nudge, not a flash.
-const EDGE_REST = 0.65;
-const EDGE_ACTIVE = 0.85;
-
-// A gradual fade at the top edge of the list, so rows dissolve as they scroll
-// up under the search field instead of clipping at a hard line. Two parts,
-// stacked: several masked backdrop-blur layers (each blurrier than the last)
-// that smear the content, and — painted on top — a wash of the card colour so
-// the rows melt into the background rather than glowing through the blur. Only
-// shown once the list is actually scrolled (opacity is driven by scrollTop).
-const BLUR_LAYERS = [
-  { blur: 0.5, stops: "black 0%, black 87.5%, transparent 100%" },
-  { blur: 1, stops: "black 0%, black 62.5%, transparent 87.5%" },
-  { blur: 2, stops: "black 0%, black 37.5%, transparent 62.5%" },
-  { blur: 3.5, stops: "black 0%, black 12.5%, transparent 37.5%" },
-];
-
-function ProgressiveBlur({
-  opacity,
-  edge = "top",
-  settling = false,
-}: {
-  opacity: number;
-  edge?: "top" | "bottom";
-  // A long, gentle ease when relaxing back to rest; a short one while blooming
-  // so the active edge still tracks the scroll responsively.
-  settling?: boolean;
-}) {
-  // The bottom variant is the top one mirrored: gradients run the other way and
-  // it hugs the bottom of the list.
-  const dir = edge === "top" ? "to bottom" : "to top";
-  const pos = edge === "top" ? "top-0" : "bottom-0";
-  const wash =
-    edge === "top"
-      ? "bg-gradient-to-b from-card via-card/70 to-card/0"
-      : "bg-gradient-to-t from-card via-card/70 to-card/0";
-  return (
-    <div
-      className={`pointer-events-none absolute inset-x-0 ${pos} z-10 h-12 transition-opacity ease-out`}
-      style={{ opacity, transitionDuration: settling ? "1100ms" : "260ms" }}
-    >
-      {BLUR_LAYERS.map((l, i) => {
-        const mask = `linear-gradient(${dir}, ${l.stops})`;
-        return (
-          <div
-            key={i}
-            className="absolute inset-0"
-            style={{
-              backdropFilter: `blur(${l.blur}px)`,
-              WebkitBackdropFilter: `blur(${l.blur}px)`,
-              maskImage: mask,
-              WebkitMaskImage: mask,
-            }}
-          />
-        );
-      })}
-      {/* Card-colour wash so content fades into the background, not just blurs
-          (a pure blur brightens the smeared text instead of hiding it). */}
-      <div className={`absolute inset-0 ${wash}`} />
-    </div>
-  );
-}
-
 /** The per-app on/off screen: every installed app with a switch. Off means Nib
  *  stays quiet there — no squiggles, no pill. Reached from Settings and shown in
  *  its place, so the card keeps its size and position. */
@@ -109,72 +43,11 @@ export function AppBlocklist({
   // re-render (toggling a switch) never replays it, and neither does a return
   // visit once it's been seen.
   const animateIn = useRef(!hasStaggeredOnce);
-  // The edge fades sit at a low resting intensity whenever there's content past
-  // that edge, and bloom to full on the edge you're actively scrolling toward —
-  // down lights the top, up lights the bottom — settling back to resting a beat
-  // after you stop (rather than vanishing).
-  const [topFade, setTopFade] = useState(0);
-  const [bottomFade, setBottomFade] = useState(0);
-  const [settling, setSettling] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const lastTop = useRef(0);
-  const raf = useRef<number | null>(null);
-  const latest = useRef({ top: 0, max: 0 });
-  const fadeTimer = useRef<number | null>(null);
-
-  // Settle both edges to their resting level for the current scroll position,
-  // over the long ease.
-  const restEdges = () => {
-    const { top, max } = latest.current;
-    setSettling(true);
-    setTopFade(top > 2 ? EDGE_REST : 0);
-    setBottomFade(top < max - 2 ? EDGE_REST : 0);
-  };
-
-  // Coalesce the scroll storm to one update per frame; measuring is cheap but
-  // setState + the mask repaint aren't, so this keeps a fast flick smooth.
-  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    latest.current = { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
-    if (raf.current != null) return;
-    raf.current = requestAnimationFrame(() => {
-      raf.current = null;
-      const { top, max } = latest.current;
-      const dir = top - lastTop.current;
-      lastTop.current = top;
-      const canTop = top > 2;
-      const canBottom = top < max - 2;
-      setSettling(false);
-      if (dir > 0) {
-        setTopFade(canTop ? EDGE_ACTIVE : 0);
-        setBottomFade(canBottom ? EDGE_REST : 0);
-      } else if (dir < 0) {
-        setBottomFade(canBottom ? EDGE_ACTIVE : 0);
-        setTopFade(canTop ? EDGE_REST : 0);
-      }
-      if (fadeTimer.current) clearTimeout(fadeTimer.current);
-      fadeTimer.current = window.setTimeout(restEdges, 240);
-    });
-  };
 
   useEffect(() => {
     onSetApps(setApps);
     send({ type: "listApps" });
-    return () => {
-      if (raf.current != null) cancelAnimationFrame(raf.current);
-      if (fadeTimer.current) clearTimeout(fadeTimer.current);
-    };
   }, []);
-
-  // Seed the resting fades once the list is measurable, so a long list shows a
-  // dim bottom edge before it's ever scrolled.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    latest.current = { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
-    restEdges();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, query]);
 
   // Mark the stagger spent once the real list has shown at least once.
   useEffect(() => {
@@ -246,13 +119,8 @@ export function AppBlocklist({
         </div>
       </div>
 
-      <div className="relative">
-      <ProgressiveBlur edge="top" opacity={topFade} settling={settling} />
-      <ProgressiveBlur edge="bottom" opacity={bottomFade} settling={settling} />
       <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="thin-scroll-xs -mr-4 flex max-h-[420px] flex-col gap-1 overflow-y-auto overscroll-contain pr-3"
+        className="scroll-mask-y thin-scroll-xs -mr-4 flex max-h-[420px] flex-col gap-1 overflow-y-auto overscroll-contain pr-3"
       >
         {apps === null ? (
           SKELETON_WIDTHS.map((w, i) => <SkeletonRow key={i} width={w} />)
@@ -313,7 +181,6 @@ export function AppBlocklist({
             </motion.div>
           ))
         )}
-      </div>
       </div>
     </>
   );

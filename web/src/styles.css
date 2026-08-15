@@ -207,3 +207,52 @@ body,
 .thin-scroll-xs::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.28);
 }
+
+/* Scroll-driven edge fade (after twilson.net/scroll-mask). The list masks its
+   own content with a gradient at each vertical edge; a scroll() timeline drives
+   how far the fade reaches, so the top only fades once there's content scrolled
+   above it and the bottom un-fades as you reach the end — all in CSS, no JS. */
+@property --scroll-mask-t-from {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 100%;
+}
+@property --scroll-mask-b-from {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 100%;
+}
+@keyframes scroll-mask-y {
+  0% {
+    --scroll-mask-t-from: 100%;
+  }
+  10%,
+  100% {
+    --scroll-mask-t-from: var(--scroll-mask-fade-t, calc(100% - 44px));
+  }
+  0%,
+  90% {
+    --scroll-mask-b-from: var(--scroll-mask-fade-b, calc(100% - 44px));
+  }
+  100% {
+    --scroll-mask-b-from: 100%;
+  }
+}
+.scroll-mask-y {
+  --scroll-mask-t: linear-gradient(
+    to top,
+    black,
+    black var(--scroll-mask-t-from),
+    transparent
+  );
+  --scroll-mask-b: linear-gradient(
+    to bottom,
+    black,
+    black var(--scroll-mask-b-from),
+    transparent
+  );
+  mask-image: var(--scroll-mask-t), var(--scroll-mask-b);
+  mask-composite: intersect;
+  animation: scroll-mask-y linear;
+  animation-timeline: scroll(self block);
+}
