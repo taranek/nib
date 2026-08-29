@@ -92,17 +92,39 @@ enum TextLayout {
     /// corrects the model against a known-true position (see calibrate).
     static func rects(for range: NSRange, in text: String, block: CGRect,
                       font: NSFont) -> [CGRect] {
-        let (layout, container, storage) = engine(text: text, font: font, width: block.width)
         let ns = text as NSString
         guard range.location >= 0, range.location + range.length <= ns.length else { return [] }
-        defer { withExtendedLifetime(storage) {} }
-        layout.ensureLayout(for: container)
 
-        // Even the best-matching font is a little off, and the error grows with
-        // every line. Stretching the modelled text onto the block's real height
-        // pins the last line where it belongs instead of letting it slide below.
+        // The block's height is the app's own word on how many lines the text
+        // spans — the one vertical fact it gives us. The width is only a guess,
+        // and font metrics never match the app's exactly, so laying out at that
+        // width can wrap a line the app didn't. When that happens the extra lines
+        // used to be scaled on top of each other, dropping the squiggle through
+        // the text. Instead, widen the container until the model wraps to the
+        // same number of lines the block height implies (for a single-line block,
+        // that means no wrapping) so every line sits where the app drew it.
+        let lineHeight = defaultLineHeight(font)
+        let blockLines = max(1, Int((block.height / lineHeight).rounded()))
+
+        var width = block.width
+        var built = engine(text: text, font: font, width: width)
+        built.0.ensureLayout(for: built.1)
+        var attempts = 0
+        while lineCount(built.0, built.1) > blockLines, attempts < 8 {
+            width *= 1.15
+            built = engine(text: text, font: font, width: width)
+            built.0.ensureLayout(for: built.1)
+            attempts += 1
+        }
+        let (layout, container, storage) = built
+        defer { withExtendedLifetime(storage) {} }
+
+        // Line counts now agree, so any residual height difference is small font
+        // drift, not a wrong wrap. A gentle scale (clamped near 1) pins the last
+        // line without the old compression that stacked lines on each other.
         let modelled = layout.usedRect(for: container).height
-        let scale = modelled > 1 ? block.height / modelled : 1
+        let raw = modelled > 1 ? block.height / modelled : 1
+        let scale = min(max(raw, 0.9), 1.1)
 
         let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         var out: [CGRect] = []
@@ -116,6 +138,28 @@ enum TextLayout {
                               height: rect.height * scale))
         }
         return out
+    }
+
+    /// The height of one line laid out in this font — how tall a single visual
+    /// line of the app's text is, used to read a line count off the block height.
+    private static func defaultLineHeight(_ font: NSFont) -> CGFloat {
+        NSLayoutManager().defaultLineHeight(for: font)
+    }
+
+    /// How many line fragments the laid-out text occupies.
+    private static func lineCount(_ layout: NSLayoutManager,
+                                  _ container: NSTextContainer) -> Int {
+        let glyphs = layout.glyphRange(for: container)
+        guard glyphs.length > 0 else { return 1 }
+        var count = 0
+        var index = glyphs.location
+        while index < NSMaxRange(glyphs) {
+            var lineRange = NSRange()
+            _ = layout.lineFragmentRect(forGlyphAt: index, effectiveRange: &lineRange)
+            count += 1
+            index = NSMaxRange(lineRange)
+        }
+        return max(count, 1)
     }
 
     /// Whether reconstruction is worth attempting: it needs a block whose height
