@@ -43,6 +43,15 @@ enum AX {
         copy(element, attribute) as? String
     }
 
+    /// The pid of the process that owns this element. The focused element can
+    /// belong to a different process than `frontmostApplication` reports — a
+    /// system overlay like Spotlight floats over whatever app is behind it — so
+    /// this is how we tell whose field we're actually looking at.
+    static func pid(of element: AXUIElement) -> pid_t? {
+        var pid: pid_t = 0
+        return AXUIElementGetPid(element, &pid) == .success ? pid : nil
+    }
+
     /// Whether the element sits inside web page content (an AXWebArea ancestor)
     /// rather than browser chrome like the address bar. Locale- and
     /// browser-independent: every engine exposes page content under a web area.

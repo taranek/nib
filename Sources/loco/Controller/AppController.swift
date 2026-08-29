@@ -163,6 +163,17 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
 
+    /// System overlays that own a text field but aren't a place we should ever
+    /// check — Spotlight and its kin float over the frontmost app, so the normal
+    /// app blocklist (keyed on frontmostApplication) never catches them. Matched
+    /// against the pid that actually owns the focused element.
+    private static let systemUIBundleIDs: Set<String> = [
+        "com.apple.Spotlight",
+        "com.apple.systemuiserver",
+        "com.apple.controlcenter",
+        "com.apple.notificationcenterui",
+    ]
+
     private static let browserBundleIDs: Set<String> = [
         "com.google.Chrome",
         "com.google.Chrome.canary",
@@ -478,6 +489,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             clearIfNeeded(); return
         }
         wedgedApp = nil   // we can see a focused element: nothing is wedged
+
+        // Skip system overlays (Spotlight, Control Center, …). They own the
+        // focused text field while some other app is frontmost, so the app
+        // blocklist above can't see them — check who actually owns the element.
+        if let pid = AX.pid(of: element),
+           let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+           Self.systemUIBundleIDs.contains(bundleID) {
+            clearIfNeeded(); return
+        }
 
         if observedElement == nil || !CFEqual(observedElement!, element) {
             attachToFocusedElement()
