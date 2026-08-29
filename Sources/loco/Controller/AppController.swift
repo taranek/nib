@@ -21,6 +21,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     static let debug = ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil
     private var timer: Timer?
     private var mouseMonitor: Any?
+    private var mouseUpMonitor: Any?
+    /// True while the focused field's window is mid-drag/resize — overlays stay
+    /// hidden until it ends so they don't blink at stale positions.
+    private var awaitingWindowSettle = false
 
     // Menu bar presence + the settings popover it opens.
     private var statusItem: NSStatusItem?
@@ -276,6 +280,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
             MainActor.assumeIsolated { self?.handleMouseMove() }
         }
+        // Releasing the mouse ends a window drag; that's when it's safe to put the
+        // squiggles and pill back at the field's settled position.
+        mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.windowDragDidEnd() }
+        }
 
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
         PerfMonitor.shared.start()
@@ -349,6 +358,11 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private var axObserver: AXObserver?
     private var observedElement: AXUIElement?
+    /// The window containing the focused field, observed for moves/resizes so
+    /// the overlays can be pulled down during a drag instead of smearing.
+    private var observedWindow: AXUIElement?
+    /// Fires once a window drag settles, to redraw squiggles at the new spot.
+    private var windowMoveSettle: Timer?
 
     @objc private func activeAppChanged() {
         // The selection pill belongs to the app we're leaving — the overlay is
@@ -371,6 +385,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         axObserver = nil
         observedElement = nil
+        observedWindow = nil
 
         // Never observe our own process: when Nib is frontmost (onboarding
         // sandbox), self-AX queries into our WKWebViews are brokered through our
@@ -404,6 +419,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             AXObserverRemoveNotification(observer, old, kAXValueChangedNotification as CFString)
             AXObserverRemoveNotification(observer, old, kAXSelectedTextChangedNotification as CFString)
         }
+        if let oldWindow = observedWindow {
+            AXObserverRemoveNotification(observer, oldWindow, kAXWindowMovedNotification as CFString)
+            AXObserverRemoveNotification(observer, oldWindow, kAXWindowResizedNotification as CFString)
+            observedWindow = nil
+        }
         lastAnchor = nil   // a new field's geometry has nothing to do with the old
         retriedAnchor = false
         cachedWebArea = nil
@@ -411,6 +431,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let element = observedElement {
             AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
             AXObserverAddNotification(observer, element, kAXSelectedTextChangedNotification as CFString, refcon)
+            // Watch the field's window: a move or resize repositions the text
+            // with no value/selection event, so this is the only signal that the
+            // squiggles and pill have gone stale mid-drag.
+            if let raw = AX.copy(element, kAXWindowAttribute as String),
+               CFGetTypeID(raw) == AXUIElementGetTypeID() {
+                let window = raw as! AXUIElement
+                observedWindow = window
+                AXObserverAddNotification(observer, window, kAXWindowMovedNotification as CFString, refcon)
+                AXObserverAddNotification(observer, window, kAXWindowResizedNotification as CFString, refcon)
+            }
         }
     }
 
@@ -431,7 +461,48 @@ final class AppController: NSObject, NSApplicationDelegate {
             if popoverMode == .none { hidePill() }
             scheduleSelectionUpdate(after: typingQuiet)
         }
+        if notification == kAXWindowMovedNotification as String
+            || notification == kAXWindowResizedNotification as String {
+            focusedWindowMoved()
+            return   // the redraw is scheduled for when the drag settles
+        }
         tick()
+    }
+
+    /// A drag or resize of the focused field's window emits a stream of these.
+    /// Pull the squiggles and pill down and keep them down for the whole drag —
+    /// redrawing mid-drag only makes them blink at stale positions, because the
+    /// app hasn't committed the new window frame to accessibility yet. The redraw
+    /// happens on mouse-up (below); the timer is only a fallback for window moves
+    /// that aren't a mouse drag (a window-manager hotkey, say), so it's long
+    /// enough that a bursty drag never trips it between move events.
+    private func focusedWindowMoved() {
+        awaitingWindowSettle = true
+        applyDetection([], element: observedElement)
+        if popoverMode == .none { hidePill() }
+        windowMoveSettle?.invalidate()
+        windowMoveSettle = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.redrawAfterWindowMove() }
+        }
+    }
+
+    /// Left mouse button released — if a window drag was in progress, its frame
+    /// has settled, so put the overlays back.
+    private func windowDragDidEnd() {
+        guard awaitingWindowSettle else { return }
+        redrawAfterWindowMove()
+    }
+
+    private func redrawAfterWindowMove() {
+        windowMoveSettle?.invalidate()
+        windowMoveSettle = nil
+        awaitingWindowSettle = false
+        // Force a re-locate: the frame moved, so the cached signature and
+        // highlight key no longer describe where anything is.
+        lastSignature = ""
+        lastHighlightsKey = ""
+        tick()
+        scheduleSelectionUpdate()
     }
 
     private func ensureAccessibilityPermission() -> Bool {
@@ -450,6 +521,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
 
         guard enabled else { return }
+
+        // Mid window-drag: overlays are deliberately down until the drag ends
+        // (see focusedWindowMoved). Re-rendering now would flash them at the old,
+        // not-yet-committed position — exactly the blink we're avoiding.
+        if awaitingWindowSettle { return }
 
         // A card is open (and key, for hover) — its webview is the focused UI
         // element, so detection would see "focus left the field" and clear it.
@@ -517,6 +593,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Skip browser chrome (address bar, in-page search, …): only page
         // content — anything under an AXWebArea — is prose worth checking.
         if appName != nil, !isInWebArea(element) { clearIfNeeded(); return }
+
+        // In a browser, a role check isn't enough: a custom widget like a Radix
+        // <Select> is an AXComboBox inside the web area that exposes its chosen
+        // label as a value, but it's read-only — you can't type into it. Only act
+        // on surfaces text can genuinely be written to.
+        if appName != nil, !AX.isTextEditable(element) { clearIfNeeded(); return }
 
         // Re-evaluate only when the text or the field's frame changes.
         let signature = "\(role)|\(NSStringFromRect(axFrame))|\(value.hashValue)"

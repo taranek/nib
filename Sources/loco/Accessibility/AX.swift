@@ -115,6 +115,21 @@ enum AX {
             element, kAXValueAttribute as CFString, &settable) == .success && settable.boolValue
     }
 
+    /// Whether text can actually be *typed* into this element — stricter than
+    /// `isEditable`, which trusts the AXComboBox role. A custom web widget like a
+    /// Radix `<Select>` reports role `AXComboBox` and exposes its chosen label as
+    /// the value, but it's really a button: you can't type into it and its value
+    /// isn't settable. Genuine inputs (`<input>`, `<textarea>`, contenteditable)
+    /// are either a text role or have a settable value. Used to keep Nib off
+    /// read-only widgets that merely look like fields.
+    static func isTextEditable(_ element: AXUIElement) -> Bool {
+        let role = string(element, kAXRoleAttribute) ?? ""
+        if ["AXTextField", "AXTextArea", "AXSearchField"].contains(role) { return true }
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element, kAXValueAttribute as CFString, &settable) == .success && settable.boolValue
+    }
+
     static func frame(_ element: AXUIElement) -> CGRect? {
         guard
             let posVal = copy(element, kAXPositionAttribute),
