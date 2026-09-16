@@ -96,6 +96,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Dev-only (LOCO_MORPH_TEST): detection is suspended so the test pill isn't
     /// cleared by the tick while its geometry is audited.
     private var morphTestActive = false
+    /// A background AX read burst is running — don't start another; the next
+    /// poll tick after it lands will pick up any change it missed.
+    private var axReadInFlight = false
+    /// Same, for the selection-pill read burst.
+    private var selReadInFlight = false
+    /// Stale-result guards for the async observer setup: bumped per rebuild /
+    /// attach, so an answer from a superseded request is dropped.
+    private var observerGeneration = 0
+    private var attachGeneration = 0
     /// Detection stays quiet until this instant. Set when a card starts its
     /// close animation: the AX round-trips detection makes (to whatever app
     /// just took the click) block the main thread for ~200ms, and a blocked
@@ -432,20 +441,40 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var windowMoveSettle: Timer?
 
     @objc private func activeAppChanged() {
+        let t0 = CFAbsoluteTimeGetCurrent()
         // The selection pill belongs to the app we're leaving — the overlay is
         // global (above all apps), so drop it before re-evaluating the new app.
         hidePill()
+        let t1 = CFAbsoluteTimeGetCurrent()
         // Flip Chromium/Electron's AX switch as soon as the app comes to front —
         // before the switch, such apps may expose no focused element at all.
         if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             enableBrowserAccessibility(pid: pid)
         }
+        let t2 = CFAbsoluteTimeGetCurrent()
         rebuildObservers()
+        let t3 = CFAbsoluteTimeGetCurrent()
         tick()
+        let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        if ms > 30 {
+            Log.debug(.perf, "slow app switch", [
+                "totalMs": ms,
+                "hidePillMs": Int((t1 - t0) * 1000),
+                "axFlipMs": Int((t2 - t1) * 1000),
+                "rebuildMs": Int((t3 - t2) * 1000),
+            ])
+        }
     }
 
     /// (Re)create the AXObserver for the frontmost app and observe focus changes.
+    /// The creation/registration IPC runs on the reader queue — profiled at up
+    /// to ~470ms against a freshly activated app, which on the main thread froze
+    /// the overlay right after every app-switching click. Only the observer's
+    /// runloop source touches the main thread. A generation counter drops stale
+    /// results when the user switches apps faster than the IPC completes.
     private func rebuildObservers() {
+        observerGeneration += 1
+        let gen = observerGeneration
         if let axObserver {
             CFRunLoopRemoveSource(CFRunLoopGetMain(),
                                   AXObserverGetRunLoopSource(axObserver), .defaultMode)
@@ -461,57 +490,83 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
               pid != ProcessInfo.processInfo.processIdentifier else { return }
 
-        let callback: AXObserverCallback = { _, _, notification, refcon in
-            guard let refcon else { return }
-            let controller = Unmanaged<AppController>.fromOpaque(refcon).takeUnretainedValue()
-            MainActor.assumeIsolated { controller.handleAXNotification(notification as String) }
+        let refconBits = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
+        AXReader.queue.async { [weak self] in
+            let callback: AXObserverCallback = { _, _, notification, refcon in
+                guard let refcon else { return }
+                let controller = Unmanaged<AppController>.fromOpaque(refcon).takeUnretainedValue()
+                MainActor.assumeIsolated { controller.handleAXNotification(notification as String) }
+            }
+            var created: AXObserver?
+            guard AXObserverCreate(pid, callback, &created) == .success,
+                  let observer = created else { return }
+            let appElement = AXUIElementCreateApplication(pid)
+            AXObserverAddNotification(observer, appElement,
+                                      kAXFocusedUIElementChangedNotification as CFString,
+                                      UnsafeMutableRawPointer(bitPattern: refconBits))
+            let box = AXObserverBox(observer: observer)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, gen == self.observerGeneration else { return }
+                    self.axObserver = box.observer
+                    CFRunLoopAddSource(CFRunLoopGetMain(),
+                                       AXObserverGetRunLoopSource(box.observer), .defaultMode)
+                    self.attachToFocusedElement()
+                }
+            }
         }
-        var observer: AXObserver?
-        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
-        axObserver = observer
-
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        let appElement = AXUIElementCreateApplication(pid)
-        AXObserverAddNotification(observer, appElement,
-                                  kAXFocusedUIElementChangedNotification as CFString, refcon)
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        attachToFocusedElement()
     }
 
-    /// Observe value + selection changes on the currently focused element.
+    /// Observe value + selection changes on the currently focused element. The
+    /// unregister/register IPC (profiled at up to ~320ms against a busy app)
+    /// runs on the reader queue; only the observedElement/Window state lands
+    /// back on the main thread.
     private func attachToFocusedElement() {
-        let t0 = CFAbsoluteTimeGetCurrent()
-        defer {
-            let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-            if ms > 50 { Log.debug(.perf, "slow attach", ["ms": ms]) }
-        }
         guard let observer = axObserver else { return }
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        if let old = observedElement {
-            AXObserverRemoveNotification(observer, old, kAXValueChangedNotification as CFString)
-            AXObserverRemoveNotification(observer, old, kAXSelectedTextChangedNotification as CFString)
-        }
-        if let oldWindow = observedWindow {
-            AXObserverRemoveNotification(observer, oldWindow, kAXWindowMovedNotification as CFString)
-            AXObserverRemoveNotification(observer, oldWindow, kAXWindowResizedNotification as CFString)
-            observedWindow = nil
-        }
         lastAnchor = nil   // a new field's geometry has nothing to do with the old
         retriedAnchor = false
         cachedWebArea = nil
-        observedElement = AX.focusedElement()
-        if let element = observedElement {
-            AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString, refcon)
-            AXObserverAddNotification(observer, element, kAXSelectedTextChangedNotification as CFString, refcon)
-            // Watch the field's window: a move or resize repositions the text
-            // with no value/selection event, so this is the only signal that the
-            // squiggles and pill have gone stale mid-drag.
-            if let raw = AX.copy(element, kAXWindowAttribute as String),
-               CFGetTypeID(raw) == AXUIElementGetTypeID() {
-                let window = raw as! AXUIElement
-                observedWindow = window
-                AXObserverAddNotification(observer, window, kAXWindowMovedNotification as CFString, refcon)
-                AXObserverAddNotification(observer, window, kAXWindowResizedNotification as CFString, refcon)
+        attachGeneration += 1
+        let gen = attachGeneration
+        let obs = AXObserverBox(observer: observer)
+        let oldElement = observedElement.map { AXBox(element: $0) }
+        let oldWindow = observedWindow.map { AXBox(element: $0) }
+        observedWindow = nil
+        let refconBits = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
+        AXReader.queue.async { [weak self] in
+            let refcon = UnsafeMutableRawPointer(bitPattern: refconBits)
+            if let old = oldElement {
+                AXObserverRemoveNotification(obs.observer, old.element, kAXValueChangedNotification as CFString)
+                AXObserverRemoveNotification(obs.observer, old.element, kAXSelectedTextChangedNotification as CFString)
+            }
+            if let oldWin = oldWindow {
+                AXObserverRemoveNotification(obs.observer, oldWin.element, kAXWindowMovedNotification as CFString)
+                AXObserverRemoveNotification(obs.observer, oldWin.element, kAXWindowResizedNotification as CFString)
+            }
+            let element = AX.focusedElement()
+            var window: AXUIElement?
+            if let element {
+                AXObserverAddNotification(obs.observer, element, kAXValueChangedNotification as CFString, refcon)
+                AXObserverAddNotification(obs.observer, element, kAXSelectedTextChangedNotification as CFString, refcon)
+                // Watch the field's window: a move or resize repositions the text
+                // with no value/selection event, so this is the only signal that
+                // the squiggles and pill have gone stale mid-drag.
+                if let raw = AX.copy(element, kAXWindowAttribute as String),
+                   CFGetTypeID(raw) == AXUIElementGetTypeID() {
+                    let win = raw as! AXUIElement
+                    window = win
+                    AXObserverAddNotification(obs.observer, win, kAXWindowMovedNotification as CFString, refcon)
+                    AXObserverAddNotification(obs.observer, win, kAXWindowResizedNotification as CFString, refcon)
+                }
+            }
+            let elementBox = element.map { AXBox(element: $0) }
+            let windowBox = window.map { AXBox(element: $0) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, gen == self.attachGeneration else { return }
+                    self.observedElement = elementBox?.element
+                    self.observedWindow = windowBox?.element
+                }
             }
         }
     }
@@ -606,12 +661,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// One pass: find focus, decide whether the text needs a fresh grammar check
     /// or just a re-locate of cached corrections. The heavy LLM call is debounced.
     private func tick() {
-        // Perf probe: a slow tick is a main-thread stall — every AX call in here
-        // is a synchronous IPC round-trip to the focused app.
+        // Perf probe: the main-thread half must stay thin — the AX reads live
+        // on AXReader.queue now.
         let tickStart = CFAbsoluteTimeGetCurrent()
         defer {
             let ms = Int((CFAbsoluteTimeGetCurrent() - tickStart) * 1000)
-            if ms > 50 { Log.debug(.perf, "slow tick", ["ms": ms]) }
+            if ms > 20 { Log.debug(.perf, "slow tick main-side", ["ms": ms]) }
         }
         // Remember where the user is working. Tracking this only on activation
         // notifications leaves it empty until they switch apps, which is exactly
@@ -654,7 +709,44 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let element = AX.focusedElement() else {
+        // From here the pass needs AX answers, and every AX getter is a
+        // synchronous IPC round-trip that stalls whichever thread makes it —
+        // profiled at 60-1000ms against a busy app, which on the main thread
+        // froze whatever was animating. So the reads run on a background queue
+        // and only the finished snapshot comes back here.
+        guard !axReadInFlight else { return }
+        axReadInFlight = true
+        let hostIsBrowser = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            .map { BrowserBridge.appNames[$0] != nil } ?? false
+        let webAreaCache = cachedWebArea.map { (AXBox(element: $0.element), $0.isWeb) }
+        AXReader.queue.async { [weak self] in
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let snapshot = AXReader.readFocusedField(browserHost: hostIsBrowser,
+                                                     cachedWebArea: webAreaCache)
+            let readMs = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.axReadInFlight = false
+                    // Off-main now, so a slow read stalls nothing — logged only
+                    // to keep an eye on how sluggish target apps actually are.
+                    if readMs > 100 { Log.debug(.perf, "ax field read (bg)", ["ms": readMs]) }
+                    self.applyTick(snapshot)
+                }
+            }
+        }
+    }
+
+    /// The decision half of a tick, on the main thread, using only the values
+    /// the background read produced. Re-checks the volatile guards — the world
+    /// may have moved while the read was in flight.
+    private func applyTick(_ snapshot: FieldSnapshot?) {
+        guard enabled, !morphTestActive, Date() >= overlayQuietUntil,
+              !awaitingWindowSettle, popoverMode == .none,
+              settingsPopover?.isShown != true, !isBlockedApp(), !frontmostIsSelf()
+        else { return }
+
+        guard let snap = snapshot else {
             // An Electron/Chromium app with no focused element has a collapsed
             // accessibility tree — first launch, or after sleep, when the pid is
             // still marked as flipped but the tree is gone. Force it to rebuild;
@@ -664,12 +756,13 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             clearIfNeeded(); return
         }
+        let element = snap.element.element
         wedgedApp = nil   // we can see a focused element: nothing is wedged
 
         // Skip system overlays (Spotlight, Control Center, …). They own the
         // focused text field while some other app is frontmost, so the app
         // blocklist above can't see them — check who actually owns the element.
-        if let pid = AX.pid(of: element),
+        if let pid = snap.ownerPid,
            let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
            Self.systemUIBundleIDs.contains(bundleID) {
             clearIfNeeded(); return
@@ -682,38 +775,40 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Chromium/Electron won't expose web text until we flip on their AX tree.
         enableBrowserAccessibilityIfNeeded(for: element)
 
-        let role = AX.string(element, kAXRoleAttribute) ?? "?"
-        let value = AX.string(element, kAXValueAttribute) ?? ""
-        guard let axFrame = AX.frame(element) else { clearIfNeeded(); return }
         let appName = browserAppName(for: element)
 
         // Only act on editable surfaces (browser tab, or a native text control).
-        guard appName != nil || editableRoles.contains(role) else { clearIfNeeded(); return }
+        guard appName != nil || editableRoles.contains(snap.role) else { clearIfNeeded(); return }
 
         // Skip browser chrome (address bar, in-page search, …): only page
         // content — anything under an AXWebArea — is prose worth checking.
-        if appName != nil, !isInWebArea(element) { clearIfNeeded(); return }
+        if appName != nil, snap.inWebArea != true { clearIfNeeded(); return }
 
         // In a browser, a role check isn't enough: a custom widget like a Radix
         // <Select> is an AXComboBox inside the web area that exposes its chosen
         // label as a value, but it's read-only — you can't type into it. Only act
         // on surfaces text can genuinely be written to.
-        if appName != nil, !AX.isTextEditable(element) { clearIfNeeded(); return }
+        if appName != nil, snap.textEditable != true { clearIfNeeded(); return }
+
+        // Remember the walk's answer so the next read skips it for this element.
+        if let inWeb = snap.inWebArea { cachedWebArea = (element, inWeb) }
+
+        guard let axFrame = snap.frame else { clearIfNeeded(); return }
 
         // Re-evaluate only when the text or the field's frame changes.
-        let signature = "\(role)|\(NSStringFromRect(axFrame))|\(value.hashValue)"
+        let signature = "\(snap.role)|\(NSStringFromRect(axFrame))|\(snap.value.hashValue)"
         if signature == lastSignature { return }
         lastSignature = signature
 
-        if value.hashValue != lastValueHash {
+        if snap.value.hashValue != lastValueHash {
             dismissed.removeAll()
-            lastValueHash = value.hashValue
+            lastValueHash = snap.value.hashValue
         }
 
-        if value.hashValue != checkedValueHash {
+        if snap.value.hashValue != checkedValueHash {
             // Text changed: drop now-stale highlights and recheck after a pause.
             applyDetection([], element: element)
-            scheduleRecheck(value: value, appName: appName)
+            scheduleRecheck(value: snap.value, appName: appName)
         } else {
             // Position-only change (scroll/move): re-locate cached corrections.
             renderSentenceFixes(currentCorrections, fullText: currentFullText, appName: appName)
@@ -809,6 +904,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// AXBoundsForRange over the value.
     private func renderSentenceFixes(_ corrections: [SentenceCorrection],
                                      fullText: String, appName: String?) {
+        // Perf probe: this locates every flagged range with per-range AX bounds
+        // queries — the last big burst still on the main thread.
+        let t0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            if ms > 50 { Log.debug(.perf, "slow fix locate", ["ms": ms, "fixes": corrections.count]) }
+        }
         guard let element = AX.focusedElement(), let axFrame = AX.frame(element) else {
             applyDetection([], element: nil); return
         }
@@ -1163,16 +1265,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             scheduleSelectionUpdate(after: 0.2)
             return
         }
-        let selStart = CFAbsoluteTimeGetCurrent()
-        defer {
-            let ms = Int((CFAbsoluteTimeGetCurrent() - selStart) * 1000)
-            if ms > 50 { Log.debug(.perf, "slow selection update", ["ms": ms]) }
-        }
-        guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
-              let element = AX.focusedElement(), let axFrame = AX.frame(element),
-              AX.isEditable(element) else {
-            // Selecting a sentence in an email you're reading isn't an invitation
-            // to rewrite it — and we couldn't write the result back anyway.
+        guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp() else {
             hidePill(); return
         }
 
@@ -1183,11 +1276,44 @@ final class AppController: NSObject, NSApplicationDelegate {
             scheduleSelectionUpdate(after: typingQuiet - sinceTyping)
             return
         }
-        let fieldBox = toCocoa(axFrame)
+
+        // The geometry burst (selection bounds, marker bounds, per-char rects —
+        // each one an IPC round-trip) runs off the main thread; only the
+        // finished values come back to be turned into a pill.
+        guard !selReadInFlight else { return }
+        selReadInFlight = true
+        let hostIsBrowser = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            .map { BrowserBridge.appNames[$0] != nil } ?? false
+        let webAreaCache = cachedWebArea.map { (AXBox(element: $0.element), $0.isWeb) }
+        AXReader.queue.async { [weak self] in
+            let read = AXReader.readSelection(browserHost: hostIsBrowser,
+                                              cachedWebArea: webAreaCache)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.selReadInFlight = false
+                    self.applySelectionPill(read)
+                }
+            }
+        }
+    }
+
+    /// The decision half of a selection update, on the main thread, from the
+    /// background read's raw values.
+    private func applySelectionPill(_ read: SelectionRead?) {
+        guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
+              let read else {
+            // Selecting a sentence in an email you're reading isn't an invitation
+            // to rewrite it — and we couldn't write the result back anyway.
+            hidePill(); return
+        }
+        let element = read.element.element
+        let fieldBox = toCocoa(read.axFrame)
         let appName = browserAppName(for: element)
 
         // No rephrase pill on browser chrome (address bar etc.) either.
-        if appName != nil, !isInWebArea(element) { hidePill(); return }
+        if appName != nil, read.inWebArea != true { hidePill(); return }
+        if let inWeb = read.inWebArea { cachedWebArea = (element, inWeb) }
 
         var text: String?
         var selRect: CGRect?
@@ -1208,33 +1334,31 @@ final class AppController: NSObject, NSApplicationDelegate {
         // a write-back route that Chromium honours) but it costs an Apple Event,
         // so it can't be on the path that decides whether to draw the pill —
         // `refineFromDOM` below fetches it off-main and refines what we drew.
-        if let t = AX.string(element, kAXSelectedTextAttribute),
-                  !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let cf = AX.selectedRange(element) {
+        if let t = read.selectedText,
+           !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let selRange = read.selectedRange, selRange.length > 0 {
             // AX fallback — works for native fields AND browsers that don't grant
             // Automation / aren't contentEditable. Write back via AX (native route).
             writeAppName = nil
             // Selection geometry, best effort: index-based range bounds → text-
             // marker bounds (the VoiceOver channel — works in Chromium/Electron
-            // where index bounds fail) → first-character bounds → the mouse
-            // position clamped into the field. Never the whole field.
-            let firstChar = CFRange(location: cf.location, length: min(1, max(0, cf.length)))
-            // Never the mouse: a keyboard-made selection has nothing to do
-            // with where the cursor happens to rest.
-            selRect = lineRect(AX.bounds(of: cf, in: element), fieldBox)
-                ?? lineRect(AX.selectionMarkerBounds(element), fieldBox)
-                ?? lineRect(AX.bounds(of: firstChar, in: element), fieldBox)
+            // where index bounds fail) → first-character bounds. Never the mouse:
+            // a keyboard-made selection has nothing to do with where the cursor
+            // happens to rest.
+            selRect = lineRect(read.selectionBounds, fieldBox)
+                ?? lineRect(read.markerBounds, fieldBox)
+                ?? lineRect(read.firstCharBounds, fieldBox)
             // One character's height is one line's height — the yardstick for
             // telling a selection that wraps from one that doesn't. A union rect
             // can't answer that on its own: a tall one might be three lines or
             // one line in a large font.
-            lineHeight = lineRect(AX.bounds(of: firstChar, in: element), fieldBox)?.height
-            let length = (AX.string(element, kAXValueAttribute) as NSString?)?.length ?? 0
-            selectionSpansField = cf.location == 0 && cf.location + cf.length >= length && length > 0
-            let selRange = NSRange(location: cf.location, length: cf.length)
+            lineHeight = lineRect(read.firstCharBounds, fieldBox)?.height
+            let length = (read.fullValue as NSString?)?.length ?? 0
+            selectionSpansField = selRange.location == 0
+                && selRange.location + selRange.length >= length && length > 0
             if t.contains("\n") {
                 // Multi-line: expand to whole sentence(s).
-                let full = (AX.string(element, kAXValueAttribute) ?? "") as NSString
+                let full = (read.fullValue ?? "") as NSString
                 let expanded = sentenceRange(covering: selRange, in: full)
                 text = full.substring(with: expanded)
                 nativeRange = expanded
@@ -1243,8 +1367,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 nativeRange = selRange
             }
             hasSelection = true
-        } else if let cf = AX.selectedRange(element), cf.length == 0,
-                  let full = AX.string(element, kAXValueAttribute),
+        } else if read.selectedRange?.length == 0,
+                  let full = read.fullValue,
                   !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Nothing selected — sit beside the caret's own line and act on the
             // sentence around it. The caret's *marker* range is what yields a
@@ -1252,12 +1376,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             // box there), which is what makes this work in Gmail and Slack.
             writeAppName = nil
             let ns = full as NSString
-            let caret = min(max(cf.location, 0), ns.length)
+            let caret = min(max(read.selectedRange?.location ?? 0, 0), ns.length)
             let expanded = sentenceRange(covering: NSRange(location: caret, length: 0), in: ns)
             text = ns.substring(with: expanded)
             nativeRange = expanded
-            selRect = lineRect(AX.selectionMarkerBounds(element), fieldBox)
-                ?? lineRect(AX.bounds(of: CFRange(location: caret, length: 0), in: element), fieldBox)
+            selRect = lineRect(read.markerBounds, fieldBox)
+                ?? lineRect(read.caretBounds, fieldBox)
         }
 
         // Chromium answers the *same* geometry query intermittently with the
@@ -1894,29 +2018,40 @@ final class AppController: NSObject, NSApplicationDelegate {
         if force, let last = lastForcedFlip[pid], now.timeIntervalSince(last) < 2 { return }
         if force { lastForcedFlip[pid] = now }
 
-        let appElement = AXUIElementCreateApplication(pid)
-        let err = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         a11yEnabledPids.insert(pid)
-
-        // kAXErrorAPIDisabled means the app's OWN accessibility server is wedged
-        // — not our permission (other apps answer fine at the same moment). It
-        // survives our flip and only the app restarting clears it. Seen after
-        // sleep, on Slack especially. Say it once per pid, not four times a sec.
-        if err == AXError(rawValue: -25211) {
-            if axDisabledApps.insert(pid).inserted {
-                Log.warn(.ax, "app's accessibility is wedged; only restarting it recovers", [
-                    "app": bundleID, "hint": "quit and reopen the app",
-                ])
+        let appName = app.localizedName ?? bundleID
+        // The flip asks the app to build its whole accessibility tree — an IPC
+        // that can take 50-80ms (more when the app just activated). Off-main;
+        // the wedge bookkeeping comes back here with the result.
+        AXReader.queue.async { [weak self] in
+            let appElement = AXUIElementCreateApplication(pid)
+            let err = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // kAXErrorAPIDisabled means the app's OWN accessibility server
+                    // is wedged — not our permission (other apps answer fine at
+                    // the same moment). It survives our flip and only the app
+                    // restarting clears it. Seen after sleep, on Slack especially.
+                    // Say it once per pid, not four times a sec.
+                    if err == AXError(rawValue: -25211) {
+                        if self.axDisabledApps.insert(pid).inserted {
+                            Log.warn(.ax, "app's accessibility is wedged; only restarting it recovers", [
+                                "app": bundleID, "hint": "quit and reopen the app",
+                            ])
+                        }
+                        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                            self.wedgedApp = (bundleID, appName)
+                        }
+                        return
+                    }
+                    self.axDisabledApps.remove(pid)
+                    if self.wedgedApp?.id == bundleID { self.wedgedApp = nil }   // recovered
+                    Log.debug(.ax, "asked app to build its accessibility tree", ["app": bundleID, "forced": force])
+                }
             }
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                wedgedApp = (bundleID, app.localizedName ?? bundleID)
-            }
-            return
         }
-        axDisabledApps.remove(pid)
-        if wedgedApp?.id == bundleID { wedgedApp = nil }   // recovered
-        Log.debug(.ax, "asked app to build its accessibility tree", ["app": bundleID, "forced": force])
     }
 
     // MARK: - Menu bar + settings
@@ -2400,7 +2535,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The server responsible for `task`: a warm task server for pinned models,
     /// else the main one. Spawns the task server on first use.
     private func server(for task: LLMTask) -> LLMServer {
-        guard let path = taskModelPath(for: task) else { return llmServer }
+        guard let path = taskModelPath(for: task) else {
+            // The default server is reaped like the task servers when idle
+            // (a resident model is gigabytes — see reapIdleTaskServers), so a
+            // request may find it stopped: bring it back.
+            llmServer.lastUsed = Date()
+            if llmServer.status == .stopped { llmServer.start() }
+            return llmServer
+        }
         if let existing = taskServers[path] { existing.lastUsed = Date(); return existing }
         let server = LLMServer(port: nextTaskPort, modelPath: path)
         nextTaskPort += 1
@@ -2453,6 +2595,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             server.stop()
             taskServers[path] = nil
             Log.info(.server, "task server stopped", ["model": URL(fileURLWithPath: path).lastPathComponent, "reason": "idle"])
+        }
+        // The default server too: it was resident for the app's whole life,
+        // which under memory pressure means gigabytes pushed into swap while
+        // the user isn't even writing. server(for:) restarts it on demand.
+        if llmServer.status == .ready,
+           Date().timeIntervalSince(llmServer.lastUsed) > 600 {
+            llmServer.stop()
+            Log.info(.server, "default server stopped", ["reason": "idle"])
         }
     }
 

@@ -68,26 +68,33 @@ final class PerfMonitor {
     }
 
     /// Written on every sample, and on demand when something notable happened.
+    /// The cheap self-metrics are read here; the `ps` scan (a subprocess spawn
+    /// + wait, 50-300ms) runs off the main thread — the perf monitor must never
+    /// be the stall it's watching for.
     func sample(_ note: String = "sample") {
-        let servers = modelServers()
-        var fields: [String: Any] = [
-            "cpu": cpuPercent(),
-            "ramMB": Int(ramMB()),
-            "stallMs": Int(worstStall * 1000),
-            "servers": servers.count,
-        ]
-        if !servers.isEmpty {
-            fields["serverRamGB"] = (servers.reduce(0) { $0 + $1.ramMB } / 1024).rounded(to: 1)
-            fields["serverCPU"] = servers.reduce(0) { $0 + $1.cpu }.rounded(to: 1)
-        }
-        // A stall the user would actually have felt is worth finding on its own.
-        let level: Log.Level = worstStall > 0.25 ? .warn : .info
-        if level == .warn {
-            Log.warn(.perf, "main thread stalled", fields)
-        } else {
-            Log.info(.perf, note, fields)
-        }
+        let stall = worstStall
         worstStall = 0
+        let cpu = cpuPercent()
+        let ram = Int(ramMB())
+        DispatchQueue.global(qos: .utility).async {
+            let servers = Self.modelServers()
+            var fields: [String: Any] = [
+                "cpu": cpu,
+                "ramMB": ram,
+                "stallMs": Int(stall * 1000),
+                "servers": servers.count,
+            ]
+            if !servers.isEmpty {
+                fields["serverRamGB"] = (servers.reduce(0) { $0 + $1.ramMB } / 1024).rounded(to: 1)
+                fields["serverCPU"] = servers.reduce(0) { $0 + $1.cpu }.rounded(to: 1)
+            }
+            // A stall the user would actually have felt is worth finding on its own.
+            if stall > 0.25 {
+                Log.warn(.perf, "main thread stalled", fields)
+            } else {
+                Log.info(.perf, note, fields)
+            }
+        }
     }
 
     // MARK: - Measuring
@@ -123,7 +130,7 @@ final class PerfMonitor {
     /// megabytes, a resident model in gigabytes. Read from `ps` rather than
     /// tracked internally so a server orphaned by a previous run still counts —
     /// it's still on the user's machine.
-    private func modelServers() -> [(ramMB: Double, cpu: Double)] {
+    private nonisolated static func modelServers() -> [(ramMB: Double, cpu: Double)] {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-Ao", "rss=,%cpu=,comm="]
