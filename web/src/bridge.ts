@@ -94,6 +94,17 @@ type OutboundMessage =
   // field. `shift` preserves selection-extending.
   | { type: "passThroughKey"; key: "ArrowLeft" | "ArrowRight"; shift: boolean }
   | { type: "resize"; width: number; height: number }
+  /** Frame-time report for one morph animation phase (perf diagnosis). */
+  | {
+      type: "morphPerf";
+      phase: string;
+      frames: number;
+      worstMs: number;
+      avgMs: number;
+      droppedPct: number;
+      renders: number;
+      totalMs: number;
+    }
   | { type: "setEnabled"; value: boolean }
   | { type: "setTargetLanguage"; value: string }
   // Rebind the open-card shortcut. `code` is a JS KeyboardEvent.code.
@@ -194,6 +205,28 @@ export interface PillStatus {
   state: "plain" | "idle" | "loading" | "open";
 }
 
+/** A rect in the merged surface's top-left CSS space (desktop-local pixels). */
+export interface MorphRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The unified overlay state, pushed from Swift to the Morph surface: where the
+ *  pill sits and, when open, the card — so the pill can morph into the card. */
+export interface MorphState {
+  pill: {
+    visible: boolean;
+    state: PillStatus["state"];
+    rect: MorphRect | null;
+  };
+  card: {
+    data: CardData | null;
+    rect: MorphRect | null;
+  };
+}
+
 /** Result of an update check, pushed from Swift. */
 export interface UpdateStatus {
   /** The running version. */
@@ -215,6 +248,9 @@ interface LocoInbound {
   updateStatus?: (s: UpdateStatus) => void;
   /** Swift → JS: selection pill state (pill surface only). */
   setPill?: (s: PillStatus) => void;
+  /** Swift → JS: unified overlay state (morph surface only). */
+  setMorph?: (s: MorphState) => void;
+  // Note: morphPerf below is JS → Swift (outbound), not an inbound handler.
   /** Swift → JS: wedged-app alert data (alert surface only). */
   setAlert?: (d: AlertData) => void;
   /** Swift → JS: the installed-app list (answer to listApps). */
@@ -281,4 +317,9 @@ export function onSetPill(handler: (s: PillStatus) => void): void {
 /** Register the callback Swift invokes with the wedged-app alert data. */
 export function onSetAlert(handler: (d: AlertData) => void): void {
   window.loco = { ...window.loco, setAlert: handler };
+}
+
+/** Register the callback Swift invokes with the unified overlay (morph) state. */
+export function onSetMorph(handler: (s: MorphState) => void): void {
+  window.loco = { ...window.loco, setMorph: handler };
 }

@@ -16,12 +16,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var window: OverlayWindow!
     private var view: OverlayView!
     private var popoverPanel: PopoverPanel!
-    private var pillPanel: PillPanel!
+    private var morphPanel: MorphPanel!
     private let browser = BrowserBridge()
     static let debug = ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil
     private var timer: Timer?
     private var mouseMonitor: Any?
     private var mouseUpMonitor: Any?
+    private var mouseDownMonitor: Any?
+    /// When the user last clicked in another app — perf diagnosis for how long
+    /// an outside click takes to begin closing the card.
+    private var lastOutsideMouseDown: Date?
     /// True while the focused field's window is mid-drag/resize — overlays stay
     /// hidden until it ends so they don't blink at stale positions.
     private var awaitingWindowSettle = false
@@ -86,6 +90,27 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let typingQuiet: TimeInterval = 0.6
     /// Whether the pill currently marks a selection (vs. just the caret).
     private var pillOnSelection = false
+    /// Whether the cursor is currently over the pill — tracked from the global
+    /// mouse monitor to drive the hover dwell and the morph window's click-through.
+    private var pillHovered = false
+    /// Dev-only (LOCO_MORPH_TEST): detection is suspended so the test pill isn't
+    /// cleared by the tick while its geometry is audited.
+    private var morphTestActive = false
+    /// Detection stays quiet until this instant. Set when a card starts its
+    /// close animation: the AX round-trips detection makes (to whatever app
+    /// just took the click) block the main thread for ~200ms, and a blocked
+    /// main thread can't commit the webview's frames — the fade freezes.
+    private var overlayQuietUntil = Date.distantPast
+
+    /// Give the card's exit animation a clear main thread to render on.
+    private func quietForCloseAnimation() {
+        overlayQuietUntil = Date().addingTimeInterval(0.4)
+    }
+    /// The morph card's on-screen size (width fixed, height reported by the web)
+    /// and the rect it opens beside, kept so a height change re-places it.
+    private let cardWidth: CGFloat = 440
+    private var lastCardHeight: CGFloat = 280
+    private var cardAvoidRect: CGRect = .zero
     private var rephraseText: String?            // selection text the pill acts on
     private var rephraseAppName: String?
     private var rephraseElement: AXUIElement?
@@ -216,22 +241,20 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverPanel.onExit = { [weak self] in self?.scheduleHidePopover() }
         popoverPanel.onMessage = { [weak self] body in self?.handleWebMessage(body) }
 
-        // The selection pill: a tiny web surface with native hover/click.
-        pillPanel = PillPanel(url: Self.webURL())
-        pillPanel.onEnter = { [weak self] in
-            guard let self else { return }
-            cancelHidePopover()
-            startPillDwell()
-        }
-        pillPanel.onExit = { [weak self] in
-            self?.cancelPillDwell()
-            self?.scheduleHidePopover()
-        }
-        pillPanel.onClick = { [weak self] in
+        // The unified overlay surface (pill + cards, one window so the pill can
+        // morph into the card). Full-desktop, transparent, click-through except
+        // over the pill/card; native hover/click for the pill.
+        morphPanel = MorphPanel(url: Self.webURL(), desktop: desktop)
+        // Hover enter/exit is computed in handleMouseMove (the window is
+        // click-through except while the cursor is over the pill, too narrow for
+        // native tracking); only the click is handled natively, so it's consumed
+        // rather than falling through to the field behind.
+        morphPanel.onPillClick = { [weak self] in
             guard let self else { return }
             cancelPillDwell()   // a click opens right away
             if popoverMode != .rephrase { showRephrase() }
         }
+        morphPanel.onMessage = { [weak self] body in self?.handleMorphMessage(body) }
 
         setupStatusItem()
         Log.debug(.app, "status item installed")
@@ -285,9 +308,53 @@ final class AppController: NSObject, NSApplicationDelegate {
         mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] _ in
             MainActor.assumeIsolated { self?.windowDragDidEnd() }
         }
+        // A click in another app while a card is open dismisses it immediately.
+        // Global monitors never fire for our own windows, so card and pill
+        // clicks can't self-close; without this, the close waits ~150ms for the
+        // AX focus notification or the mouse-out timer before the fade starts.
+        mouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.lastOutsideMouseDown = Date()
+                if self.popoverMode != .none { self.closePopover() }
+                // Hold detection off in the click's wake regardless: the clicked
+                // app is at its busiest right now, which is when our synchronous
+                // AX round-trips are slowest (60-750ms main-thread stalls) — the
+                // "heavy lifting" felt on every click. The app settles within
+                // half a second and the same calls come back fast.
+                self.overlayQuietUntil = max(self.overlayQuietUntil,
+                                             Date().addingTimeInterval(0.45))
+            }
+        }
 
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
         PerfMonitor.shared.start()
+
+        // Dev-only geometry self-test: show a pill at a known screen point so a
+        // screenshot can verify the morph surface renders exactly where the
+        // logical rect says. LOCO_MORPH_TEST=1, no effect otherwise.
+        if ProcessInfo.processInfo.environment["LOCO_MORPH_TEST"] == "1" {
+            morphTestActive = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // Screen point: x=300, top of pill 200pt below the top of the
+                    // main screen, 16pt square.
+                    let screenH = NSScreen.screens.first?.frame.maxY ?? 900
+                    let rect = CGRect(x: 300, y: screenH - 200 - 16, width: 16, height: 16)
+                    self.pillRect = rect
+                    self.morphPanel.showPill(at: rect, state: .idle)
+                    Log.info(.ui, "morph self-test pill shown", [
+                        "screen": NSStringFromRect(rect),
+                        "expectedCSSTop": 200, "expectedCSSLeft": 300,
+                    ])
+                    // Give React a beat to render, then measure from inside.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        MainActor.assumeIsolated { self.morphPanel.auditGeometry() }
+                    }
+                }
+            }
+        }
         installSignalHandlers()
         registerRephraseHotKey()
 
@@ -413,6 +480,11 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Observe value + selection changes on the currently focused element.
     private func attachToFocusedElement() {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            if ms > 50 { Log.debug(.perf, "slow attach", ["ms": ms]) }
+        }
         guard let observer = axObserver else { return }
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         if let old = observedElement {
@@ -446,6 +518,25 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func handleAXNotification(_ notification: String) {
         if notification == kAXFocusedUIElementChangedNotification as String {
+            // Focus left the field (a click elsewhere, another field) — any open
+            // card refers to text that's no longer focused, so close it. Our own
+            // non-activating card never changes the field's focus, so this won't
+            // self-close.
+            if popoverMode != .none { closePopover() }
+            if Date() < overlayQuietUntil {
+                // Re-attaching means AX round-trips to the newly focused app,
+                // which blocks the main thread mid-fade. Do it after the exit
+                // animation has rendered.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.attachToFocusedElement()
+                        self.scheduleSelectionUpdate()
+                        self.tick()
+                    }
+                }
+                return
+            }
             attachToFocusedElement()
             // The pill sits at the caret, so a newly focused field needs one
             // even when no selection-changed notification follows (Chromium
@@ -515,12 +606,21 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// One pass: find focus, decide whether the text needs a fresh grammar check
     /// or just a re-locate of cached corrections. The heavy LLM call is debounced.
     private func tick() {
+        // Perf probe: a slow tick is a main-thread stall — every AX call in here
+        // is a synchronous IPC round-trip to the focused app.
+        let tickStart = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - tickStart) * 1000)
+            if ms > 50 { Log.debug(.perf, "slow tick", ["ms": ms]) }
+        }
         // Remember where the user is working. Tracking this only on activation
         // notifications leaves it empty until they switch apps, which is exactly
         // when the menu's "Turn off for …" item goes missing.
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
 
         guard enabled else { return }
+        if morphTestActive { return }   // geometry self-test owns the surface
+        if Date() < overlayQuietUntil { return }   // card exit is rendering
 
         // Mid window-drag: overlays are deliberately down until the drag ends
         // (see focusedWindowMoved). Re-rendering now would flash them at the old,
@@ -820,16 +920,34 @@ final class AppController: NSObject, NSApplicationDelegate {
         return taskServers[path]?.status ?? .stopped
     }
 
-    /// Re-render the pill (if visible) with the current state.
+    /// Re-render the pill (if visible) with the current state. The pill is not
+    /// hidden while the rephrase card is open any more — the card morphs out of
+    /// it, and the morph surface fades the orb as the card grows.
     private func refreshPillState() {
         guard let pill = pillRect else { return }
-        // While the card is open, the trigger has done its job — hide it so it
-        // doesn't sit beside the card. It comes back when the card closes.
-        if popoverMode == .rephrase {
-            pillPanel.hide()
-        } else {
-            pillPanel.show(at: pill, state: pillState())
+        morphPanel.showPill(at: pill, state: pillState())
+    }
+
+    /// The card's top-left screen rect: below the thing it opens beside, flipped
+    /// above when there's no room, clamped on-screen. Ported from PopoverPanel's
+    /// positioning, without the shadow margin (the goo draws the shadow now).
+    private func cardScreenRect(height: CGFloat, avoiding avoid: CGRect) -> CGRect {
+        let nudgeX: CGFloat = 16
+        let gap: CGFloat = 6
+        let edge: CGFloat = 8
+        let anchor = avoid.isEmpty ? NSEvent.mouseLocation
+                                   : NSPoint(x: avoid.midX, y: avoid.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(anchor) }
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+        var x = avoid.minX + nudgeX
+        var y = avoid.minY - gap - height          // below the anchor
+        if let vis = screen?.visibleFrame {
+            if y < vis.minY + edge { y = avoid.maxY + gap }   // no room → flip above
+            x = min(max(x, vis.minX + edge), vis.maxX - edge - cardWidth)
+            y = min(max(y, vis.minY + edge), vis.maxY - edge - height)
         }
+        return CGRect(x: x, y: y, width: cardWidth, height: height)
     }
 
     /// Commit a set of flagged words to the overlay (and close a stale card).
@@ -884,11 +1002,41 @@ final class AppController: NSObject, NSApplicationDelegate {
         if sandboxActive { return }
         let p = NSEvent.mouseLocation
 
-        if popoverPanel.isVisible, popoverPanel.frame.insetBy(dx: -4, dy: -4).contains(p) {
-            cancelHidePopover()
+        // Click-through: the morph window is interactive only while the cursor is
+        // over the pill or the (morph) card; everywhere else it passes clicks
+        // through. Native tracking can't do this from a desktop-sized window, so
+        // it's computed here (see MorphPanel).
+        let overPill = pillRect.map { $0.insetBy(dx: -6, dy: -6).contains(p) } ?? false
+        let overCard = morphPanel.cardScreenRect.map {
+            $0.insetBy(dx: -6, dy: -6).contains(p)
+        } ?? false
+        morphPanel.setInteractive(overPill || overCard)
+
+        // Rephrase card lives in the morph surface: keep it open while the cursor
+        // is over it or the pill, otherwise schedule the mouse-out close.
+        if popoverMode == .rephrase {
+            if overCard || overPill { cancelHidePopover() } else { scheduleHidePopover() }
             return
         }
 
+        // Pill hover dwell (no card open) → opens the rephrase card.
+        if overPill != pillHovered {
+            pillHovered = overPill
+            if overPill {
+                cancelHidePopover()
+                startPillDwell()
+            } else {
+                cancelPillDwell()
+                scheduleHidePopover()
+            }
+        }
+        if overPill { return }   // don't run grammar hover while on the pill
+
+        // Grammar card (also on the morph surface) on a flagged word.
+        if popoverMode == .grammar, overCard {
+            cancelHidePopover()
+            return
+        }
         if let hit = flagged.first(where: { $0.rect.insetBy(dx: -2, dy: -3).contains(p) }) {
             cancelHidePopover()
             if hit.id != hoveredID || popoverMode != .grammar {
@@ -909,7 +1057,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         rewriteTarget = RewriteTarget(original: word.original, appName: activeBrowserAppName,
                                       element: activeElement, range: word.range)
         let routing = cardRouting()
-        popoverPanel.setCard([
+        let payload: [String: Any] = [
             "mode": "grammar",
             "original": word.original,
             "result": word.corrected,
@@ -923,8 +1071,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             "ready": llmReady,
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
-        ])
-        popoverPanel.present(avoiding: word.rect)
+        ]
+        // Same unified surface as the rephrase card — one card at a time by
+        // construction, and no second window whose orderOut can hitch a close.
+        cardAvoidRect = word.rect
+        morphPanel.showCard(payload, at: cardScreenRect(height: lastCardHeight,
+                                                        avoiding: word.rect))
     }
 
     private func scheduleHidePopover() {
@@ -938,7 +1090,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 // pointer hasn't moved at all. Closing on that, then reopening
                 // on the re-entry it causes, is what reads as flicker.
                 let mouse = NSEvent.mouseLocation
-                if self.popoverPanel.frame.contains(mouse)
+                if (self.morphPanel.cardScreenRect?.insetBy(dx: -6, dy: -6).contains(mouse) ?? false)
                     || (self.pillRect?.insetBy(dx: -6, dy: -6).contains(mouse) ?? false) {
                     return
                 }
@@ -964,6 +1116,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func closePopover() {
+        if let down = lastOutsideMouseDown, popoverMode != .none {
+            Log.info(.perf, "close begins", [
+                "msSinceClick": Int(Date().timeIntervalSince(down) * 1000),
+            ])
+        }
+        // Both cards live in the morph surface; keep detection quiet while the
+        // exit animation renders.
+        quietForCloseAnimation()
+        let wasRephrase = popoverMode == .rephrase
+        morphPanel.hideCard()
         popoverPanel.orderOut(nil)
         popoverPanel.level = .statusBar   // undo any sandbox level bump
         activeWord = nil
@@ -971,6 +1133,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverMode = .none
         autoDismissTimer?.invalidate()
         autoDismissTimer = nil
+        // Keep the pill so the blob morphs back to it (the selection is still
+        // there); the rewrite target is dropped since the card is gone.
+        if wasRephrase { rewriteTarget = nil }
     }
 
     // MARK: - Rephrase (selection pill)
@@ -985,6 +1150,24 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func updateSelectionPill() {
+        // Mid close-fade: this runs a burst of AX round-trips that would block
+        // the main thread and freeze the animation — come back after it.
+        if Date() < overlayQuietUntil {
+            scheduleSelectionUpdate(after: overlayQuietUntil.timeIntervalSinceNow + 0.05)
+            return
+        }
+        // Mid drag-select: every selection-changed fires one of these, and each
+        // is a 60-300ms AX burst against an app busy extending its selection —
+        // which made selecting itself feel heavy. The pill can wait for mouse-up.
+        if NSEvent.pressedMouseButtons & 1 != 0 {
+            scheduleSelectionUpdate(after: 0.2)
+            return
+        }
+        let selStart = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - selStart) * 1000)
+            if ms > 50 { Log.debug(.perf, "slow selection update", ["ms": ms]) }
+        }
         guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
               let element = AX.focusedElement(), let axFrame = AX.frame(element),
               AX.isEditable(element) else {
@@ -1271,7 +1454,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let pill = CGRect(x: x, y: y, width: width, height: height)
         pillRect = pill
         pillOnSelection = hasSelection
-        pillPanel.show(at: pill, state: pillState())
+        morphPanel.showPill(at: pill, state: pillState())
     }
 
     /// Ask the page where the selection actually is, off the main thread, and
@@ -1302,7 +1485,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         pillOnSelection = false
         guard pillRect != nil else { return }
         pillRect = nil
-        pillPanel.hide()
+        morphPanel.hidePill()
         if popoverMode == .rephrase {
             popoverPanel.orderOut(nil)
             popoverPanel.level = .statusBar   // undo any sandbox level bump
@@ -1340,9 +1523,38 @@ final class AppController: NSObject, NSApplicationDelegate {
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ]
-        popoverPanel.setCard(payload)
-        popoverPanel.present(avoiding: pillRect ?? .zero)
-        refreshPillState()   // card is up → hide the trigger
+        cardAvoidRect = pillRect ?? .zero
+        let rect = cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect)
+        morphPanel.showCard(payload, at: rect)
+    }
+
+    /// Messages from the morph surface. `resize` re-places the card at its real
+    /// height; everything else is a card action shared with the grammar card.
+    private func handleMorphMessage(_ body: [String: Any]) {
+        if body["type"] as? String == "morphPerf" {
+            Log.info(.perf, "morph animation frames", [
+                "phase": body["phase"] as? String ?? "?",
+                "frames": (body["frames"] as? NSNumber)?.intValue ?? 0,
+                "worstMs": (body["worstMs"] as? NSNumber)?.intValue ?? 0,
+                "avgMs": (body["avgMs"] as? NSNumber)?.doubleValue ?? 0,
+                "droppedPct": (body["droppedPct"] as? NSNumber)?.intValue ?? 0,
+                "renders": (body["renders"] as? NSNumber)?.intValue ?? 0,
+                "totalMs": (body["totalMs"] as? NSNumber)?.intValue ?? 0,
+            ])
+            return
+        }
+        if body["type"] as? String == "resize" {
+            if let height = (body["height"] as? NSNumber)?.doubleValue,
+               abs(CGFloat(height) - lastCardHeight) > 0.5 {
+                lastCardHeight = CGFloat(height)
+                if morphPanel.cardScreenRect != nil {
+                    morphPanel.updateCardRect(
+                        cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect))
+                }
+            }
+            return
+        }
+        handleWebMessage(body)
     }
 
     /// Register the global shortcut that opens the rephrase card on the current
@@ -1613,6 +1825,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func finishRephrase() {
+        quietForCloseAnimation()
+        morphPanel.hideCard()
         popoverPanel.orderOut(nil)
         popoverPanel.level = .statusBar   // undo any sandbox level bump
         popoverMode = .none
@@ -2679,7 +2893,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         lastHighlightsKey = ""
         flagged = []
         view.update(highlights: [])
-        pillPanel.hide()
+        morphPanel.hidePill()
         pillRect = nil
         popoverPanel.orderOut(nil)
         popoverMode = .none
@@ -2793,6 +3007,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard desktop != window.frame else { return }
         window.setFrame(desktop, display: true)
         view.frame = NSRect(origin: .zero, size: desktop.size)
+        morphPanel?.fit(to: desktop)
         Log.info(.ui, "displays changed, overlay resized", ["width": Int(desktop.width), "height": Int(desktop.height)])
         lastHighlightsKey = ""          // force a redraw at the new origin
         applyDetection(flagged, element: activeElement)

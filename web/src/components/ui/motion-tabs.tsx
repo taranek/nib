@@ -120,6 +120,12 @@ function TabsList({
 
   return (
     <MotionHighlight
+      // Parent mode: ONE persistent highlight whose bounds are measured
+      // container-relative in the same frame. The default children mode is a
+      // layoutId shared element — its projection compares layout snapshots
+      // across time, and on the full-desktop morph surface those snapshots
+      // skew vertically (the highlight "floats" between tab switches).
+      mode='parent'
       controlledItems
       className={cn('bg-background rounded-sm shadow-sm', activeClassName)}
       value={activeValue}

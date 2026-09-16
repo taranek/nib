@@ -5,6 +5,7 @@ import { App } from "./App";
 import { Settings } from "./Settings";
 import { Pill } from "./Pill";
 import { Alert } from "./Alert";
+import { Morph } from "./Morph";
 import "./styles.css";
 
 // One bundle, three surfaces: the per-word card (default), the settings
@@ -15,11 +16,13 @@ const flags = window as unknown as {
   __locoSettings?: boolean;
   __locoPill?: boolean;
   __locoAlert?: boolean;
+  __locoMorph?: boolean;
 };
 const hash = window.location.hash.replace(/^#/, "");
 const isSettings = flags.__locoSettings === true || hash === "settings";
 const isPill = flags.__locoPill === true || hash === "pill";
 const isAlert = flags.__locoAlert === true || hash === "alert";
+const isMorph = flags.__locoMorph === true || hash === "morph";
 
 
 // reducedMotion="user" makes Motion drop transforms/height animation (keeping
@@ -27,7 +30,9 @@ const isAlert = flags.__locoAlert === true || hash === "alert";
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <MotionConfig reducedMotion="user">
-      {isAlert ? (
+      {isMorph ? (
+        <Morph />
+      ) : isAlert ? (
         <Alert />
       ) : isPill ? (
         <Pill />
