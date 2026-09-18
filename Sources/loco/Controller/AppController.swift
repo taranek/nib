@@ -120,6 +120,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The last pill rect we computed — survives the pill being hidden, so a
     /// ⌘`-reopen can place the card exactly where a hover on the pill would.
     private var lastPillAnchor: CGRect?
+    /// Per-app placement corrections for the field currently being worked in.
+    private var activeAdapter = AppAdapter()
     /// Detection stays quiet until this instant. Set when a card starts its
     /// close animation: the AX round-trips detection makes (to whatever app
     /// just took the click) block the main thread for ~200ms, and a blocked
@@ -340,6 +342,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.lastOutsideMouseDown = Date()
+                // A click moves focus and caret, so every capture is stale from
+                // this instant — without this, click-into-new-field followed by
+                // a quick ⌘` fast-pathed onto the OLD field (the focus-change
+                // attach that would clear these is deferred by the click quiet).
+                // The captures exist for keyboard-close reopen cycles, which
+                // involve no click; after a real click a fresh read works.
+                self.rephraseCapturedAt = nil
+                self.lastPillAnchor = nil
+                self.focusClickRect = nil
                 if self.popoverMode != .none { self.closePopover() }
                 // Hold detection off in the click's wake regardless: the clicked
                 // app is at its busiest right now, which is when our synchronous
@@ -546,6 +557,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let obs = AXObserverBox(observer: observer)
         let oldElement = observedElement.map { AXBox(element: $0) }
         let oldWindow = observedWindow.map { AXBox(element: $0) }
+        let capturedElement = rephraseElement.map { AXBox(element: $0) }
         observedWindow = nil
         let refconBits = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
         AXReader.queue.async { [weak self] in
@@ -576,17 +588,43 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             let elementBox = element.map { AXBox(element: $0) }
             let windowBox = window.map { AXBox(element: $0) }
+            // Focus moved to a DIFFERENT editable element than the captured
+            // selection's — the caches (rescue reopen, remembered pill anchor)
+            // describe the old field and would mount the card there. A move to
+            // an AXWebArea is Chromium's degradation, not a field switch, and
+            // must NOT clear them (the rescue exists for exactly that).
+            var switchedField = false
+            var newRole = "none"
+            if let element {
+                newRole = AX.string(element, kAXRoleAttribute) ?? "?"
+                if let captured = capturedElement?.element, !CFEqual(element, captured) {
+                    switchedField = newRole != "AXWebArea"
+                }
+            }
+            Log.debug(.ax, "attach result", [
+                "newFocus": element.map { AXReader.describe($0) } ?? "nil",
+                "role": newRole,
+                "switchedField": switchedField,
+                "hadCaptured": capturedElement != nil,
+            ])
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, gen == self.attachGeneration else { return }
                     self.observedElement = elementBox?.element
                     self.observedWindow = windowBox?.element
+                    if switchedField {
+                        self.rephraseCapturedAt = nil
+                        self.lastPillAnchor = nil
+                        self.focusClickRect = nil
+                        Log.debug(.ui, "field switched, capture caches cleared")
+                    }
                 }
             }
         }
     }
 
     private func handleAXNotification(_ notification: String) {
+        Log.debug(.ax, "ax notification", ["type": notification])
         if notification == kAXFocusedUIElementChangedNotification as String {
             // Focus left the field (a click elsewhere, another field) — any open
             // card refers to text that's no longer focused, so close it. Our own
@@ -1372,6 +1410,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let element = read.element.element
         let fieldBox = toCocoa(read.axFrame)
         let appName = browserAppName(for: element)
+        activeAdapter = AppAdapters.adapter(for: element)
 
         // No rephrase pill on browser chrome (address bar etc.) either.
         if appName != nil, read.inWebArea != true { hidePillOnly(); return }
@@ -1693,7 +1732,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             ?? NSScreen.screens.first { $0.frame.contains(NSPoint(x: fieldBox.midX, y: fieldBox.midY)) }
         let leftEdge = (screen?.visibleFrame.minX ?? 0) + 2
         let x = max(leftEdge, fieldBox.minX - width - 4)
-        let y = min(max(anchorY - height / 2, fieldBox.minY + 2),
+        // Cocoa is bottom-left origin, so a positive (downward) nudge subtracts.
+        let y = min(max(anchorY - height / 2 - activeAdapter.pillNudge, fieldBox.minY + 2),
                     max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
         let pill = CGRect(x: x, y: y, width: width, height: height)
         pillRect = pill
@@ -1794,6 +1834,20 @@ final class AppController: NSObject, NSApplicationDelegate {
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ]
+        // A shortcut-opened card should come WITH its trigger: if the pill
+        // isn't up (cache-rescue or geometry-fallback open), show it at its
+        // remembered spot — or derive a disc just left of the selection.
+        if pillRect == nil {
+            let anchor = lastPillAnchor
+                ?? focusClickRect.map {
+                    CGRect(x: $0.minX - 20, y: $0.midY - 8, width: 16, height: 16)
+                }
+            if let anchor {
+                pillRect = anchor
+                lastPillAnchor = anchor
+                morphPanel.showPill(at: anchor, state: pillState())
+            }
+        }
         // Anchor priority: the live pill; else where the pill last was (so a
         // ⌘`-reopen lands exactly where a hover-open would); else the selection.
         cardAvoidRect = pillRect ?? lastPillAnchor ?? focusClickRect ?? .zero
@@ -1933,6 +1987,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Explicit keystroke = explicit intent: skip the typing-quiet delay.
         lastTypedAt = .distantPast
         let recentCapture = rephraseCapturedAt.map { Date().timeIntervalSince($0) < 60 } ?? false
+        Log.debug(.action, "hotkey open branch", [
+            "fastPath": rephraseText != nil && (pillRect != nil || recentCapture),
+            "recentCapture": recentCapture,
+            "pill": pillRect.map(NSStringFromRect) ?? "nil",
+            "lastAnchor": lastPillAnchor.map(NSStringFromRect) ?? "nil",
+        ])
         if rephraseText != nil, pillRect != nil || recentCapture {
             // No auto-dismiss: the user asked for this card with a keystroke and
             // may never bring the mouse near it. Esc, ⌘` again, or moving the
@@ -2486,22 +2546,38 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reopenWedgedApp() {
-        guard let wedged = wedgedApp,
-              let app = NSWorkspace.shared.runningApplications
+        guard let wedged = wedgedApp else {
+            Log.warn(.action, "reopen requested but nothing is wedged")
+            return
+        }
+        guard let app = NSWorkspace.shared.runningApplications
                 .first(where: { $0.bundleIdentifier == wedged.id }),
-              let url = app.bundleURL else { return }
+              let url = app.bundleURL else {
+            Log.warn(.action, "reopen: wedged app not running or has no bundle URL",
+                     ["app": wedged.id])
+            return
+        }
         Log.info(.action, "reopening app to clear its wedged accessibility", ["app": wedged.id])
         app.terminate()
-        // Relaunch once it has actually exited (poll briefly).
+        // Relaunch once it has actually exited. Electron apps routinely ignore
+        // the polite terminate — escalate to force after a few seconds, or the
+        // "relaunch" just pokes the still-running (still wedged) app.
         var tries = 0
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
             tries += 1
-            let gone = NSRunningApplication
-                .runningApplications(withBundleIdentifier: wedged.id).isEmpty
-            if gone || tries > 20 {
+            let running = NSRunningApplication
+                .runningApplications(withBundleIdentifier: wedged.id)
+            if running.isEmpty {
                 timer.invalidate()
-                let cfg = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: url, configuration: cfg)
+                Log.info(.action, "app exited, relaunching", ["app": wedged.id])
+                NSWorkspace.shared.openApplication(at: url,
+                                                   configuration: NSWorkspace.OpenConfiguration())
+            } else if tries == 6 {
+                Log.info(.action, "terminate ignored, forcing quit", ["app": wedged.id])
+                running.forEach { _ = $0.forceTerminate() }
+            } else if tries > 20 {
+                timer.invalidate()
+                Log.warn(.action, "app never exited, giving up on relaunch", ["app": wedged.id])
             }
         }
     }

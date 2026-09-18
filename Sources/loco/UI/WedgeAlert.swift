@@ -50,6 +50,7 @@ final class WedgeAlert: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     func show(appName: String, below button: NSStatusBarButton) {
         if shownFor == appName, panel.isVisible { return }
+        Log.debug(.ui, "wedge alert shown", ["app": appName])
         shownFor = appName
         if let win = button.window {
             anchor = win.convertToScreen(button.convert(button.bounds, to: nil))
@@ -83,7 +84,11 @@ final class WedgeAlert: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any],
-              let type = body["type"] as? String else { return }
+              let type = body["type"] as? String else {
+            Log.debug(.ui, "wedge alert: unparseable message", ["body": String(describing: message.body)])
+            return
+        }
+        Log.debug(.ui, "wedge alert message", ["type": type])
         switch type {
         case "ready":
             pushAppName()
