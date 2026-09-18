@@ -20,6 +20,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let browser = BrowserBridge()
     static let debug = ProcessInfo.processInfo.environment["LOCO_DEBUG"] != nil
     private var timer: Timer?
+    private var appActivity: NSObjectProtocol?
     private var mouseMonitor: Any?
     private var mouseUpMonitor: Any?
     private var mouseDownMonitor: Any?
@@ -364,6 +365,14 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         rememberActiveApp(NSWorkspace.shared.frontmostApplication)
         PerfMonitor.shared.start()
+
+        // Opt out of App Nap: an idle accessory app gets its runloop timers
+        // coalesced (~340ms gaps, metronomic in the stall log), which both
+        // pollutes the stall metric and makes detection wake sluggishly when
+        // the user returns. An input-observing overlay needs a lively runloop.
+        appActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Nib observes typing and renders overlays")
 
         // Dev-only geometry self-test: show a pill at a known screen point so a
         // screenshot can verify the morph surface renders exactly where the
@@ -1464,14 +1473,24 @@ final class AppController: NSObject, NSApplicationDelegate {
             let length = (read.fullValue as NSString?)?.length ?? 0
             selectionSpansField = selRange.location == 0
                 && selRange.location + selRange.length >= length && length > 0
-            if t.contains("\n"), !read.degradedWebArea {
+            // The reader fetches the range and the value as separate IPC calls;
+            // typing in between can leave the range past the value's end, and
+            // NSString.substring throws (this crashed the app mid-typing).
+            let full = (read.fullValue ?? "") as NSString
+            let rangeFitsValue = selRange.location >= 0
+                && selRange.location + selRange.length <= full.length
+            if t.contains("\n"), !read.degradedWebArea, rangeFitsValue {
                 // Multi-line: expand to whole sentence(s). (Not for a degraded
                 // web area: its "value" is the whole page, so expansion would
                 // pull in page text that isn't the field's.)
-                let full = (read.fullValue ?? "") as NSString
                 let expanded = sentenceRange(covering: selRange, in: full)
-                text = full.substring(with: expanded)
-                nativeRange = expanded
+                if expanded.location >= 0, expanded.location + expanded.length <= full.length {
+                    text = full.substring(with: expanded)
+                    nativeRange = expanded
+                } else {
+                    text = t
+                    nativeRange = selRange
+                }
             } else {
                 text = t
                 nativeRange = selRange
@@ -1488,6 +1507,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             let ns = full as NSString
             let caret = min(max(read.selectedRange?.location ?? 0, 0), ns.length)
             let expanded = sentenceRange(covering: NSRange(location: caret, length: 0), in: ns)
+            // Same defensive clamp as above: a stale sentence range past the
+            // value's end must degrade gracefully, not throw.
+            guard expanded.location >= 0,
+                  expanded.location + expanded.length <= ns.length else {
+                hidePillOnly(); return
+            }
             text = ns.substring(with: expanded)
             nativeRange = expanded
             if let r = lineRect(read.markerBounds, fieldBox) {
@@ -2968,7 +2993,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// respawn transparently on next use (the card shows its loading state).
     private func reapIdleTaskServers() {
         for (path, server) in taskServers
-        where Date().timeIntervalSince(server.lastUsed) > 600 {
+        where Date().timeIntervalSince(server.lastUsed) > 300 {
             server.stop()
             taskServers[path] = nil
             Log.info(.server, "task server stopped", ["model": URL(fileURLWithPath: path).lastPathComponent, "reason": "idle"])
@@ -2977,7 +3002,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // which under memory pressure means gigabytes pushed into swap while
         // the user isn't even writing. server(for:) restarts it on demand.
         if llmServer.status == .ready,
-           Date().timeIntervalSince(llmServer.lastUsed) > 600 {
+           Date().timeIntervalSince(llmServer.lastUsed) > 300 {
             llmServer.stop()
             Log.info(.server, "default server stopped", ["reason": "idle"])
         }
