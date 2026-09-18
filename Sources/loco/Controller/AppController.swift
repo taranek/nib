@@ -1379,6 +1379,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         var text: String?
         var selRect: CGRect?
+        var geoSource = "none"
         var nativeRange: NSRange?
         // Real selection vs. a bare caret — only a selection is worth warming
         // models for (a focused field alone isn't a signal the card is next).
@@ -1409,9 +1410,13 @@ final class AppController: NSObject, NSApplicationDelegate {
             // where index bounds fail) → first-character bounds. Never the mouse:
             // a keyboard-made selection has nothing to do with where the cursor
             // happens to rest.
-            selRect = lineRect(read.selectionBounds, fieldBox)
-                ?? lineRect(read.markerBounds, fieldBox)
-                ?? lineRect(read.firstCharBounds, fieldBox)
+            if let r = lineRect(read.selectionBounds, fieldBox) {
+                selRect = r; geoSource = "selectionBounds"
+            } else if let r = lineRect(read.markerBounds, fieldBox) {
+                selRect = r; geoSource = "markerBounds"
+            } else if let r = lineRect(read.firstCharBounds, fieldBox) {
+                selRect = r; geoSource = "firstCharBounds"
+            }
             // One character's height is one line's height — the yardstick for
             // telling a selection that wraps from one that doesn't. A union rect
             // can't answer that on its own: a tall one might be three lines or
@@ -1446,8 +1451,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             let expanded = sentenceRange(covering: NSRange(location: caret, length: 0), in: ns)
             text = ns.substring(with: expanded)
             nativeRange = expanded
-            selRect = lineRect(read.markerBounds, fieldBox)
-                ?? lineRect(read.caretBounds, fieldBox)
+            if let r = lineRect(read.markerBounds, fieldBox) {
+                selRect = r; geoSource = "markerBounds(caret)"
+            } else if let r = lineRect(read.caretBounds, fieldBox) {
+                selRect = r; geoSource = "caretBounds"
+            }
         }
 
         // Chromium answers the *same* geometry query intermittently with the
@@ -1458,15 +1466,19 @@ final class AppController: NSObject, NSApplicationDelegate {
             lastAnchor = (element, good)
         } else if let last = lastAnchor, CFEqual(last.element, element) {
             selRect = last.rect
+            geoSource = "lastAnchor"
         } else if selectionSpansField {
             // Last resort for a select-all with no usable geometry and nothing
             // cached: hang a capsule from the field's first line, where the
-            // selection certainly starts. Capped, because a field is often far
-            // taller than the text in it and a capsule spanning empty space
-            // reads as a bug.
-            let height = min(fieldBox.height - 4, 96)
+            // selection certainly starts — sized by the selection's own line
+            // count. A flat 96px cap put the marker ~80px below a single-line
+            // selection, which read as plain misplacement.
+            let lines = CGFloat(max(1, (text ?? "").components(separatedBy: "\n").count))
+            let lineH = lineHeight ?? 18
+            let height = min(fieldBox.height - 4, min(lines * lineH + 4, 96))
             selRect = CGRect(x: fieldBox.minX, y: fieldBox.maxY - height,
                              width: fieldBox.width, height: height)
+            geoSource = "spansField(\(Int(lines)) lines)"
         }
 
         guard let target = text, let r = selRect,
@@ -1517,6 +1529,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         // it into a capsule so it reads as acting on a passage rather than
         // marking a spot. Clamped into the field so a partly-scrolled selection
         // doesn't strand it outside.
+        Log.debug(.ui, "pill geometry", [
+            "source": geoSource,
+            "final": NSStringFromRect(r),
+            "field": NSStringFromRect(fieldBox),
+            "selBounds": read.selectionBounds.map(NSStringFromRect) ?? "nil",
+            "marker": read.markerBounds.map(NSStringFromRect) ?? "nil",
+            "firstChar": read.firstCharBounds.map(NSStringFromRect) ?? "nil",
+            "caret": read.caretBounds.map(NSStringFromRect) ?? "nil",
+            "hasSelection": hasSelection,
+            "range": read.selectedRange.map { "\($0.location)+\($0.length)" } ?? "nil",
+        ])
         showPill(at: r, in: fieldBox, hasSelection: hasSelection, lineHeight: lineHeight)
 
         // ⌘` was pressed while the selection was still being read — deliver the
