@@ -105,6 +105,21 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// attach, so an answer from a superseded request is dropped.
     private var observerGeneration = 0
     private var attachGeneration = 0
+    /// The rephrase hotkey was pressed before the async selection read landed —
+    /// open the card as soon as it does (expires after a second, so a later
+    /// unrelated pill show doesn't surprise-open a card).
+    private var pendingHotkeyOpen: Date?
+    /// When rephraseText was last captured from a live selection. Chromium's
+    /// focus/selection reporting often degrades right after our card closes, so
+    /// a recent capture doubles as the answer to "⌘` again".
+    private var rephraseCapturedAt: Date?
+    /// Where a focus-restoring click can safely land: the selection rect that
+    /// was validated as inside the field at capture time. (Never the pill — it
+    /// sits in the field's MARGIN, outside the text.)
+    private var focusClickRect: CGRect?
+    /// The last pill rect we computed — survives the pill being hidden, so a
+    /// ⌘`-reopen can place the card exactly where a hover on the pill would.
+    private var lastPillAnchor: CGRect?
     /// Detection stays quiet until this instant. Set when a card starts its
     /// close animation: the AX round-trips detection makes (to whatever app
     /// just took the click) block the main thread for ~200ms, and a blocked
@@ -605,6 +620,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             lastTypedAt = Date()
             // Don't yank a card the user is working with — only the bare pill.
             if popoverMode == .none { hidePill() }
+            // A hover-opened card doesn't own the keyboard, so the user can just
+            // keep typing — and the field changing under the card makes its text
+            // stale. Fade it out of the way. (A ⌘`-opened card owns the keyboard;
+            // field changes then come from our own write-back, not typing.)
+            if popoverMode == .rephrase, !morphPanel.isKeyForCard { closePopover() }
             scheduleSelectionUpdate(after: typingQuiet)
         }
         if notification == kAXWindowMovedNotification as String
@@ -1037,8 +1057,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         let nudgeX: CGFloat = 16
         let gap: CGFloat = 6
         let edge: CGFloat = 8
-        let anchor = avoid.isEmpty ? NSEvent.mouseLocation
-                                   : NSPoint(x: avoid.midX, y: avoid.midY)
+        // An empty rect anchors everything at the mouse — using its zero
+        // coordinates directly clamped the card into the bottom-left corner.
+        let avoid = avoid.isEmpty
+            ? CGRect(origin: NSEvent.mouseLocation, size: .zero) : avoid
+        let anchor = NSPoint(x: avoid.midX, y: avoid.midY)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) }
             ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
             ?? NSScreen.main
@@ -1117,7 +1140,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Rephrase card lives in the morph surface: keep it open while the cursor
         // is over it or the pill, otherwise schedule the mouse-out close.
         if popoverMode == .rephrase {
-            if overCard || overPill { cancelHidePopover() } else { scheduleHidePopover() }
+            if overCard || overPill {
+                cancelHidePopover()
+            } else if !morphPanel.isKeyForCard {
+                // Mouse-out closing is for hover-opened cards; a keyboard-opened
+                // card may never see the pointer — it closes via Esc, ⌘`,
+                // typing, or an outside click.
+                scheduleHidePopover()
+            }
             return
         }
 
@@ -1134,18 +1164,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         if overPill { return }   // don't run grammar hover while on the pill
 
-        // Grammar card (also on the morph surface) on a flagged word.
-        if popoverMode == .grammar, overCard {
-            cancelHidePopover()
-            return
-        }
-        if let hit = flagged.first(where: { $0.rect.insetBy(dx: -2, dy: -3).contains(p) }) {
-            cancelHidePopover()
-            if hit.id != hoveredID || popoverMode != .grammar {
-                hoveredID = hit.id
-                showCard(for: hit)
-            }
-        } else if popoverMode != .none {
+        // Squiggles are display-only: hovering one no longer opens the grammar
+        // card (it kept stealing key focus mid-typing). Fixes are applied from
+        // the rewrite card's Grammar tab instead — pill hover or ⌘`.
+        if popoverMode != .none {
             hoveredID = nil
             scheduleHidePopover()
         }
@@ -1178,7 +1200,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         // construction, and no second window whose orderOut can hitch a close.
         cardAvoidRect = word.rect
         morphPanel.showCard(payload, at: cardScreenRect(height: lastCardHeight,
-                                                        avoiding: word.rect))
+                                                        avoiding: word.rect),
+                            takeKey: false)
     }
 
     private func scheduleHidePopover() {
@@ -1214,6 +1237,41 @@ final class AppController: NSObject, NSApplicationDelegate {
         autoDismissTimer?.invalidate()
         autoDismissTimer = Timer.scheduledTimer(withTimeInterval: autoDismissDelay, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.closePopover() }
+        }
+    }
+
+    /// Hand keyboard focus back to the field the card was opened over.
+    /// Resigning our key window alone isn't enough: the target app (Chromium
+    /// especially) doesn't reliably refocus its field, leaving focus nowhere —
+    /// dead typing, degraded AX answers, lost selections. The observed element
+    /// (captured at genuine focus-change time) is the real field; the rephrase
+    /// element can be Chromium's degraded whole-web-area answer. Only called
+    /// for keyboard-driven closes — after an outside click the user has chosen
+    /// a new focus target, and yanking it back would be worse than the bug.
+    private func restoreFieldFocus() {
+        guard let element = observedElement ?? rephraseElement else { return }
+        // Browser/Electron hosts: forcing kAXFocusedAttribute focuses a WRAPPER
+        // node (an AXGroup), and once blurred they don't refocus on their own —
+        // the only thing Chromium reliably refocuses from is a real click. So:
+        // click where the selection/caret was (warping the cursor there and
+        // straight back), then put the selection range back via AX.
+        if let pid = AX.pid(of: element),
+           let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+           Self.browserBundleIDs.contains(bundleID) {
+            // Chromium preserves document.activeElement across window blur —
+            // the field is still the active DOM node; what's missing is the
+            // browser window's KEY status. Re-activating the app restores it
+            // without any geometry games (a synthesized click at remembered
+            // coordinates kept hitting the wrong element in Gmail, where the
+            // degraded "field" is the whole page).
+            Log.debug(.ax, "focus restore via app activation", ["app": bundleID])
+            NSRunningApplication(processIdentifier: pid)?.activate()
+            return
+        }
+        let box = AXBox(element: element)
+        AXReader.queue.async {
+            Log.debug(.ax, "restoring focus", ["target": AXReader.describe(box.element)])
+            AXUIElementSetAttributeValue(box.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         }
     }
 
@@ -1303,16 +1361,20 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func applySelectionPill(_ read: SelectionRead?) {
         guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
               let read else {
+            if pendingHotkeyOpen != nil {
+                Log.debug(.action, "hotkey open dropped", ["reason": "no editable focus"])
+                pendingHotkeyOpen = nil
+            }
             // Selecting a sentence in an email you're reading isn't an invitation
             // to rewrite it — and we couldn't write the result back anyway.
-            hidePill(); return
+            hidePillOnly(); return
         }
         let element = read.element.element
         let fieldBox = toCocoa(read.axFrame)
         let appName = browserAppName(for: element)
 
         // No rephrase pill on browser chrome (address bar etc.) either.
-        if appName != nil, read.inWebArea != true { hidePill(); return }
+        if appName != nil, read.inWebArea != true { hidePillOnly(); return }
         if let inWeb = read.inWebArea { cachedWebArea = (element, inWeb) }
 
         var text: String?
@@ -1338,8 +1400,10 @@ final class AppController: NSObject, NSApplicationDelegate {
            !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let selRange = read.selectedRange, selRange.length > 0 {
             // AX fallback — works for native fields AND browsers that don't grant
-            // Automation / aren't contentEditable. Write back via AX (native route).
-            writeAppName = nil
+            // Automation / aren't contentEditable. Write back via AX (native
+            // route) — unless the element is Chromium's degraded web-area
+            // answer, which can't take an AX write: keep the browser DOM route.
+            if !read.degradedWebArea { writeAppName = nil }
             // Selection geometry, best effort: index-based range bounds → text-
             // marker bounds (the VoiceOver channel — works in Chromium/Electron
             // where index bounds fail) → first-character bounds. Never the mouse:
@@ -1356,8 +1420,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             let length = (read.fullValue as NSString?)?.length ?? 0
             selectionSpansField = selRange.location == 0
                 && selRange.location + selRange.length >= length && length > 0
-            if t.contains("\n") {
-                // Multi-line: expand to whole sentence(s).
+            if t.contains("\n"), !read.degradedWebArea {
+                // Multi-line: expand to whole sentence(s). (Not for a degraded
+                // web area: its "value" is the whole page, so expansion would
+                // pull in page text that isn't the field's.)
                 let full = (read.fullValue ?? "") as NSString
                 let expanded = sentenceRange(covering: selRange, in: full)
                 text = full.substring(with: expanded)
@@ -1406,6 +1472,25 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard let target = text, let r = selRect,
               !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               isInsideField(r, fieldBox) else {
+            // ⌘` must not depend on the pill's geometry: if there's text to act
+            // on (selection or the caret's sentence), open the card anyway —
+            // anchored at the mouse, since there's no believable rect to hang
+            // it from.
+            if let pressed = pendingHotkeyOpen,
+               Date().timeIntervalSince(pressed) < 1.0,
+               let target = text,
+               !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                pendingHotkeyOpen = nil
+                rephraseText = target
+                rephraseAppName = writeAppName
+                rephraseElement = element
+                rephraseRange = nativeRange
+                rephraseCapturedAt = Date()
+                focusClickRect = selRect.flatMap { isInsideField($0, fieldBox) ? $0 : nil }
+                    ?? CGRect(x: fieldBox.midX - 2, y: fieldBox.midY - 2, width: 4, height: 4)
+                showRephrase()
+                return
+            }
             // Chromium's first geometry answer after a focus change is often the
             // junk box, and there's no cached anchor yet to fall back on. One
             // retry turns "no pill until you move the caret" into a brief wait.
@@ -1415,7 +1500,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     self?.updateSelectionPill()
                 }
             }
-            hidePill(); return
+            hidePillOnly(); return
         }
         retriedAnchor = false
 
@@ -1423,6 +1508,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         rephraseAppName = writeAppName
         rephraseElement = element
         rephraseRange = nativeRange
+        rephraseCapturedAt = Date()
+        focusClickRect = r   // validated inside the field above
 
         // Pill in the field's left margin, centred on the *first* line of the
         // selection — anchoring to its middle would push the pill halfway down
@@ -1431,6 +1518,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         // marking a spot. Clamped into the field so a partly-scrolled selection
         // doesn't strand it outside.
         showPill(at: r, in: fieldBox, hasSelection: hasSelection, lineHeight: lineHeight)
+
+        // ⌘` was pressed while the selection was still being read — deliver the
+        // card it asked for now that the pill (and rephrase state) exist.
+        if let pressed = pendingHotkeyOpen {
+            pendingHotkeyOpen = nil
+            if Date().timeIntervalSince(pressed) < 1.0, popoverMode == .none {
+                showRephrase()
+                return
+            }
+        }
         if let appName, hasSelection {
             refineSelectionFromDOM(appName: appName, element: element,
                                    fieldBox: fieldBox, axText: target)
@@ -1452,7 +1549,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         pillDwell = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.pillRect != nil, self.popoverMode != .rephrase else { return }
-                self.showRephrase()
+                self.showRephrase(takeKey: false)
             }
         }
     }
@@ -1577,6 +1674,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     max(fieldBox.minY + 2, fieldBox.maxY - height - 2))
         let pill = CGRect(x: x, y: y, width: width, height: height)
         pillRect = pill
+        lastPillAnchor = pill
         pillOnSelection = hasSelection
         morphPanel.showPill(at: pill, state: pillState())
     }
@@ -1604,17 +1702,34 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func hidePill() {
+    /// Hide just the pill — never the card. Detection/selection failures call
+    /// this: a failed pill read must not close a card the user is looking at
+    /// (typing right before ⌘` degraded the read and closed the card ~0.6s in).
+    private func hidePillOnly() {
         cancelPillDwell()
         pillOnSelection = false
         guard pillRect != nil else { return }
         pillRect = nil
         morphPanel.hidePill()
+    }
+
+    private func hidePill() {
+        cancelPillDwell()
+        pillOnSelection = false
+        // Card teardown FIRST, before the pill guard: a card opened without a
+        // pill (⌘` cache rescue) left this stuck in .rephrase forever — every
+        // subsequent ⌘` hit "already open → close", which no-oped here.
         if popoverMode == .rephrase {
+            quietForCloseAnimation()
+            morphPanel.hideCard()
+            restoreFieldFocus()
             popoverPanel.orderOut(nil)
             popoverPanel.level = .statusBar   // undo any sandbox level bump
             popoverMode = .none
         }
+        guard pillRect != nil else { return }
+        pillRect = nil
+        morphPanel.hidePill()
     }
 
     private static let styleList: [[String: String]] =
@@ -1623,15 +1738,24 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Open the rewrite card on the selection. React fetches all styles from the
     /// local LLM directly; Swift only supplies the text + LLM URL and applies the
     /// accepted result.
-    private func showRephrase() {
+    private func showRephrase(takeKey: Bool = true) {
         guard let text = rephraseText else { return }
+        if let el = rephraseElement.map({ AXBox(element: $0) }) {
+            let obs = observedElement.map { AXBox(element: $0) }
+            AXReader.queue.async {
+                Log.debug(.ax, "card opening over", [
+                    "rephraseEl": AXReader.describe(el.element),
+                    "observedEl": obs.map { AXReader.describe($0.element) } ?? "nil",
+                ])
+            }
+        }
         popoverMode = .rephrase
         rewriteTarget = RewriteTarget(original: text, appName: rephraseAppName,
                                       element: rephraseElement, range: rephraseRange)
-        presentRephraseCard(text: text)
+        presentRephraseCard(text: text, takeKey: takeKey)
     }
 
-    private func presentRephraseCard(text: String) {
+    private func presentRephraseCard(text: String, takeKey: Bool) {
         let routing = cardRouting()
         let models = routing.models
         var payload: [String: Any] = [
@@ -1647,9 +1771,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ]
-        cardAvoidRect = pillRect ?? .zero
+        // Anchor priority: the live pill; else where the pill last was (so a
+        // ⌘`-reopen lands exactly where a hover-open would); else the selection.
+        cardAvoidRect = pillRect ?? lastPillAnchor ?? focusClickRect ?? .zero
         let rect = cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect)
-        morphPanel.showCard(payload, at: rect)
+        morphPanel.showCard(payload, at: rect, takeKey: takeKey)
     }
 
     /// Messages from the morph surface. `resize` re-places the card at its real
@@ -1765,6 +1891,11 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Hotkey pressed: toggle the rephrase card for the current selection.
     private func triggerRephraseHotKey() {
+        Log.debug(.action, "rephrase hotkey", [
+            "mode": String(describing: popoverMode),
+            "pill": pillRect != nil, "text": rephraseText != nil,
+            "selInFlight": selReadInFlight,
+        ])
         if popoverMode == .rephrase { hidePill(); return }   // already open → close
         guard enabled, popoverMode == .none else { return }  // don't fight the grammar card
 
@@ -1772,12 +1903,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         // pill both route here).
         if sandboxActive { openSandboxCard(); return }
 
-        updateSelectionPill()                                 // recompute selection + pill
-        if rephraseText != nil, pillRect != nil {
+        // The selection state is computed asynchronously (the AX reads live on
+        // a background queue), so the card can't open synchronously here. If a
+        // selection is already known, open now; otherwise ask for a fresh read
+        // and let applySelectionPill open the card the moment it lands.
+        // Explicit keystroke = explicit intent: skip the typing-quiet delay.
+        lastTypedAt = .distantPast
+        let recentCapture = rephraseCapturedAt.map { Date().timeIntervalSince($0) < 60 } ?? false
+        if rephraseText != nil, pillRect != nil || recentCapture {
             // No auto-dismiss: the user asked for this card with a keystroke and
             // may never bring the mouse near it. Esc, ⌘` again, or moving the
             // selection all close it.
             showRephrase()
+        } else {
+            pendingHotkeyOpen = Date()
+            updateSelectionPill()
         }
     }
 
@@ -1951,6 +2091,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func finishRephrase() {
         quietForCloseAnimation()
         morphPanel.hideCard()
+        restoreFieldFocus()
         popoverPanel.orderOut(nil)
         popoverPanel.level = .statusBar   // undo any sandbox level bump
         popoverMode = .none

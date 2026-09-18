@@ -24,9 +24,18 @@ enum PillState: Equatable {
 /// desktop fall straight through to the app behind. The pill's hover/click come
 /// from a native hit view (reliable for a background app, unlike webview
 /// `:hover`); the window only becomes key when a card opens.
+/// The host panel refuses key whenever no card is open: after a card closes,
+/// AppKit re-keys the next eligible window in OUR app — which was this very
+/// panel, so the app held keyboard focus forever and the user's field (and
+/// Chromium's AX reporting with it) never got focus back.
+private final class MorphHostPanel: FloatingPanel {
+    var allowKey = false
+    override var canBecomeKey: Bool { allowKey }
+}
+
 @MainActor
 final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-    private let panel: FloatingPanel
+    private let panel: MorphHostPanel
     private let content: MorphContentView
     private let pillHit: PillHitView
     private var webView: WKWebView!
@@ -48,10 +57,9 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var onMessage: (([String: Any]) -> Void)?
 
     init(url: URL, desktop: NSRect) {
-        // FloatingPanel: non-activating, floats, and crucially overrides
-        // canBecomeKey — a plain borderless NSPanel can never become key, which
-        // silently kills the card's keyboard shortcuts.
-        panel = FloatingPanel(size: desktop.size)
+        // FloatingPanel base: non-activating, floats; the subclass gates
+        // canBecomeKey on a card being open.
+        panel = MorphHostPanel(size: desktop.size)
         content = MorphContentView(frame: NSRect(origin: .zero, size: desktop.size))
         pillHit = PillHitView(frame: .zero)
         super.init()
@@ -104,6 +112,9 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var desktopOrigin: NSPoint { panel.frame.origin }
     var desktopSize: NSSize { panel.frame.size }
 
+    /// Whether the panel currently owns the keyboard (a ⌘`-opened card).
+    var isKeyForCard: Bool { panel.isKeyWindow }
+
     /// Flip the whole window between click-through (`false`) and interactive
     /// (`true`). The controller drives this from the global mouse monitor: on
     /// while the cursor is over the pill/card, off everywhere else, so clicks in
@@ -148,15 +159,25 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // MARK: - Card
 
-    /// Open (or update) the card at `screenRect`, morphing out of the pill. The
-    /// window becomes key so the card gets keyboard shortcuts and webview hover.
-    func showCard(_ payload: [String: Any], at screenRect: CGRect) {
+    /// Open (or update) the card at `screenRect`, morphing out of the pill.
+    /// `takeKey` routes keyboard to the card (Tab/Esc/⌘-arrows) — wanted when
+    /// the user opened it with the keyboard, and explicitly NOT when it opened
+    /// from hover: a hover card taking key steals the keystrokes of someone
+    /// who's still typing into their field. A click inside the card still makes
+    /// the panel key naturally, so its buttons and composer always work.
+    func showCard(_ payload: [String: Any], at screenRect: CGRect, takeKey: Bool) {
         cardPayload = payload
         cardScreenRect = screenRect
         content.cardRect = screenRect
+        // Key is allowed while any card is open (a click in a hover card's
+        // composer must be able to key the panel); it's only TAKEN for
+        // keyboard-opened cards.
+        panel.allowKey = true
         push()   // orders the window in
-        panel.makeKey()
-        panel.makeFirstResponder(webView)
+        if takeKey {
+            panel.makeKey()
+            panel.makeFirstResponder(webView)
+        }
     }
 
     /// Move/resize the open card (e.g. after the web reports its real height).
@@ -198,6 +219,9 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         cardPayload = nil
         cardScreenRect = nil
         content.cardRect = nil
+        // Refuse key from here on, so the resign below actually LEAVES the app:
+        // with this true, AppKit would hand key straight back to this panel.
+        panel.allowKey = false
         push()
         let t1 = CFAbsoluteTimeGetCurrent()
         resignKeyKeepingVisible()

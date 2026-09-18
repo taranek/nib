@@ -53,19 +53,48 @@ struct SelectionRead: Sendable {
     let firstCharBounds: CGRect?
     /// Caret-range bounds, for the no-selection branch.
     let caretBounds: CGRect?
+    /// Chromium's degraded answer: the "focused element" is the whole web area
+    /// (its focus attribute returns itself). Selection reads still work against
+    /// it, but write-back must go through the browser DOM route, and only an
+    /// explicit selection is trustworthy (the web area's value is the whole
+    /// page, so caret-sentence extraction would read page text, not the field).
+    let degradedWebArea: Bool
 }
 
 enum AXReader {
+    /// A short human identity for an element, for diagnosing "wrong node" bugs:
+    /// role, frame, and the first characters of its value.
+    static func describe(_ el: AXUIElement) -> String {
+        let role = AX.string(el, kAXRoleAttribute) ?? "?"
+        let frame = AX.frame(el).map { NSStringFromRect($0) } ?? "no-frame"
+        let value = (AX.string(el, kAXValueAttribute) ?? "").prefix(24)
+        return "\(role) @\(frame) \"\(value)\""
+    }
+
     /// Serial, so at most one read burst is in flight and results arrive in
     /// order. userInitiated: the result drives visible UI.
     static let queue = DispatchQueue(label: "nib.ax.read", qos: .userInitiated)
+
+    /// The focused element, resolved one level: Chromium sometimes answers the
+    /// system-wide query with the whole AXWebArea (typically after key-window
+    /// transitions) even though a field inside it has focus — asking the web
+    /// area for ITS focused element yields the real field.
+    private static func resolveFocused() -> AXUIElement? {
+        guard let el = AX.focusedElement() else { return nil }
+        if AX.string(el, kAXRoleAttribute) == "AXWebArea",
+           let raw = AX.copy(el, kAXFocusedUIElementAttribute as String),
+           CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            return (raw as! AXUIElement)
+        }
+        return el
+    }
 
     /// The focused element plus everything the tick needs about it.
     /// `browserHost` gates the web-area/editability walks; `cachedWebArea` is
     /// the previous walk's answer for the same element, if any.
     static func readFocusedField(browserHost: Bool,
                                  cachedWebArea: (AXBox, Bool)?) -> FieldSnapshot? {
-        guard let el = AX.focusedElement() else { return nil }
+        guard let el = resolveFocused() else { return nil }
         var pid: pid_t = 0
         let ownerPid: pid_t? = AXUIElementGetPid(el, &pid) == .success ? pid : nil
         let role = AX.string(el, kAXRoleAttribute) ?? "?"
@@ -92,8 +121,22 @@ enum AXReader {
     /// same cases the old main-thread guard hid the pill for.
     static func readSelection(browserHost: Bool,
                               cachedWebArea: (AXBox, Bool)?) -> SelectionRead? {
-        guard let el = AX.focusedElement(), let frame = AX.frame(el),
-              AX.isEditable(el) else { return nil }
+        guard let el = resolveFocused() else {
+            Log.debug(.ax, "selection read failed", ["reason": "no focused element"])
+            return nil
+        }
+        guard let frame = AX.frame(el) else {
+            Log.debug(.ax, "selection read failed", [
+                "reason": "no frame", "role": AX.string(el, kAXRoleAttribute) ?? "?",
+            ])
+            return nil
+        }
+        let role = AX.string(el, kAXRoleAttribute) ?? "?"
+        let degraded = browserHost && role == "AXWebArea"
+        guard AX.isEditable(el) || degraded else {
+            Log.debug(.ax, "selection read failed", ["reason": "not editable", "role": role])
+            return nil
+        }
         var inWeb: Bool?
         if browserHost {
             if let cached = cachedWebArea, CFEqual(cached.0.element, el) {
@@ -124,10 +167,17 @@ enum AXReader {
                 caret = AX.bounds(of: CFRange(location: loc, length: 0), in: el)
             }
         }
+        // Degraded web area with no actual selection: nothing trustworthy to
+        // read (the web area's "value" is the whole page).
+        if degraded, (selRange?.length ?? 0) == 0 {
+            Log.debug(.ax, "selection read failed", ["reason": "web area focus, no selection"])
+            return nil
+        }
         return SelectionRead(element: AXBox(element: el), axFrame: frame,
                              inWebArea: inWeb, selectedText: selText,
                              selectedRange: selRange, fullValue: fullValue,
                              selectionBounds: selBounds, markerBounds: marker,
-                             firstCharBounds: firstChar, caretBounds: caret)
+                             firstCharBounds: firstChar, caretBounds: caret,
+                             degradedWebArea: degraded)
     }
 }
