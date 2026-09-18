@@ -2064,6 +2064,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let appName = target.appName {
             browser.replaceText(appName: appName, original: target.original, replacement: text)
         } else if let element = target.element {
+            Log.debug(.action, "ax write-back begins", [
+                "range": target.range.map { "\($0.location)+\($0.length)" } ?? "nil",
+                "original": String(target.original.prefix(60)),
+                "replacement": String(text.prefix(60)),
+                "valueBefore": String((AX.string(element, kAXValueAttribute) ?? "").prefix(120)),
+            ])
             // Mark the text to replace. Electron applies a selection write
             // asynchronously, so wait until the field reports the range we asked
             // for before doing anything that depends on it — otherwise the paste
@@ -2083,12 +2089,25 @@ final class AppController: NSObject, NSApplicationDelegate {
                     }
                 }
             }
+            let selectedNow = AX.string(element, kAXSelectedTextAttribute) ?? ""
+            let rangeNow = AX.selectedRange(element)
+            Log.debug(.action, "ax write-back selection state", [
+                "selectionSet": selectionSet,
+                "reportedRange": rangeNow.map { "\($0.location)+\($0.length)" } ?? "nil",
+                "selectedText": String(selectedNow.prefix(60)),
+                "matchesOriginal": selectedNow.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == target.original.trimmingCharacters(in: .whitespacesAndNewlines),
+            ])
             let before = AX.string(element, kAXValueAttribute)
             AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString)
             // Chromium/Electron (Slack, VS Code, …) report success but silently
             // ignore AX text writes. If the field value didn't change, fall back
             // to typing over the selection we just set.
             let after = AX.string(element, kAXValueAttribute)
+            Log.debug(.action, "ax write-back result", [
+                "axWriteTook": before != after,
+                "valueAfter": String((after ?? "").prefix(120)),
+            ])
             if before == after {
                 // Only safe once the selection holds exactly the text we're
                 // replacing — else typing would land at the caret. With the
@@ -2104,8 +2123,20 @@ final class AppController: NSObject, NSApplicationDelegate {
                     ])
                     return
                 }
-                Log.info(.action, "write-back falling back to typing", ["reason": "accessibility write ignored"])
-                typeReplace(text, in: element)
+                Log.info(.action, "write-back falling back to typing", [
+                    "reason": "accessibility write ignored",
+                    "selected": String((AX.string(element, kAXSelectedTextAttribute) ?? "").prefix(60)),
+                ])
+                // What the field should hold when the dust settles — the yard-
+                // stick for the verify-and-repair pass (Grammarly-style
+                // "succeeded on attempt N").
+                var expected: String?
+                if let beforeValue = before, let range = target.range,
+                   range.location + range.length <= (beforeValue as NSString).length {
+                    expected = (beforeValue as NSString)
+                        .replacingCharacters(in: range, with: text)
+                }
+                typeReplace(text, in: element, replacing: target.range, expecting: expected)
             }
         }
     }
@@ -2153,23 +2184,129 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// replaces it, and unlike a ⌘V fallback the clipboard is never touched.
     /// Delayed a beat so the card panel has closed and key focus is back in the
     /// target app before the events land.
-    private func typeReplace(_ text: String, in element: AXUIElement? = nil) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+    private func typeReplace(_ text: String, in element: AXUIElement? = nil,
+                             replacing range: NSRange? = nil,
+                             expecting expected: String? = nil) {
+        let watched = element.map { AXBox(element: $0) }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) {
             let source = CGEventSource(stateID: .combinedSessionState)
             let utf16 = Array(text.utf16)
-            // CGEvent carries ~20 UTF-16 units per event; chunk longer text.
-            var start = 0
-            while start < utf16.count {
-                let chunk = Array(utf16[start..<min(start + 20, utf16.count)])
+
+            func post(_ units: [UInt16]) {
                 let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                down?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
                 down?.post(tap: .cghidEventTap)
                 let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
                 up?.post(tap: .cghidEventTap)
-                start += 20
+            }
+            func value() -> String {
+                watched.map { AX.string($0.element, kAXValueAttribute) ?? "" } ?? ""
+            }
+            func waitForChange(from before: String, upTo: Int = 40) -> Bool {
+                for _ in 0..<upTo {
+                    usleep(15_000)
+                    if value() != before { return true }
+                }
+                return false
+            }
+
+            // Attempt 1: the WHOLE string as one event — a single atomic input,
+            // so a rich editor has nothing to batch out of order and no
+            // intermediate caret to lose. The classic docs cap the event at
+            // ~20 UTF-16 units; modern macOS usually takes more, so verify.
+            let before = value()
+            post(utf16)
+            Log.debug(.action, "type single event posted", ["units": utf16.count])
+            if watched != nil, utf16.count > 1 {
+                _ = waitForChange(from: before)
+                let now = value()
+                if now.contains(text) {
+                    Log.debug(.action, "single-event write verified", [:])
+                    return
+                }
+                Log.warn(.action, "single event not verified, repairing with pinned chunks", [
+                    "value": String(now.prefix(120)),
+                ])
+                // Repair: put the selection back over whatever the partial
+                // attempt produced... safest is to give up if we can't know.
+                // If the value didn't change at all, fall through to chunked
+                // typing; if it half-changed, chunked repair could double text,
+                // so stop and let the user see one clean failure, not soup.
+                guard now == before else {
+                    Log.warn(.action, "write-back left partial text; not compounding", [:])
+                    return
+                }
+                // Attempt 2: chunks with the caret PINNED via an AX range write
+                // (the one write Slack provably honors) before every chunk, so
+                // the editor's caret resets can't relocate our insertions.
+                guard let watched, let range else { return }
+                var caret = range.location
+                var remainingRange = CFRange(location: range.location, length: range.length)
+                var start = 0
+                while start < utf16.count {
+                    let chunk = Array(utf16[start..<min(start + 20, utf16.count)])
+                    // First chunk replaces the selection; later chunks insert at
+                    // the pinned caret (length 0).
+                    var sel = start == 0 ? remainingRange : CFRange(location: caret, length: 0)
+                    if let axRange = AXValueCreate(.cfRange, &sel) {
+                        AXUIElementSetAttributeValue(watched.element,
+                                                     kAXSelectedTextRangeAttribute as CFString, axRange)
+                        usleep(30_000)
+                    }
+                    let beforeChunk = value()
+                    post(chunk)
+                    Log.debug(.action, "pinned chunk posted", [
+                        "chunk": String(utf16CodeUnits: chunk, count: chunk.count),
+                        "caret": sel.location,
+                    ])
+                    _ = waitForChange(from: beforeChunk)
+                    caret = sel.location + chunk.count
+                    remainingRange = CFRange(location: caret, length: 0)
+                    start += 20
+                }
+            }
+            // Verify the SETTLED result against what Accept promised, and make
+            // one repair attempt on mismatch — re-select the whole field (the
+            // AX write Slack provably honors) and re-inject the entire
+            // corrected value as one atomic event. Newlines are ignored in the
+            // comparison: Slack's AX value renders paragraph breaks
+            // inconsistently right after an edit.
+            guard let watched, let expected else { return }
+            func normalized(_ s: String) -> String {
+                s.replacingOccurrences(of: "\n", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            usleep(350_000)
+            let settled = value()
+            if normalized(settled) == normalized(expected) {
+                Log.info(.action, "write-back verified on attempt 1", [:])
+                return
+            }
+            Log.warn(.action, "write-back mismatch, repairing", [
+                "settled": String(settled.prefix(120)),
+                "expected": String(expected.prefix(120)),
+            ])
+            var all = CFRange(location: 0, length: (settled as NSString).length)
+            if let axRange = AXValueCreate(.cfRange, &all) {
+                AXUIElementSetAttributeValue(watched.element,
+                                             kAXSelectedTextRangeAttribute as CFString, axRange)
+                usleep(50_000)
+            }
+            let beforeRepair = value()
+            post(Array(expected.utf16))
+            _ = waitForChange(from: beforeRepair)
+            usleep(350_000)
+            let repaired = value()
+            if normalized(repaired) == normalized(expected) {
+                Log.info(.action, "write-back verified on attempt 2", [:])
+            } else {
+                Log.warn(.action, "write-back corrupted after repair", [
+                    "value": String(repaired.prefix(160)),
+                ])
             }
         }
     }
+
 
     private func finishRephrase() {
         quietForCloseAnimation()
