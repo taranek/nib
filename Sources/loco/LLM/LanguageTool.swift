@@ -67,29 +67,33 @@ struct LanguageToolClient {
                   var first = reps.first?["value"] as? String,
                   let rule = (m["rule"] as? [String: Any])?["id"] as? String
             else { return nil }   // no suggestion = nothing we can apply
+            let ns = text as NSString
+            guard offset + length <= ns.length else { return nil }
+            let token = ns.substring(with: NSRange(location: offset, length: length))
+            // A word the user taught us (project names etc.) is right.
+            if KnownWords.contains(token) { return nil }
+            // A lowercase word "corrected" into an all-caps acronym is a
+            // dictionary guess, not a fix: brb → BRB, npm → NPM, tmrw → TRW.
+            // Judged on LanguageTool's own top pick, before re-ranking — else
+            // the re-rank swaps in some other word ("brb" → "bra").
+            let isLower = token == token.lowercased() && token != token.uppercased()
+            let isAcronym = first == first.uppercased() && first != first.lowercased()
+            if isLower, isAcronym, first.count > 1 { return nil }
             // Spelling suggestions come ordered by edit cost, which prefers
             // short words — "abyody" → "body" over "anybody". Among the top
             // few, prefer the one closest in length that keeps the first letter.
-            if rule.hasPrefix("MORFOLOGIK"), offset + length <= (text as NSString).length {
-                let token = (text as NSString).substring(with: NSRange(location: offset, length: length))
+            if rule.hasPrefix("MORFOLOGIK") {
                 let candidates = reps.prefix(4).compactMap { $0["value"] as? String }
+                // A lowercase typo is a common word, not a proper noun:
+                // "herre" → "here", not "Herne".
+                let tokenLower = token.first?.isLowercase == true
                 func score(_ c: String) -> Int {
                     abs(c.count - token.count) * 2
                         + (c.first?.lowercased() == token.first?.lowercased() ? 0 : 3)
+                        + (tokenLower && c.first?.isUppercase == true ? 3 : 0)
                 }
                 if let best = candidates.min(by: { score($0) < score($1) }),
                    score(best) < score(first) { first = best }
-            }
-            // A lowercase word "corrected" into an all-caps acronym is a
-            // dictionary guess, not a fix: brb → BRB, npm → NPM, tmrw → TRW.
-            let ns = text as NSString
-            if offset + length <= ns.length {
-                let token = ns.substring(with: NSRange(location: offset, length: length))
-                let isLower = token == token.lowercased() && token != token.uppercased()
-                let isAcronym = first == first.uppercased() && first != first.lowercased()
-                if isLower, isAcronym, first.count > 1 { return nil }
-                // A word the user taught us (project names etc.) is right.
-                if KnownWords.contains(token) { return nil }
             }
             return Match(offset: offset, length: length, replacement: first, ruleID: rule)
         }

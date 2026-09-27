@@ -1030,6 +1030,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// render its corrections — the shared tail of both engine paths.
     private func runCheck(value: String, appName: String?, text: String, engine: String,
                           _ check: @escaping @Sendable () async -> [SentenceCorrection]) {
+        // Links are the user's content, not prose: never squiggle or rewrite
+        // their text (a Slack link's title is part of the field value).
+        let links = AX.focusedElement().map { AX.linkRanges($0, in: text) } ?? []
         let token = value.hashValue
         Log.info(.detect, "checking field", [
             "chars": text.count, "engine": engine,
@@ -1040,7 +1043,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         isChecking = true
         grammarTask = Task { [weak self] in
             // Words the user added to their dictionary are never "errors".
-            let corrections = KnownWords.filter(await check())
+            let corrections = TextHunks.protect(KnownWords.filter(await check()),
+                                                in: text, protected: links)
             await MainActor.run { self?.isChecking = false }
             if Task.isCancelled { return }
             await MainActor.run {
@@ -1297,6 +1301,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let r = lastPillAnchor { st["lastPillAnchor"] = E2EDriver.cg(r) }
         if let t = rephraseText { st["rephraseText"] = t }
         // AX frames are already CG (top-left) space.
+        if let el = activeElement {
+            // Compact AX subtree of the field (roles + text) — for debugging
+            // how apps expose inline structure such as links.
+            var nodes: [String] = []
+            func walk(_ e: AXUIElement, _ depth: Int) {
+                guard nodes.count < 60, depth < 6 else { return }
+                let role = AX.string(e, kAXRoleAttribute) ?? "?"
+                let text = AX.string(e, kAXValueAttribute) ?? AX.string(e, kAXTitleAttribute)
+                    ?? AX.string(e, kAXDescriptionAttribute) ?? ""
+                nodes.append(String(repeating: "  ", count: depth) + role + " " + String(text.prefix(50)).debugDescription)
+                for c in (AX.copy(e, kAXChildrenAttribute) as? [AXUIElement]) ?? [] { walk(c, depth + 1) }
+            }
+            walk(el, 0)
+            st["fieldTree"] = nodes
+        }
         if let el = activeElement, let f = AX.frame(el) {
             st["field"] = ["x": f.minX, "y": f.minY, "w": f.width, "h": f.height,
                            "cx": f.midX, "cy": f.midY]
@@ -2476,16 +2495,16 @@ final class AppController: NSObject, NSApplicationDelegate {
                     "reason": "accessibility write ignored",
                     "selected": String((AX.string(element, kAXSelectedTextAttribute) ?? "").prefix(60)),
                 ])
-                // What the field should hold when the dust settles — the yard-
-                // stick for the verify-and-repair pass (Grammarly-style
-                // "succeeded on attempt N").
-                var expected: String?
+                // Retype only what changed (see typeHunks); verify-and-repair
+                // then checks the field against the same edits.
                 if let beforeValue = before, let range = target.range,
                    range.location + range.length <= (beforeValue as NSString).length {
-                    expected = (beforeValue as NSString)
-                        .replacingCharacters(in: range, with: text)
+                    let old = (beforeValue as NSString).substring(with: range)
+                    typeHunks(from: old, to: text, at: range.location,
+                              in: element, fieldBefore: beforeValue)
+                } else {
+                    typeReplace(text, in: element, replacing: target.range)
                 }
-                typeReplace(text, in: element, replacing: target.range, expecting: expected)
             }
         }
     }
@@ -2536,111 +2555,53 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func typeReplace(_ text: String, in element: AXUIElement? = nil,
                              replacing range: NSRange? = nil,
                              expecting expected: String? = nil) {
-        let watched = element.map { AXBox(element: $0) }
+        let typist = Typist(element: element)
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) {
-            let source = CGEventSource(stateID: .combinedSessionState)
-
-            func post(_ units: [UInt16]) {
-                let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-                down?.post(tap: .cghidEventTap)
-                let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-                up?.post(tap: .cghidEventTap)
-            }
-            func value() -> String {
-                watched.map { AX.string($0.element, kAXValueAttribute) ?? "" } ?? ""
-            }
-            func waitForChange(from before: String, upTo: Int = 40) -> Bool {
-                for _ in 0..<upTo {
-                    usleep(15_000)
-                    if value() != before { return true }
-                }
-                return false
-            }
-            func pinSelection(_ sel: CFRange) {
-                guard let watched else { return }
-                var cf = sel
-                if let axRange = AXValueCreate(.cfRange, &cf) {
-                    AXUIElementSetAttributeValue(watched.element,
-                                                 kAXSelectedTextRangeAttribute as CFString, axRange)
-                    usleep(30_000)
-                }
-            }
-            /// Type `units` over `initialSelection` in ≤20-unit events — the
-            /// classic per-event cap is REAL in Slack: a 74-unit event consumed
-            /// the selection and inserted nothing, wiping the draft. The caret
-            /// is re-pinned via an AX range write (which Slack honors) before
-            /// every chunk, because its editor resets the caret between inputs.
-            func pinnedType(_ units: [UInt16], over initialSelection: CFRange?) {
-                var caret = initialSelection?.location ?? 0
-                var start = 0
-                while start < units.count {
-                    let chunk = Array(units[start..<min(start + 20, units.count)])
-                    if start == 0, let sel = initialSelection {
-                        pinSelection(sel)
-                    } else if watched != nil {
-                        pinSelection(CFRange(location: caret, length: 0))
-                    }
-                    let before = value()
-                    post(chunk)
-                    Log.debug(.action, "pinned chunk posted", [
-                        "chunk": String(utf16CodeUnits: chunk, count: chunk.count),
-                        "caret": caret,
-                    ])
-                    if watched != nil { _ = waitForChange(from: before) }
-                    else { usleep(15_000) }
-                    caret = (start == 0 ? (initialSelection?.location ?? 0) : caret) + chunk.count
-                    start += 20
-                }
-            }
-
             let utf16 = Array(text.utf16)
             if utf16.count <= 20 {
                 // Fits one event everywhere — the fast path (and the whole
                 // path for type-through characters).
-                post(utf16)
+                typist.post(utf16)
                 Log.debug(.action, "type single event posted", ["units": utf16.count])
             } else {
                 // The selection already covers the text to replace; chunk 1
                 // types over it, later chunks continue at the pinned caret.
-                let sel = range.map { CFRange(location: $0.location, length: $0.length) }
-                pinnedType(utf16, over: sel)
+                typist.pinnedType(utf16, over: range)
             }
-
-            // Settle-verify against what Accept promised; repair once with the
-            // same pinned mechanism (select everything, retype the expected
-            // value). Newlines are ignored in comparison — Slack's AX value
-            // renders paragraph breaks inconsistently right after an edit.
-            guard let watched, let expected else { return }
-            func normalized(_ s: String) -> String {
-                s.replacingOccurrences(of: "\n", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            usleep(350_000)
-            let settled = value()
-            if normalized(settled) == normalized(expected) {
-                Log.info(.action, "write-back verified on attempt 1", [:])
-                return
-            }
-            Log.warn(.action, "write-back mismatch, repairing with pinned retype", [
-                "settled": String(settled.prefix(120)),
-                "expected": String(expected.prefix(120)),
-            ])
-            let all = CFRange(location: 0, length: (settled as NSString).length)
-            pinnedType(Array(expected.utf16), over: all)
-            usleep(350_000)
-            let repaired = value()
-            if normalized(repaired) == normalized(expected) {
-                Log.info(.action, "write-back verified on attempt 2", [:])
-            } else {
-                Log.warn(.action, "write-back corrupted after repair", [
-                    "value": String(repaired.prefix(160)),
-                ])
-            }
+            if let expected { typist.verifyAndRepair(expected: expected) }
         }
     }
 
-
+    /// Write `new` over `old` (which sits at `base` in the field) by retyping
+    /// only the words that changed, last first so earlier offsets stay valid.
+    /// Everything else — links above all — is never touched: retyping a whole
+    /// sentence turned a Slack link into plain text. Edits that would touch a
+    /// link are skipped (the link wins over the rewrite).
+    private func typeHunks(from old: String, to new: String, at base: Int,
+                           in element: AXUIElement, fieldBefore: String) {
+        let links = AX.linkRanges(element, in: fieldBefore)
+        let all = TextHunks.diff(old, new).map {
+            TextHunks.Hunk(range: NSRange(location: base + $0.range.location, length: $0.range.length),
+                           replacement: $0.replacement)
+        }
+        let hunks = all.filter { !TextHunks.overlaps($0.range, links) }
+        Log.info(.action, "write-back by hunks", [
+            "hunks": hunks.count, "skippedForLinks": all.count - hunks.count, "links": links.count,
+        ])
+        guard !hunks.isEmpty else { return }
+        let expected = TextHunks.apply(hunks, to: fieldBefore)
+        let typist = Typist(element: element)
+        // Where the caret belongs afterwards: the end of the rewritten text, as
+        // if it had been typed in one go (edits land last-first, which would
+        // leave it after the FIRST change).
+        let end = base + (old as NSString).length
+            + (expected as NSString).length - (fieldBefore as NSString).length
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) {
+            for h in hunks.reversed() { typist.replace(h.range, with: h.replacement) }
+            typist.pinSelection(NSRange(location: end, length: 0))
+            typist.verifyAndRepair(expected: expected)
+        }
+    }
 
     private func finishRephrase() {
         quietForCloseAnimation()

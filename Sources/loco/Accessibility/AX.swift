@@ -97,6 +97,36 @@ enum AX {
         return out
     }
 
+    /// UTF-16 ranges of `text` rendered as links inside `element` (Slack's
+    /// inline links: an AXLink whose static text is part of the field value).
+    /// Found in document order, each searched after the previous one, so a
+    /// link title repeated in plain text isn't mistaken for the link.
+    static func linkRanges(_ element: AXUIElement, in text: String) -> [NSRange] {
+        var titles: [String] = []
+        func walk(_ e: AXUIElement, _ depth: Int) {
+            guard depth < 6, titles.count < 50 else { return }
+            for child in (copy(e, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+                if string(child, kAXRoleAttribute) == "AXLink" {
+                    let t = textBlocks(child).compactMap { string($0, kAXValueAttribute) }.joined()
+                    if !t.isEmpty { titles.append(t) }
+                } else {
+                    walk(child, depth + 1)
+                }
+            }
+        }
+        walk(element, 0)
+        let ns = text as NSString
+        var from = 0
+        var out: [NSRange] = []
+        for t in titles {
+            let r = ns.range(of: t, range: NSRange(location: from, length: ns.length - from))
+            guard r.location != NSNotFound else { continue }
+            out.append(r)
+            from = r.location + r.length
+        }
+        return out
+    }
+
     /// Font size the element reports for its text, when it reports one.
     static func fontSize(_ element: AXUIElement, at location: Int = 0) -> CGFloat? {
         var range = CFRange(location: location, length: 1)
