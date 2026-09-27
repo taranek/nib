@@ -1315,6 +1315,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             walk(el, 0)
             st["fieldTree"] = nodes
+            if let r = AX.selectedRange(el) { st["selection"] = ["location": r.location, "length": r.length] }
         }
         if let el = activeElement, let f = AX.frame(el) {
             st["field"] = ["x": f.minX, "y": f.minY, "w": f.width, "h": f.height,
@@ -2599,7 +2600,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) {
             for h in hunks.reversed() { typist.replace(h.range, with: h.replacement) }
             typist.pinSelection(NSRange(location: end, length: 0))
-            typist.verifyAndRepair(expected: expected)
+            typist.verifyAndRepair(expected: expected, caret: end)
         }
     }
 

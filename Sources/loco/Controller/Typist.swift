@@ -92,9 +92,18 @@ struct Typist: @unchecked Sendable {
         }
     }
 
-    private static func normalized(_ s: String) -> String {
-        s.replacingOccurrences(of: "\n", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// What counts as "the same text" after an edit. Newlines are dropped
+    /// (Slack's AX value renders paragraph breaks inconsistently right after
+    /// an edit) and smart punctuation is folded to plain: Slack turns a typed
+    /// ' into ’ as you type — not a mismatch, and "repairing" it only makes
+    /// Slack curl it again (and strands the caret mid-text).
+    static func normalized(_ s: String) -> String {
+        var out = s.replacingOccurrences(of: "\n", with: "")
+        for (smart, plain) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201C}", "\""),
+                               ("\u{201D}", "\""), ("\u{2014}", "--"), ("\u{2026}", "...")] {
+            out = out.replacingOccurrences(of: smart, with: plain)
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Settle, compare with `expected`, and repair once — retyping only the
@@ -102,7 +111,9 @@ struct Typist: @unchecked Sendable {
     /// turns it into plain text). Newlines are ignored in the comparison:
     /// Slack's AX value renders paragraph breaks inconsistently right after
     /// an edit.
-    func verifyAndRepair(expected: String) {
+    /// `caret`: where the caret belongs when done (the end of the rewrite) —
+    /// re-pinned after a repair, which otherwise leaves it mid-text.
+    func verifyAndRepair(expected: String, caret: Int? = nil) {
         guard let watched else { return }
         usleep(350_000)
         let settled = value()
@@ -110,6 +121,7 @@ struct Typist: @unchecked Sendable {
             Log.info(.action, "write-back verified on attempt 1", [:])
             return
         }
+        defer { if let caret { pinSelection(NSRange(location: caret, length: 0)) } }
         let s = Array(settled.utf16), e = Array(expected.utf16)
         var p = 0
         while p < s.count, p < e.count, s[p] == e[p] { p += 1 }
