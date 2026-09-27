@@ -7,6 +7,16 @@ import Cocoa
 struct Loco {
     static func main() {
         setbuf(stdout, nil) // unbuffered: logs show even when piped
+
+        // Headless grammar-engine evaluation (see GrammarEval) — no UI.
+        if CommandLine.arguments.contains("--grammar-eval") {
+            let args = CommandLine.arguments
+            Task.detached {
+                let code = await GrammarEval.run(arguments: args)
+                exit(code)
+            }
+            dispatchMain()
+        }
         AppLog.bootstrap()  // banner + Finder-launch stdout/stderr → nib.log
 
         let app = NSApplication.shared

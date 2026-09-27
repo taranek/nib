@@ -1,0 +1,479 @@
+[
+ {
+  "id": "typo-1",
+  "cat": "spelling",
+  "text": "Can abyody find me somebody to love?",
+  "must": [
+   "anybody"
+  ],
+  "mustNot": [
+   "abyody"
+  ]
+ },
+ {
+  "id": "typo-2",
+  "cat": "spelling",
+  "text": "Can anybody foudn me someoby to love?",
+  "must": [
+   "find",
+   "somebody"
+  ],
+  "mustNot": [
+   "foudn",
+   "someoby"
+  ]
+ },
+ {
+  "id": "typo-3",
+  "cat": "spelling",
+  "text": "I'll send it tomorow morning.",
+  "must": [
+   "tomorrow"
+  ],
+  "mustNot": [
+   "tomorow"
+  ]
+ },
+ {
+  "id": "typo-4",
+  "cat": "spelling",
+  "text": "We definately need to talk about the budget.",
+  "must": [
+   "definitely"
+  ],
+  "mustNot": [
+   "definately"
+  ]
+ },
+ {
+  "id": "typo-5",
+  "cat": "spelling",
+  "text": "Did you recieve my last message?",
+  "must": [
+   "receive"
+  ],
+  "mustNot": [
+   "recieve"
+  ]
+ },
+ {
+  "id": "typo-6",
+  "cat": "spelling",
+  "text": "The meeting is at teh usual place.",
+  "must": [
+   "the usual"
+  ],
+  "mustNot": [
+   "teh"
+  ]
+ },
+ {
+  "id": "typo-7",
+  "cat": "spelling",
+  "text": "Its a good idea but we need more tiem.",
+  "must": [
+   "time"
+  ],
+  "mustNot": [
+   "tiem"
+  ]
+ },
+ {
+  "id": "typo-8",
+  "cat": "spelling",
+  "text": "Please let me know if you have any questoins.",
+  "must": [
+   "questions"
+  ],
+  "mustNot": [
+   "questoins"
+  ]
+ },
+ {
+  "id": "typo-9",
+  "cat": "spelling",
+  "text": "I think this is the rigth approach.",
+  "must": [
+   "right"
+  ],
+  "mustNot": [
+   "rigth"
+  ]
+ },
+ {
+  "id": "typo-10",
+  "cat": "spelling",
+  "text": "Sorry for the late reponse, I was traveling.",
+  "must": [
+   "response"
+  ],
+  "mustNot": [
+   "reponse"
+  ]
+ },
+ {
+  "id": "gram-1",
+  "cat": "grammar",
+  "text": "She don't like the new design.",
+  "must": [
+   "doesn't"
+  ],
+  "mustNot": [
+   "don't"
+  ]
+ },
+ {
+  "id": "gram-2",
+  "cat": "grammar",
+  "text": "There is a lot of people waiting outside.",
+  "must": [
+   "are"
+  ],
+  "mustNot": [
+   "There is a lot of people"
+  ]
+ },
+ {
+  "id": "gram-3",
+  "cat": "grammar",
+  "text": "I could of done it better.",
+  "must": [
+   "could have"
+  ],
+  "mustNot": [
+   "could of"
+  ]
+ },
+ {
+  "id": "gram-4",
+  "cat": "grammar",
+  "text": "Their going to be late again.",
+  "must": [
+   "They're"
+  ],
+  "mustNot": [
+   "Their going"
+  ]
+ },
+ {
+  "id": "gram-5",
+  "cat": "grammar",
+  "text": "The team have finished it's work.",
+  "must": [
+   "its work"
+  ],
+  "mustNot": [
+   "it's work"
+  ]
+ },
+ {
+  "id": "gram-6",
+  "cat": "grammar",
+  "text": "Your welcome to join us anytime.",
+  "must": [
+   "You're welcome"
+  ],
+  "mustNot": [
+   "Your welcome"
+  ]
+ },
+ {
+  "id": "gram-7",
+  "cat": "grammar",
+  "text": "He go to the office every day.",
+  "must": [
+   "goes"
+  ],
+  "mustNot": [
+   "He go "
+  ]
+ },
+ {
+  "id": "gram-8",
+  "cat": "grammar",
+  "text": "I have saw that movie twice.",
+  "must": [
+   "seen"
+  ],
+  "mustNot": [
+   "have saw"
+  ]
+ },
+ {
+  "id": "gram-9",
+  "cat": "grammar",
+  "text": "Me and him went to the store.",
+  "must": [
+   "He and I"
+  ],
+  "mustNot": [
+   "Me and him"
+  ]
+ },
+ {
+  "id": "gram-10",
+  "cat": "grammar",
+  "text": "This is an unique opportunity.",
+  "must": [
+   "a unique"
+  ],
+  "mustNot": [
+   "an unique"
+  ]
+ },
+ {
+  "id": "gram-11",
+  "cat": "grammar",
+  "text": "i think we should ship it today",
+  "must": [
+   "I think"
+  ],
+  "mustNot": [
+   "i think"
+  ]
+ },
+ {
+  "id": "gram-12",
+  "cat": "grammar",
+  "text": "Can you send me the files what you mentioned?",
+  "must": [
+   "files"
+  ],
+  "mustNot": [
+   "what you mentioned"
+  ]
+ },
+ {
+  "id": "phr-1",
+  "cat": "phrasing",
+  "text": "Tomorrow can we the meeting move to 3pm because a conflict I have.",
+  "must": [
+   "move",
+   "meeting",
+   "3pm",
+   "conflict"
+  ],
+  "mustNot": [
+   "we the meeting move"
+  ]
+ },
+ {
+  "id": "phr-2",
+  "cat": "phrasing",
+  "text": "I am writing to ask if it is possible that you are able to send the report.",
+  "must": [
+   "report"
+  ],
+  "mustNot": [
+   "possible that you are able"
+  ]
+ },
+ {
+  "id": "phr-3",
+  "cat": "phrasing",
+  "text": "The thing that I wanted to say is that the thing works now.",
+  "must": [
+   "works"
+  ],
+  "mustNot": [
+   "The thing that I wanted to say is that the thing"
+  ]
+ },
+ {
+  "id": "cas-1",
+  "cat": "casual",
+  "text": "thanks",
+  "unchanged": true
+ },
+ {
+  "id": "cas-2",
+  "cat": "casual",
+  "text": "on my way, be there in 5",
+  "unchanged": true
+ },
+ {
+  "id": "cas-3",
+  "cat": "casual",
+  "text": "sounds good",
+  "unchanged": true
+ },
+ {
+  "id": "cas-4",
+  "cat": "casual",
+  "text": "lol that's hilarious",
+  "unchanged": true
+ },
+ {
+  "id": "cas-5",
+  "cat": "casual",
+  "text": "ok cool, see you tmrw",
+  "unchanged": true
+ },
+ {
+  "id": "cas-6",
+  "cat": "casual",
+  "text": "gonna grab lunch, want anything?",
+  "unchanged": true
+ },
+ {
+  "id": "cas-7",
+  "cat": "casual",
+  "text": "haha yeah exactly",
+  "unchanged": true
+ },
+ {
+  "id": "cas-8",
+  "cat": "casual",
+  "text": "brb",
+  "unchanged": true
+ },
+ {
+  "id": "keep-1",
+  "cat": "preserve",
+  "text": "That's fine, I'm on it.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-2",
+  "cat": "preserve",
+  "text": "Call me on 123456789 when you can.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-3",
+  "cat": "preserve",
+  "text": "FYI the v2 report is due EOD.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-4",
+  "cat": "preserve",
+  "text": "Check https://onet.com for the details.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-5",
+  "cat": "preserve",
+  "text": "Run npm install and then restart the server.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-6",
+  "cat": "preserve",
+  "text": "Tomasz will review the PR tomorrow.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-7",
+  "cat": "preserve",
+  "text": "The build takes approx 45 seconds on CI.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-8",
+  "cat": "preserve",
+  "text": "We shipped 3.2.1 on Sept 18 at 10:30.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-9",
+  "cat": "preserve",
+  "text": "I can't make it, sorry!",
+  "unchanged": true
+ },
+ {
+  "id": "keep-10",
+  "cat": "preserve",
+  "text": "The API returns a 404 when the ID is missing.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-11",
+  "cat": "preserve",
+  "text": "Let's sync on Slack after standup.",
+  "unchanged": true
+ },
+ {
+  "id": "keep-12",
+  "cat": "preserve",
+  "text": "Can anybody find me somebody to love?",
+  "unchanged": true
+ },
+ {
+  "id": "mix-1",
+  "cat": "mixed",
+  "text": "hey, i cant find the doc you sent yesterday, can you resend?",
+  "must": [
+   "can't"
+  ],
+  "mustNot": [
+   "i cant"
+  ]
+ },
+ {
+  "id": "mix-2",
+  "cat": "mixed",
+  "text": "The deploy failed becuase the tests was flaky.",
+  "must": [
+   "because",
+   "were"
+  ],
+  "mustNot": [
+   "becuase",
+   "tests was"
+  ]
+ },
+ {
+  "id": "mix-3",
+  "cat": "mixed",
+  "text": "Could you review this PR when you has a moment?",
+  "must": [
+   "have a moment"
+  ],
+  "mustNot": [
+   "you has"
+  ]
+ },
+ {
+  "id": "mix-4",
+  "cat": "mixed",
+  "text": "I'll be their in 10 minutes.",
+  "must": [
+   "there in"
+  ],
+  "mustNot": [
+   "their in"
+  ]
+ },
+ {
+  "id": "pl-1",
+  "cat": "polish",
+  "lang": "pl",
+  "text": "Wczoraj poszłem do sklepu.",
+  "must": [
+   "poszedłem"
+  ],
+  "mustNot": [
+   "poszłem"
+  ]
+ },
+ {
+  "id": "pl-2",
+  "cat": "polish",
+  "lang": "pl",
+  "text": "Nie wiem czy dam rade przyjść.",
+  "must": [
+   "radę"
+  ],
+  "mustNot": [
+   "rade "
+  ]
+ },
+ {
+  "id": "pl-3",
+  "cat": "polish",
+  "lang": "pl",
+  "text": "Dzięki, do jutra!",
+  "unchanged": true
+ }
+]

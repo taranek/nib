@@ -22,6 +22,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var appActivity: NSObjectProtocol?
     private var mouseMonitor: Any?
+    private var localMouseMonitor: Any?
     private var mouseUpMonitor: Any?
     private var mouseDownMonitor: Any?
     /// When the user last clicked in another app — perf diagnosis for how long
@@ -81,7 +82,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var cachedWebArea: (element: AXUIElement, isWeb: Bool)?
     /// The modelled text layout for the field we're on, kept while its text is
     /// unchanged (see modelledRects).
-    private var modelledLayout: (element: AXUIElement, text: String, block: CGRect, font: NSFont)?
+    private var modelledLayout: (element: AXUIElement, text: String, parts: [ModelledParagraph])?
+    /// One paragraph of a modelled field: its UTF-16 offset in the full text,
+    /// its own text, and the block the app laid it out in.
+    private struct ModelledParagraph {
+        let offset: Int
+        let text: String
+        let block: CGRect
+        let font: NSFont
+    }
     /// A grammar check is actually running — the only time the pill animates.
     private var isChecking = false {
         didSet { if isChecking != oldValue { refreshPillState() } }
@@ -97,6 +106,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Dev-only (LOCO_MORPH_TEST): detection is suspended so the test pill isn't
     /// cleared by the tick while its geometry is audited.
     private var morphTestActive = false
+    /// Live squiggles from LanguageTool instead of the LLM (experimental).
+    /// The LLM then only serves the rewrite card, started on demand.
+    private let usesLanguageTool =
+        ProcessInfo.processInfo.environment["LOCO_GRAMMAR_ENGINE"] == "languagetool"
     /// A background AX read burst is running — don't start another; the next
     /// poll tick after it lands will pick up any change it missed.
     private var axReadInFlight = false
@@ -110,6 +123,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// open the card as soon as it does (expires after a second, so a later
     /// unrelated pill show doesn't surprise-open a card).
     private var pendingHotkeyOpen: Date?
+    /// Selection freshness: bumped on every change that schedules a selection
+    /// read, and recorded when a read that started after it lands. The ⌘`
+    /// fast path trusts the pill's cached text only when they match — else a
+    /// double-click on a new word followed by a quick ⌘` opened the card on
+    /// the PREVIOUS selection.
+    private var selectionChangeGen = 0
+    private var selectionAppliedGen = 0
     /// When rephraseText was last captured from a live selection. Chromium's
     /// focus/selection reporting often degrades right after our card closes, so
     /// a recent capture doubles as the answer to "⌘` again".
@@ -138,12 +158,17 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let cardWidth: CGFloat = 440
     private var lastCardHeight: CGFloat = 280
     private var cardAvoidRect: CGRect = .zero
+    /// The field the selection lives in (Cocoa coords), so a card flipped
+    /// above a short field (a chat composer) clears the whole box, not just
+    /// the text line — otherwise it hangs over the composer's top edge.
+    private var rephraseFieldBox: CGRect?
     private var rephraseText: String?            // selection text the pill acts on
     private var rephraseAppName: String?
     private var rephraseElement: AXUIElement?
     private var rephraseRange: NSRange?          // native write-back range
     private var selectionDebounce: Timer?
     private var rephraseHotKey: GlobalHotKey?     // global shortcut → rephrase
+    private var e2eDriver: E2EDriver?             // dev-only control port (LOCO_E2E_PORT)
 
     // Onboarding sandbox: while true, the selection pill + ⌘` card deliberately
     // target our own onboarding textarea (they normally ignore our own windows),
@@ -282,6 +307,19 @@ final class AppController: NSObject, NSApplicationDelegate {
             if popoverMode != .rephrase { showRephrase() }
         }
         morphPanel.onMessage = { [weak self] body in self?.handleMorphMessage(body) }
+        if let port = ProcessInfo.processInfo.environment["LOCO_E2E_PORT"].flatMap(UInt16.init) {
+            e2eDriver = E2EDriver(
+                port: port,
+                state: { [weak self] in self?.e2eState() ?? [:] },
+                snapshot: { [weak self] done in
+                    guard let self else { return done(nil) }
+                    self.morphPanel.snapshot(done)
+                },
+                eval: { [weak self] js, done in
+                    guard let self else { return done(nil) }
+                    self.morphPanel.evaluate(js, done)
+                })
+        }
 
         setupStatusItem()
         Log.debug(.app, "status item installed")
@@ -329,6 +367,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         // cursor against the flagged-word rects without consuming the events.
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
             MainActor.assumeIsolated { self?.handleMouseMove() }
+        }
+        // ...and a local one: while the morph window is interactive (pointer
+        // over the pill/card) the moves are OURS, and the global monitor goes
+        // quiet — leaving the window interactive after the pointer leaves the
+        // card, swallowing clicks meant for the app below.
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleMouseMove() }
+            return event
         }
         // Releasing the mouse ends a window drag; that's when it's safe to put the
         // squiggles and pill back at the field's settled position.
@@ -453,7 +499,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self.tick()
             }
         }
-        llmServer.start()
+        // With LanguageTool doing live checks, nothing needs a model until the
+        // card opens — don't hold gigabytes resident from launch.
+        // (server(for:) starts it on first use.)
+        if !usesLanguageTool { llmServer.start() }
     }
 
     private func llmStatusString() -> String {
@@ -921,6 +970,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
 
+        // Live-squiggle engine. LanguageTool (experimental, opt-in via
+        // LOCO_GRAMMAR_ENGINE=languagetool) answers in ~15ms with no GPU and
+        // ~0.6GB resident, but misses homophones and phrasing — see
+        // Tests/grammar-corpus.json + `loco --grammar-eval`. The LLM stays the
+        // default, and always backs the rewrite card either way.
+        let env = ProcessInfo.processInfo.environment
+        if usesLanguageTool {
+            let lt = LanguageToolClient(
+                baseURL: URL(string: env["LOCO_LT_URL"] ?? "http://127.0.0.1:8081")!)
+            runCheck(value: value, appName: appName, text: text, engine: "languagetool") {
+                await lt.corrections(in: text)
+            }
+            return
+        }
+
         // LLM path — grammar may be pinned to its own model/server (per-task
         // routing); the serving model's manifest quirks drive validation.
         let grammarServer = server(for: .grammar)
@@ -937,15 +1001,25 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
+        runCheck(value: value, appName: appName, text: text, engine: "llm") {
+            await client.corrections(in: text)
+        }
+    }
+
+    /// Run one grammar check with whichever engine produced `check`, then
+    /// render its corrections — the shared tail of both engine paths.
+    private func runCheck(value: String, appName: String?, text: String, engine: String,
+                          _ check: @escaping @Sendable () async -> [SentenceCorrection]) {
+        let token = value.hashValue
         Log.info(.detect, "checking field", [
-            "chars": text.count,
+            "chars": text.count, "engine": engine,
             "app": appName ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown",
         ])
         grammarTask?.cancel()
         let checkStart = CFAbsoluteTimeGetCurrent()
         isChecking = true
         grammarTask = Task { [weak self] in
-            let corrections = await client.corrections(in: text)
+            let corrections = await check()
             await MainActor.run { self?.isChecking = false }
             if Task.isCancelled { return }
             await MainActor.run {
@@ -1100,7 +1174,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The card's top-left screen rect: below the thing it opens beside, flipped
     /// above when there's no room, clamped on-screen. Ported from PopoverPanel's
     /// positioning, without the shadow margin (the goo draws the shadow now).
-    private func cardScreenRect(height: CGFloat, avoiding avoid: CGRect) -> CGRect {
+    private func cardScreenRect(height: CGFloat, avoiding avoid: CGRect,
+                                fieldBox: CGRect? = nil) -> CGRect {
         let nudgeX: CGFloat = 16
         let gap: CGFloat = 6
         let edge: CGFloat = 8
@@ -1115,7 +1190,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         var x = avoid.minX + nudgeX
         var y = avoid.minY - gap - height          // below the anchor
         if let vis = screen?.visibleFrame {
-            if y < vis.minY + edge { y = avoid.maxY + gap }   // no room → flip above
+            if y < vis.minY + edge {                   // no room → flip above
+                var top = avoid.maxY
+                if let field = fieldBox, field.height <= 120,
+                   field.insetBy(dx: -24, dy: -8).contains(anchor) {
+                    top = max(top, field.maxY)
+                }
+                y = top + gap
+            }
             x = min(max(x, vis.minX + edge), vis.maxX - edge - cardWidth)
             y = min(max(y, vis.minY + edge), vis.maxY - edge - height)
         }
@@ -1168,6 +1250,38 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Driven by the global mouse monitor: open the rephrase card over the pill,
     /// or a grammar card over a flagged word; keep it open over the card; hide
     /// otherwise.
+    /// Snapshot of what the user would see, for the e2e driver (CG coords).
+    private func e2eState() -> [String: Any] {
+        let mode: String = switch popoverMode {
+        case .none: "none"
+        case .grammar: "grammar"
+        case .rephrase: "rephrase"
+        }
+        var st: [String: Any] = [
+            "popoverMode": mode,
+            "pillOnSelection": pillOnSelection,
+            "pillHovered": pillHovered,
+            "isChecking": isChecking,
+            "morphKey": morphPanel.isKey,
+            "engine": usesLanguageTool ? "languagetool" : "llm",
+            "frontApp": NSWorkspace.shared.frontmostApplication?.localizedName ?? "",
+            "flagged": flagged.map { ["original": $0.original, "corrected": $0.corrected,
+                                      "rect": E2EDriver.cg($0.rect)] as [String: Any] },
+            "corrections": currentCorrections.map { ["original": $0.original, "corrected": $0.corrected] },
+            "text": currentFullText,
+        ]
+        if let r = morphPanel.pillScreenRect { st["pill"] = E2EDriver.cg(r) }
+        if let r = morphPanel.cardScreenRect { st["card"] = E2EDriver.cg(r) }
+        if let r = lastPillAnchor { st["lastPillAnchor"] = E2EDriver.cg(r) }
+        if let t = rephraseText { st["rephraseText"] = t }
+        // AX frames are already CG (top-left) space.
+        if let el = activeElement, let f = AX.frame(el) {
+            st["field"] = ["x": f.minX, "y": f.minY, "w": f.width, "h": f.height,
+                           "cx": f.midX, "cy": f.midY]
+        }
+        return st
+    }
+
     private func handleMouseMove() {
         // In the sandbox the card is driven by the DOM (pill/squiggle hover in the
         // webview), not native hover-tracking — don't let global mouse moves close it.
@@ -1239,7 +1353,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "llmUrls": routing.urls,
             "llmModels": routing.models,
             "capabilities": routing.caps,
-            "ready": llmReady,
+            "ready": composeAvailable(),
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ]
@@ -1350,6 +1464,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Recompute the pill from the current selection (debounced off selection
     /// changes so we don't run JS on every caret move).
     private func scheduleSelectionUpdate(after delay: TimeInterval = 0.15) {
+        selectionChangeGen += 1
         selectionDebounce?.invalidate()
         selectionDebounce = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateSelectionPill() }
@@ -1371,6 +1486,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp() else {
+            selectionAppliedGen = selectionChangeGen
             hidePill(); return
         }
 
@@ -1387,6 +1503,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // finished values come back to be turned into a pill.
         guard !selReadInFlight else { return }
         selReadInFlight = true
+        let readGen = selectionChangeGen
         let hostIsBrowser = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             .map { BrowserBridge.appNames[$0] != nil } ?? false
         let webAreaCache = cachedWebArea.map { (AXBox(element: $0.element), $0.isWeb) }
@@ -1397,6 +1514,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.selReadInFlight = false
+                    self.selectionAppliedGen = readGen
                     self.applySelectionPill(read)
                 }
             }
@@ -1409,8 +1527,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard enabled, settingsPopover?.isShown != true, !frontmostIsSelf(), !isBlockedApp(),
               let read else {
             if pendingHotkeyOpen != nil {
-                Log.debug(.action, "hotkey open dropped", ["reason": "no editable focus"])
                 pendingHotkeyOpen = nil
+                // Keyboard close→reopen in Chromium: focus reporting degrades
+                // right after our card closes, but the capture is still good.
+                if let at = rephraseCapturedAt, Date().timeIntervalSince(at) < 60,
+                   rephraseText != nil, enabled, !frontmostIsSelf(), !isBlockedApp(),
+                   popoverMode == .none {
+                    Log.debug(.action, "hotkey open from recent capture", ["reason": "no editable focus"])
+                    showRephrase()
+                    return
+                }
+                Log.debug(.action, "hotkey open dropped", ["reason": "no editable focus"])
             }
             // Selecting a sentence in an email you're reading isn't an invitation
             // to rewrite it — and we couldn't write the result back anyway.
@@ -1562,6 +1689,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 rephraseElement = element
                 rephraseRange = nativeRange
                 rephraseCapturedAt = Date()
+                rephraseFieldBox = fieldBox
                 focusClickRect = selRect.flatMap { isInsideField($0, fieldBox) ? $0 : nil }
                     ?? CGRect(x: fieldBox.midX - 2, y: fieldBox.midY - 2, width: 4, height: 4)
                 showRephrase()
@@ -1585,6 +1713,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         rephraseElement = element
         rephraseRange = nativeRange
         rephraseCapturedAt = Date()
+        rephraseFieldBox = fieldBox
         focusClickRect = r   // validated inside the field above
 
         // Pill in the field's left margin, centred on the *first* line of the
@@ -1624,7 +1753,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // servers now so their models are loading before the user hovers.
         guard hasSelection else { return }
         _ = server(for: .compose)
-        _ = server(for: .grammar)
+        if !usesLanguageTool { _ = server(for: .grammar) }
     }
 
     /// Hovering the pill opens the card after a short dwell, so brushing past it
@@ -1704,37 +1833,118 @@ final class AppController: NSObject, NSApplicationDelegate {
         let sameField = modelledLayout.map { CFEqual($0.element, element) && $0.text == text } ?? false
         if !sameField {
             modelledLayout = nil
-            guard let block = AX.textBlock(element), let axFrame = AX.frame(block) else { return [] }
-            let size = AX.fontSize(element) ?? 13
-            let font = TextLayout.calibratedFont(text: text, block: axFrame, fontSize: size)
-            guard TextLayout.plausible(text: text, block: axFrame, font: font) else {
+            guard let parts = modelParagraphs(text: ns, element: element) else { return [] }
+            modelledLayout = (element, text, parts)
+            Log.debug(.detect, "modelling layout for an app without range geometry", [
+                "paragraphs": parts.count,
+                "font": parts.first?.font.fontName ?? "?",
+                "size": parts.first?.font.pointSize ?? 0,
+                "blockWidth": Int(parts.first?.block.width ?? 0),
+                "blockHeight": Int(parts.first?.block.height ?? 0),
+            ])
+        }
+        guard let layout = modelledLayout else { return [] }
+        // Each paragraph is laid out in its own block; a range is drawn in the
+        // paragraph(s) it overlaps, with indices made local to that paragraph.
+        var rects: [CGRect] = []
+        for part in layout.parts {
+            let partRange = NSRange(location: part.offset, length: (part.text as NSString).length)
+            let hit = NSIntersectionRange(range, partRange)
+            guard hit.length > 0 else { continue }
+            let local = NSRange(location: hit.location - part.offset, length: hit.length)
+            rects += TextLayout.rects(for: local, in: part.text, block: part.block, font: part.font)
+        }
+        return rects.map(toCocoa).filter { isSaneRect($0, in: fieldBox) }
+    }
+
+    /// Pair each non-empty paragraph of the field's text with the static-text
+    /// block the app rendered it in (Slack: one per paragraph; blank lines have
+    /// none). Nil when they can't be matched up or a layout is implausible —
+    /// drawing nothing beats drawing squiggles on the wrong line.
+    private func modelParagraphs(text ns: NSString, element: AXUIElement) -> [ModelledParagraph]? {
+        let size = AX.fontSize(element) ?? 13
+        let blocks = AX.textBlocks(element).compactMap { b -> (String, CGRect)? in
+            guard let f = AX.frame(b) else { return nil }
+            return (AX.string(b, kAXValueAttribute) ?? "", f)
+        }
+        guard !blocks.isEmpty else { return nil }
+
+        // Paragraphs with their UTF-16 offsets.
+        var paragraphs: [(offset: Int, text: String)] = []
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length),
+                               options: [.byParagraphs]) { sub, r, _, _ in
+            if let sub, !sub.trimmingCharacters(in: .whitespaces).isEmpty {
+                paragraphs.append((r.location, sub))
+            }
+        }
+        // One paragraph and one block: the original single-block model (the
+        // block's own value may differ in whitespace, which doesn't matter).
+        let pairs: [(offset: Int, text: String, block: CGRect)]
+        if paragraphs.count == 1, blocks.count == 1 {
+            pairs = [(paragraphs[0].offset, paragraphs[0].text, blocks[0].1)]
+        } else {
+            // Match in order by content, so an unrendered/extra block is skipped
+            // rather than shifting every paragraph onto its neighbour's line.
+            // A link or formatting splits a paragraph into several runs: join
+            // consecutive runs until they spell the paragraph, and use their
+            // combined box.
+            var out: [(Int, String, CGRect)] = []
+            var bi = 0
+            let norm = { (s: String) in s.filter { !$0.isWhitespace } }
+            var matchedAll = true
+            for p in paragraphs {
+                let want = norm(p.text)
+                var found: CGRect?
+                var start = bi
+                while start < blocks.count, found == nil {
+                    var acc = ""
+                    var box = CGRect.null
+                    var k = start
+                    while k < blocks.count, acc.count < want.count {
+                        acc += norm(blocks[k].0)
+                        box = box.union(blocks[k].1)
+                        k += 1
+                    }
+                    if acc == want { found = box; bi = k } else { start += 1 }
+                }
+                guard let box = found else { matchedAll = false; break }
+                out.append((p.offset, p.text, box))
+            }
+            if matchedAll {
+                pairs = out
+            } else if paragraphs.count == 1 {
+                pairs = [(paragraphs[0].offset, paragraphs[0].text, blocks[0].1)]
+            } else {
+                Log.debug(.detect, "modelled layout skipped", [
+                    "reason": "paragraphs don't match the rendered text runs",
+                    "paragraphs": paragraphs.count, "runs": blocks.count,
+                ])
+                return nil
+            }
+        }
+
+        var parts: [ModelledParagraph] = []
+        for pair in pairs {
+            let font = TextLayout.calibratedFont(text: pair.text, block: pair.block, fontSize: size)
+            guard TextLayout.plausible(text: pair.text, block: pair.block, font: font) else {
                 Log.debug(.detect, "modelled layout rejected", [
                     "reason": "block height doesn't match the text laid out in it",
-                    "blockWidth": Int(axFrame.width), "blockHeight": Int(axFrame.height),
-                    "modelledHeight": Int(TextLayout.modelledHeight(text: text, block: axFrame,
+                    "blockWidth": Int(pair.block.width), "blockHeight": Int(pair.block.height),
+                    "modelledHeight": Int(TextLayout.modelledHeight(text: pair.text, block: pair.block,
                                                                     font: font)),
-                    "font": font.fontName, "fontSize": size, "chars": text.count,
+                    "font": font.fontName, "fontSize": size, "chars": pair.text.count,
+                    "paragraphs": pairs.count,
                 ])
-                return []
+                return nil
             }
             // No size search: fitting the size to the end caret over-fits, and a
             // trailing space re-fits and slides the whole line. With Slack's real
             // font (Lato) at the reported size, laid out from the block's exact
             // origin, the model is right on its own.
-            modelledLayout = (element, text, axFrame, font)
-            Log.debug(.detect, "modelling layout for an app without range geometry",
-                      ["font": font.fontName, "size": font.pointSize,
-                       "blockWidth": Int(axFrame.width), "blockHeight": Int(axFrame.height)])
+            parts.append(ModelledParagraph(offset: pair.offset, text: pair.text,
+                                           block: pair.block, font: font))
         }
-        guard let layout = modelledLayout else { return [] }
-        // The caret is the one place the app tells the truth: it answers with a
-        // real rect for a character index we know. Comparing that against where
-        // the model puts the same index gives a correction for the whole field,
-        // which removes the systematic drift a guessed font leaves behind.
-        return TextLayout.rects(for: range, in: text, block: layout.block,
-                                font: layout.font)
-            .map(toCocoa)
-            .filter { isSaneRect($0, in: fieldBox) }
+        return parts
     }
 
     /// Place the pill beside `r` — a selection grows it into a capsule spanning
@@ -1855,7 +2065,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "llmUrls": routing.urls,
             "llmModels": models,
             "capabilities": routing.caps,
-            "ready": llmReady,
+            "ready": composeAvailable(),
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ]
@@ -1876,7 +2086,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Anchor priority: the live pill; else where the pill last was (so a
         // ⌘`-reopen lands exactly where a hover-open would); else the selection.
         cardAvoidRect = pillRect ?? lastPillAnchor ?? focusClickRect ?? .zero
-        let rect = cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect)
+        let rect = cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect,
+                                  fieldBox: rephraseFieldBox)
         morphPanel.showCard(payload, at: rect, takeKey: takeKey)
     }
 
@@ -1901,7 +2112,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 lastCardHeight = CGFloat(height)
                 if morphPanel.cardScreenRect != nil {
                     morphPanel.updateCardRect(
-                        cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect))
+                        cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect,
+                                       fieldBox: popoverMode == .rephrase ? rephraseFieldBox : nil))
                 }
             }
             return
@@ -2012,19 +2224,23 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Explicit keystroke = explicit intent: skip the typing-quiet delay.
         lastTypedAt = .distantPast
         let recentCapture = rephraseCapturedAt.map { Date().timeIntervalSince($0) < 60 } ?? false
+        let selectionFresh = selectionAppliedGen == selectionChangeGen && !selReadInFlight
+        let fastPath = selectionFresh && rephraseText != nil && (pillRect != nil || recentCapture)
         Log.debug(.action, "hotkey open branch", [
-            "fastPath": rephraseText != nil && (pillRect != nil || recentCapture),
+            "fastPath": fastPath,
+            "selectionFresh": selectionFresh,
             "recentCapture": recentCapture,
             "pill": pillRect.map(NSStringFromRect) ?? "nil",
             "lastAnchor": lastPillAnchor.map(NSStringFromRect) ?? "nil",
         ])
-        if rephraseText != nil, pillRect != nil || recentCapture {
+        if fastPath {
             // No auto-dismiss: the user asked for this card with a keystroke and
             // may never bring the mouse near it. Esc, ⌘` again, or moving the
             // selection all close it.
             showRephrase()
         } else {
             pendingHotkeyOpen = Date()
+            selectionDebounce?.invalidate()   // read now, not after the debounce
             updateSelectionPill()
         }
     }
@@ -2067,7 +2283,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             "llmUrls": routing.urls,
             "llmModels": routing.models,
             "capabilities": routing.caps,
-            "ready": llmReady,
+            "ready": composeAvailable(),
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
         ])
@@ -2215,7 +2431,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         let watched = element.map { AXBox(element: $0) }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) {
             let source = CGEventSource(stateID: .combinedSessionState)
-            let utf16 = Array(text.utf16)
 
             func post(_ units: [UInt16]) {
                 let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
@@ -2234,68 +2449,60 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
                 return false
             }
-
-            // Attempt 1: the WHOLE string as one event — a single atomic input,
-            // so a rich editor has nothing to batch out of order and no
-            // intermediate caret to lose. The classic docs cap the event at
-            // ~20 UTF-16 units; modern macOS usually takes more, so verify.
-            let before = value()
-            post(utf16)
-            Log.debug(.action, "type single event posted", ["units": utf16.count])
-            if watched != nil, utf16.count > 1 {
-                _ = waitForChange(from: before)
-                let now = value()
-                if now.contains(text) {
-                    Log.debug(.action, "single-event write verified", [:])
-                    return
+            func pinSelection(_ sel: CFRange) {
+                guard let watched else { return }
+                var cf = sel
+                if let axRange = AXValueCreate(.cfRange, &cf) {
+                    AXUIElementSetAttributeValue(watched.element,
+                                                 kAXSelectedTextRangeAttribute as CFString, axRange)
+                    usleep(30_000)
                 }
-                Log.warn(.action, "single event not verified, repairing with pinned chunks", [
-                    "value": String(now.prefix(120)),
-                ])
-                // Repair: put the selection back over whatever the partial
-                // attempt produced... safest is to give up if we can't know.
-                // If the value didn't change at all, fall through to chunked
-                // typing; if it half-changed, chunked repair could double text,
-                // so stop and let the user see one clean failure, not soup.
-                guard now == before else {
-                    Log.warn(.action, "write-back left partial text; not compounding", [:])
-                    return
-                }
-                // Attempt 2: chunks with the caret PINNED via an AX range write
-                // (the one write Slack provably honors) before every chunk, so
-                // the editor's caret resets can't relocate our insertions.
-                guard let watched, let range else { return }
-                var caret = range.location
-                var remainingRange = CFRange(location: range.location, length: range.length)
+            }
+            /// Type `units` over `initialSelection` in ≤20-unit events — the
+            /// classic per-event cap is REAL in Slack: a 74-unit event consumed
+            /// the selection and inserted nothing, wiping the draft. The caret
+            /// is re-pinned via an AX range write (which Slack honors) before
+            /// every chunk, because its editor resets the caret between inputs.
+            func pinnedType(_ units: [UInt16], over initialSelection: CFRange?) {
+                var caret = initialSelection?.location ?? 0
                 var start = 0
-                while start < utf16.count {
-                    let chunk = Array(utf16[start..<min(start + 20, utf16.count)])
-                    // First chunk replaces the selection; later chunks insert at
-                    // the pinned caret (length 0).
-                    var sel = start == 0 ? remainingRange : CFRange(location: caret, length: 0)
-                    if let axRange = AXValueCreate(.cfRange, &sel) {
-                        AXUIElementSetAttributeValue(watched.element,
-                                                     kAXSelectedTextRangeAttribute as CFString, axRange)
-                        usleep(30_000)
+                while start < units.count {
+                    let chunk = Array(units[start..<min(start + 20, units.count)])
+                    if start == 0, let sel = initialSelection {
+                        pinSelection(sel)
+                    } else if watched != nil {
+                        pinSelection(CFRange(location: caret, length: 0))
                     }
-                    let beforeChunk = value()
+                    let before = value()
                     post(chunk)
                     Log.debug(.action, "pinned chunk posted", [
                         "chunk": String(utf16CodeUnits: chunk, count: chunk.count),
-                        "caret": sel.location,
+                        "caret": caret,
                     ])
-                    _ = waitForChange(from: beforeChunk)
-                    caret = sel.location + chunk.count
-                    remainingRange = CFRange(location: caret, length: 0)
+                    if watched != nil { _ = waitForChange(from: before) }
+                    else { usleep(15_000) }
+                    caret = (start == 0 ? (initialSelection?.location ?? 0) : caret) + chunk.count
                     start += 20
                 }
             }
-            // Verify the SETTLED result against what Accept promised, and make
-            // one repair attempt on mismatch — re-select the whole field (the
-            // AX write Slack provably honors) and re-inject the entire
-            // corrected value as one atomic event. Newlines are ignored in the
-            // comparison: Slack's AX value renders paragraph breaks
-            // inconsistently right after an edit.
+
+            let utf16 = Array(text.utf16)
+            if utf16.count <= 20 {
+                // Fits one event everywhere — the fast path (and the whole
+                // path for type-through characters).
+                post(utf16)
+                Log.debug(.action, "type single event posted", ["units": utf16.count])
+            } else {
+                // The selection already covers the text to replace; chunk 1
+                // types over it, later chunks continue at the pinned caret.
+                let sel = range.map { CFRange(location: $0.location, length: $0.length) }
+                pinnedType(utf16, over: sel)
+            }
+
+            // Settle-verify against what Accept promised; repair once with the
+            // same pinned mechanism (select everything, retype the expected
+            // value). Newlines are ignored in comparison — Slack's AX value
+            // renders paragraph breaks inconsistently right after an edit.
             guard let watched, let expected else { return }
             func normalized(_ s: String) -> String {
                 s.replacingOccurrences(of: "\n", with: "")
@@ -2307,19 +2514,12 @@ final class AppController: NSObject, NSApplicationDelegate {
                 Log.info(.action, "write-back verified on attempt 1", [:])
                 return
             }
-            Log.warn(.action, "write-back mismatch, repairing", [
+            Log.warn(.action, "write-back mismatch, repairing with pinned retype", [
                 "settled": String(settled.prefix(120)),
                 "expected": String(expected.prefix(120)),
             ])
-            var all = CFRange(location: 0, length: (settled as NSString).length)
-            if let axRange = AXValueCreate(.cfRange, &all) {
-                AXUIElementSetAttributeValue(watched.element,
-                                             kAXSelectedTextRangeAttribute as CFString, axRange)
-                usleep(50_000)
-            }
-            let beforeRepair = value()
-            post(Array(expected.utf16))
-            _ = waitForChange(from: beforeRepair)
+            let all = CFRange(location: 0, length: (settled as NSString).length)
+            pinnedType(Array(expected.utf16), over: all)
             usleep(350_000)
             let repaired = value()
             if normalized(repaired) == normalized(expected) {
@@ -2331,6 +2531,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         }
     }
+
 
 
     private func finishRephrase() {
@@ -2961,6 +3162,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         server.start()
         Log.info(.server, "task server spawned", ["model": URL(fileURLWithPath: path).lastPathComponent, "port": server.port])
         return server
+    }
+
+    /// Whether the card can ask for rewrites: the compose server is up OR
+    /// coming up. The web retries through a cold start (see postChat), so a
+    /// lazily-started model (LanguageTool mode, or after an idle reap) shows
+    /// the card's own loading state instead of a dead "Model still loading…".
+    private func composeAvailable() -> Bool {
+        switch server(for: .compose).status {
+        case .ready, .starting: true
+        case .stopped, .failed: false
+        }
     }
 
     /// Chat URL serving `task` right now.

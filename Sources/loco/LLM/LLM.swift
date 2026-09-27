@@ -654,6 +654,14 @@ struct LLMClient {
     /// formalising a chat message doesn't ask for. Any other difference (a real
     /// spelling or grammar fix) makes this false, so genuine corrections pass.
     static func differsOnlyByCasingOrTerminalStop(_ corrected: String, from original: String) -> Bool {
+        // A lowercase pronoun "i" opening the sentence is a real error, not
+        // casual style — "i think…" → "I think…" must survive this guard
+        // (it was being reverted as a mere sentence-start capital).
+        let opener = original.prefix { $0.isLetter || $0 == "'" || $0 == "’" }
+        if ["i", "i'm", "i've", "i'll", "i'd", "i’m", "i’ve", "i’ll", "i’d"]
+            .contains(String(opener)) {
+            return false
+        }
         func canonical(_ s: String) -> String {
             var t = Substring(s)
             while let last = t.last, ".!?".contains(last) { t = t.dropLast() }

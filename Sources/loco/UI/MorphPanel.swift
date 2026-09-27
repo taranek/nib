@@ -71,6 +71,8 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         // controller flips this false (via setInteractive) while the cursor is
         // over the pill/card, and true everywhere else.
         panel.ignoresMouseEvents = true
+        // Deliver moves over the pill/card to the controller's local monitor.
+        panel.acceptsMouseMovedEvents = true
 
         let config = WKWebViewConfiguration()
         let userContent = WKUserContentController()
@@ -84,7 +86,7 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
         }
 
-        let web = WKWebView(frame: content.bounds, configuration: config)
+        let web = FirstClickWebView(frame: content.bounds, configuration: config)
         web.navigationDelegate = self
         web.autoresizingMask = [.width, .height]
         web.setValue(false, forKey: "drawsBackground")
@@ -123,6 +125,17 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         if panel.ignoresMouseEvents == on { panel.ignoresMouseEvents = !on }
     }
 
+    /// Re-derive click-through from the pointer against what's still shown.
+    /// Needed whenever the pill/card goes away under a still pointer: no mouse
+    /// move follows, so the monitors never get a chance — and an interactive
+    /// desktop-sized window with nothing on it swallows the user's next clicks.
+    private func refreshInteractive() {
+        let p = NSEvent.mouseLocation
+        let overPill = pillScreenRect.map { $0.insetBy(dx: -6, dy: -6).contains(p) } ?? false
+        let overCard = cardScreenRect.map { $0.insetBy(dx: -6, dy: -6).contains(p) } ?? false
+        setInteractive(overPill || overCard)
+    }
+
     /// Keep the surface spanning the whole (possibly multi-display) desktop.
     func fit(to desktop: NSRect) {
         panel.setFrame(desktop, display: true)
@@ -155,7 +168,22 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         content.pillRect = nil
         pillHit.isHidden = true
         push()
+        refreshInteractive()
     }
+
+    // MARK: - E2E introspection (dev driver)
+
+    /// Snapshot of the overlay webview's visible content — needs no Screen
+    /// Recording grant, so the e2e driver can always check what we render.
+    func snapshot(_ done: @escaping (NSImage?) -> Void) {
+        webView.takeSnapshot(with: nil) { image, _ in done(image) }
+    }
+
+    func evaluate(_ js: String, _ done: @escaping (Any?) -> Void) {
+        webView.evaluateJavaScript(js) { result, error in done(result ?? error.map { "error: \($0)" }) }
+    }
+
+    var isKey: Bool { panel.isKeyWindow }
 
     // MARK: - Card
 
@@ -223,6 +251,7 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         // with this true, AppKit would hand key straight back to this panel.
         panel.allowKey = false
         push()
+        refreshInteractive()
         let t1 = CFAbsoluteTimeGetCurrent()
         resignKeyKeepingVisible()
         let t2 = CFAbsoluteTimeGetCurrent()
@@ -368,6 +397,13 @@ private final class MorphContentView: NSView {
         }
         return nil   // click-through everywhere else
     }
+}
+
+/// A hover-opened card isn't key (it mustn't steal the user's typing), and a
+/// WKWebView in a non-key window spends the first click on making the window
+/// key — so Accept needed two clicks. Take the first click as a real click.
+private final class FirstClickWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 /// Transparent native hit target over the pill. Only the click is handled

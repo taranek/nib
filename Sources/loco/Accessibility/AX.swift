@@ -85,6 +85,18 @@ enum AX {
         return nil
     }
 
+    /// Every static-text run under `element`, in document order — one per
+    /// paragraph in Slack's composer (a message with line breaks has several).
+    static func textBlocks(_ element: AXUIElement, depth: Int = 0) -> [AXUIElement] {
+        guard depth < 5 else { return [] }
+        var out: [AXUIElement] = []
+        for child in (copy(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+            if string(child, kAXRoleAttribute) == "AXStaticText" { out.append(child) }
+            else { out += textBlocks(child, depth: depth + 1) }
+        }
+        return out
+    }
+
     /// Font size the element reports for its text, when it reports one.
     static func fontSize(_ element: AXUIElement, at location: Int = 0) -> CGFloat? {
         var range = CFRange(location: location, length: 1)
