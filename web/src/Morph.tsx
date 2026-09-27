@@ -5,8 +5,9 @@ import { ThinkingOrb } from "thinking-orbs";
 import { type MorphRect, type MorphState, onSetMorph, send } from "./bridge";
 import { CardContent } from "@/components/Card";
 
-/** Fixed card width (matches App.tsx). Height is measured and reported so Swift
- *  can size + place the card rect. */
+/** Default card width (matches App.tsx); Swift sends the real one in the card
+ *  rect (the squiggle-hover grammar card is narrower). Height is measured and
+ *  reported so Swift can size + place the card rect. */
 const CARD_W = 440;
 
 /** Frame-time profiler for the morph animations: while `phase` is non-null a
@@ -137,7 +138,7 @@ export function Morph() {
       const h = Math.ceil(el.offsetHeight);
       if (h === lastReported.current) return;
       lastReported.current = h;
-      send({ type: "resize", width: CARD_W, height: h });
+      send({ type: "resize", width: el.offsetWidth || CARD_W, height: h });
     };
     report();
     const ro = new ResizeObserver(report);
@@ -221,8 +222,11 @@ export function Morph() {
             position: "absolute",
             left: cardRect.x,
             top: cardRect.y,
-            width: CARD_W,
-            transformOrigin: originAt(pill?.rect ?? null, cardRect),
+            width: cardRect.w || CARD_W,
+            transformOrigin: originAt(
+              shownCard.origin ?? pill?.rect ?? null,
+              cardRect,
+            ),
             borderRadius: 14,
             overflow: "hidden",
             background: SURFACE,

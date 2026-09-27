@@ -118,7 +118,8 @@ def accept_button():
     return pts[0] if pts else None
 
 
-def flow(out_dir, dm_prefix, sentence="Did you recieve my last message? We definately need to talk."):
+def flow(out_dir, dm_prefix,
+         sentence="Did you recieve my last message? We definately need to talk. I will send it tomorow."):
     """Full user flow in Slack, in the user's self-DM only. Never presses Return."""
     os.makedirs(out_dir, exist_ok=True)
     steps = []
@@ -151,7 +152,7 @@ def flow(out_dir, dm_prefix, sentence="Did you recieve my last message? We defin
         # 1. type → squiggles
         type_text(sentence)
         try:
-            st = wait_for(lambda s: len(s.get("flagged", [])) >= 2, 8, what="squiggles")
+            st = wait_for(lambda s: len(s.get("flagged", [])) >= 3, 8, what="squiggles")
             step("squiggles drawn", True, flagged=[f["original"] for f in st["flagged"]])
             field = st.get("field") or field   # the composer resizes with its text
         except TimeoutError as e:
@@ -163,6 +164,40 @@ def flow(out_dir, dm_prefix, sentence="Did you recieve my last message? We defin
         f0 = st["flagged"][0]["rect"]
         step("squiggle inside field", field["x"] <= f0["x"] and f0["y"] + f0["h"] <= field["y"] + field["h"],
              rect=f0, field=field)
+
+        # 1b. rest on a squiggle → grammar card (no keyboard), one-click Accept
+        g = next(f for f in st["flagged"] if "tomorow" in f["original"])["rect"]
+        move(g["x"] - 60, g["cy"] + 40)            # approach from off the text
+        move(g["cx"], g["cy"], steps=8)
+        time.sleep(0.15)
+        early = state()
+        step("squiggle card waits for a deliberate rest", early.get("popoverMode") == "none")
+        try:
+            st = wait_for(lambda s: s.get("popoverMode") == "grammar" and s.get("card"), 2, what="grammar card")
+            step("squiggle hover opens grammar card", True, card=st["card"])
+            step("grammar card leaves keyboard with Slack", not st["morphKey"])
+            step("grammar card is compact", st["card"]["w"] <= 380, w=st["card"]["w"])
+            time.sleep(0.5)
+            snap(os.path.join(out_dir, "02-grammar-card.png"), around(st, 60))
+            shot(os.path.join(out_dir, "02-grammar-card-screen.png"),
+                 (field["x"] - 40, st["card"]["y"] - 30, field["w"] + 80,
+                  field["y"] + field["h"] - st["card"]["y"] + 60))
+            btn = accept_button()
+            move(*btn); click(*btn)
+            st = wait_for(lambda s: "tomorow" not in s.get("text", "tomorow"), 5, what="grammar write-back")
+            step("grammar card Accept writes back", "tomorrow" in st["text"], text=st["text"])
+            wait_for(lambda s: s.get("popoverMode") == "none", 3, what="grammar close")
+        except TimeoutError as e:
+            step("squiggle hover → accept", False, error=str(e)[:200])
+            return steps
+        # Passing over a squiggle without stopping opens nothing.
+        st = wait_for(lambda s: len(s.get("flagged", [])) >= 2, 5, what="remaining squiggles")
+        f0 = st["flagged"][0]["rect"]
+        move(f0["x"] - 30, f0["cy"], steps=4)
+        move(f0["x"] + f0["w"] + 30, f0["cy"], steps=4)
+        move(field["cx"], field["y"] + field["h"] + 60, steps=4)
+        time.sleep(0.6)
+        step("passing over a squiggle opens nothing", state().get("popoverMode") == "none")
 
         # 2. double-click the first flagged word → pill on selection
         click(f0["cx"], f0["cy"], count=2)

@@ -88,6 +88,8 @@ struct LanguageToolClient {
                 let isLower = token == token.lowercased() && token != token.uppercased()
                 let isAcronym = first == first.uppercased() && first != first.lowercased()
                 if isLower, isAcronym, first.count > 1 { return nil }
+                // A word the user taught us (project names etc.) is right.
+                if KnownWords.contains(token) { return nil }
             }
             return Match(offset: offset, length: length, replacement: first, ruleID: rule)
         }

@@ -52,6 +52,8 @@ export interface CardData {
   targetLanguage: string;
   /** Whether to show the per-change rule explainers under grammar fixes. */
   explainFixes: boolean;
+  /** Grammar card: the one word the fix changes, offered for the dictionary. */
+  addableWord?: string | null;
 }
 
 export interface SettingsState {
@@ -79,6 +81,8 @@ export interface SettingsState {
   version: string;
   /** Catalog model id assigned per task ("default" = the active model). */
   taskModels: { grammar: string; compose: string; translate: string };
+  /** The personal dictionary: words never flagged. */
+  knownWords: string[];
   /** The open-card shortcut, as a display string (e.g. "⌘`"). */
   hotkey: string;
 }
@@ -168,6 +172,9 @@ type OutboundMessage =
   // Reopen the app whose accessibility is wedged; dismiss the alert.
   | { type: "reopenApp" }
   | { type: "dismissAlert" }
+  | { type: "addWord"; word: string }
+  | { type: "addKnownWord"; word: string }
+  | { type: "removeKnownWord"; word: string }
   | { type: "quit" };
 
 interface WebkitBridge {
@@ -224,6 +231,8 @@ export interface MorphState {
   card: {
     data: CardData | null;
     rect: MorphRect | null;
+    /** What the card grows out of when it isn't the pill (a hovered squiggle). */
+    origin?: MorphRect | null;
   };
 }
 

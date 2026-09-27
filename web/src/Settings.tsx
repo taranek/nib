@@ -24,6 +24,7 @@ import {
   type Capability,
 } from "@/components/ModelCatalog";
 import { AppBlocklist } from "@/components/AppBlocklist";
+import { Dictionary } from "@/components/Dictionary";
 
 const LANGUAGES = [
   "English",
@@ -129,10 +130,10 @@ function SettingsHeader({
   );
 }
 
-type Route = "main" | "popover" | "models" | "apps";
+type Route = "main" | "popover" | "models" | "apps" | "dictionary";
 
 /** A row on the main settings menu that opens a sub-page. Whole row is the hit
- *  target; a chevron on the right nudges and brightens on hover. */
+ *  target; on hover the chevron brightens and "Open" fades in — nothing moves. */
 function NavRow({
   title,
   subtitle,
@@ -149,7 +150,7 @@ function NavRow({
       onClick={onClick}
       className="group flex w-full cursor-pointer items-center justify-between gap-3 border-t border-border py-3.5 text-left"
     >
-      <span className="flex min-w-0 flex-col gap-0.5 transition-transform duration-200 ease-out group-hover:translate-x-1 group-hover:delay-75">
+      <span className="flex min-w-0 flex-col gap-0.5">
         <span className={LABEL}>
           {status !== undefined && <StatusDot ok={status} />}
           {title}
@@ -157,10 +158,10 @@ function NavRow({
         <span className={HINT}>{subtitle}</span>
       </span>
       <span className="mr-1 flex items-center gap-1.5">
-        <span className="translate-x-3 text-[12px] font-medium text-muted-foreground opacity-0 transition-all duration-200 ease-out group-hover:translate-x-0 group-hover:text-foreground group-hover:opacity-100 group-hover:delay-75">
+        <span className="text-[12px] font-medium text-muted-foreground opacity-0 transition-[opacity,color] duration-150 ease-out group-hover:text-foreground group-hover:opacity-100">
           Open
         </span>
-        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-all duration-150 ease-out group-hover:text-foreground group-hover:delay-75" />
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-colors duration-150 ease-out group-hover:text-foreground" />
       </span>
     </button>
   );
@@ -170,6 +171,7 @@ const ROUTE_TITLE: Record<Route, string> = {
   popover: "Popover",
   models: "Models",
   apps: "Apps",
+  dictionary: "Dictionary",
 };
 const ROUTE_SLIDE = {
   enter: (d: number) => ({ x: d > 0 ? 22 : -22, opacity: 0, filter: "blur(5px)" }),
@@ -199,6 +201,7 @@ export function Settings() {
     customModels: [],
     version: "dev",
     taskModels: { grammar: "default", compose: "default", translate: "default" },
+    knownWords: [],
     hotkey: "⌘`",
   });
 
@@ -325,7 +328,9 @@ export function Settings() {
             transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
             className="flex flex-col gap-3.5"
           >
-          {route === "apps" ? (
+          {route === "dictionary" ? (
+            <Dictionary words={state.knownWords ?? []} />
+          ) : route === "apps" ? (
             <AppBlocklist
               blocked={state.blockedApps}
               current={state.currentApp}
@@ -532,6 +537,15 @@ export function Settings() {
                 subtitle="Local model and per-task assignments."
                 onClick={() => goTo("models")}
                 status={llmReady}
+              />
+          <NavRow
+                title="Dictionary"
+                subtitle={
+                  (state.knownWords?.length ?? 0) > 0
+                    ? `${state.knownWords.length} known word${state.knownWords.length === 1 ? "" : "s"} Nib won’t flag.`
+                    : "Words Nib shouldn’t flag, like project names."
+                }
+                onClick={() => goTo("dictionary")}
               />
           <NavRow
                 title="Apps"

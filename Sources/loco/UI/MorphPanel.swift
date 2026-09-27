@@ -52,6 +52,8 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     /// of the pill, so both are pushed together.
     private(set) var cardScreenRect: CGRect?
     private var cardPayload: [String: Any]?
+    /// What the card grows out of when it isn't the pill (a hovered squiggle).
+    private var cardOrigin: CGRect?
 
     var onPillClick: (() -> Void)?
     var onMessage: (([String: Any]) -> Void)?
@@ -193,7 +195,9 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     /// from hover: a hover card taking key steals the keystrokes of someone
     /// who's still typing into their field. A click inside the card still makes
     /// the panel key naturally, so its buttons and composer always work.
-    func showCard(_ payload: [String: Any], at screenRect: CGRect, takeKey: Bool) {
+    func showCard(_ payload: [String: Any], at screenRect: CGRect, takeKey: Bool,
+                  origin: CGRect? = nil) {
+        cardOrigin = origin
         cardPayload = payload
         cardScreenRect = screenRect
         content.cardRect = screenRect
@@ -297,7 +301,8 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         if let payload = cardPayload, let r = cardScreenRect,
            let data = try? JSONSerialization.data(withJSONObject: payload),
            let json = String(data: data, encoding: .utf8) {
-            cardJSON = "{data:\(json),rect:\(cssRect(r))}"
+            let origin = cardOrigin.map(cssRect) ?? "null"
+            cardJSON = "{data:\(json),rect:\(cssRect(r)),origin:\(origin)}"
         }
         let js = """
         window.loco && window.loco.setMorph && window.loco.setMorph({\

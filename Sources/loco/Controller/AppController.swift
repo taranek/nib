@@ -156,6 +156,20 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The morph card's on-screen size (width fixed, height reported by the web)
     /// and the rect it opens beside, kept so a height change re-places it.
     private let cardWidth: CGFloat = 440
+    /// The squiggle-hover grammar card is a quick "this → that" — narrower
+    /// than the rewrite card.
+    private let grammarCardWidth: CGFloat = 360
+    /// Width of the card currently open (re-placed on height reports).
+    private var openCardWidth: CGFloat = 440
+    /// Squiggle hover must be deliberate: the pointer rests on the word this
+    /// long before its card opens — passing over text on the way somewhere
+    /// else opens nothing.
+    private let grammarHoverDwell: TimeInterval = 0.35
+    private var grammarDwell: Timer?
+    private var grammarDwellID: String?
+    /// The sentence whose squiggle was just clicked: a click means "I'm
+    /// editing here" — no hover card for it until the pointer leaves it.
+    private var grammarSuppressedID: String?
     private var lastCardHeight: CGFloat = 280
     private var cardAvoidRect: CGRect = .zero
     /// The field the selection lives in (Cocoa coords), so a card flipped
@@ -389,6 +403,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.lastOutsideMouseDown = Date()
+                self.cancelGrammarDwell()
+                let p = NSEvent.mouseLocation
+                self.grammarSuppressedID = self.flagged
+                    .first { $0.rect.insetBy(dx: -1, dy: -2).contains(p) }?.id
                 // A click moves focus and caret, so every capture is stale from
                 // this instant — without this, click-into-new-field followed by
                 // a quick ⌘` fast-pathed onto the OLD field (the focus-change
@@ -721,6 +739,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             // stale. Fade it out of the way. (A ⌘`-opened card owns the keyboard;
             // field changes then come from our own write-back, not typing.)
             if popoverMode == .rephrase, !morphPanel.isKeyForCard { closePopover() }
+            if popoverMode == .grammar { closePopover() }
+            cancelGrammarDwell()
             scheduleSelectionUpdate(after: typingQuiet)
         }
         if notification == kAXWindowMovedNotification as String
@@ -1019,7 +1039,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         let checkStart = CFAbsoluteTimeGetCurrent()
         isChecking = true
         grammarTask = Task { [weak self] in
-            let corrections = await check()
+            // Words the user added to their dictionary are never "errors".
+            let corrections = KnownWords.filter(await check())
             await MainActor.run { self?.isChecking = false }
             if Task.isCancelled { return }
             await MainActor.run {
@@ -1175,7 +1196,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// above when there's no room, clamped on-screen. Ported from PopoverPanel's
     /// positioning, without the shadow margin (the goo draws the shadow now).
     private func cardScreenRect(height: CGFloat, avoiding avoid: CGRect,
-                                fieldBox: CGRect? = nil) -> CGRect {
+                                fieldBox: CGRect? = nil, width: CGFloat? = nil) -> CGRect {
+        let cardWidth = width ?? self.cardWidth
         let nudgeX: CGFloat = 16
         let gap: CGFloat = 6
         let edge: CGFloat = 8
@@ -1323,15 +1345,85 @@ final class AppController: NSObject, NSApplicationDelegate {
                 scheduleHidePopover()
             }
         }
-        if overPill { return }   // don't run grammar hover while on the pill
+        if overPill { cancelGrammarDwell(); return }   // the pill wins over a squiggle under it
 
-        // Squiggles are display-only: hovering one no longer opens the grammar
-        // card (it kept stealing key focus mid-typing). Fixes are applied from
-        // the rewrite card's Grammar tab instead — pill hover or ⌘`.
-        if popoverMode != .none {
-            hoveredID = nil
-            scheduleHidePopover()
+        // Squiggle hover → the grammar card, Grammarly-style. It never takes
+        // the keyboard (the old one did, and ate keystrokes mid-typing), and
+        // only opens on a deliberate rest: see grammarHoverDwell.
+        let word = flagged.first { $0.rect.insetBy(dx: -1, dy: -2).contains(p) }
+        if popoverMode == .grammar {
+            if overCard || (word != nil && word?.id == activeWord?.id) {
+                cancelHidePopover()
+            } else {
+                scheduleHidePopover()
+            }
+            return
         }
+        if word?.id != grammarSuppressedID { grammarSuppressedID = nil }
+        guard let word, !dismissed.contains(word.id), word.id != grammarSuppressedID else {
+            cancelGrammarDwell(); return
+        }
+        if grammarDwellID != word.id { startGrammarDwell(for: word) }
+    }
+
+    private func startGrammarDwell(for word: FlaggedWord) {
+        grammarDwell?.invalidate()
+        grammarDwellID = word.id
+        grammarDwell = Timer.scheduledTimer(withTimeInterval: grammarHoverDwell, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.grammarDwellID = nil
+                let p = NSEvent.mouseLocation
+                // Still resting on (a squiggle of) the same sentence, nothing
+                // else open, not mid-typing or mid-drag.
+                guard self.popoverMode == .none, self.enabled,
+                      NSEvent.pressedMouseButtons & 1 == 0,
+                      Date().timeIntervalSince(self.lastTypedAt) >= self.typingQuiet,
+                      let now = self.flagged.first(where: { $0.rect.insetBy(dx: -1, dy: -2).contains(p) }),
+                      now.id == word.id else { return }
+                self.showCard(for: now)
+            }
+        }
+    }
+
+    private func cancelGrammarDwell() {
+        grammarDwell?.invalidate()
+        grammarDwell = nil
+        grammarDwellID = nil
+    }
+
+    /// The word a grammar card can offer to "Add to dictionary": the fix changes
+    /// exactly one word, and it looks like a word (not punctuation/casing).
+    private func addableWord(in word: FlaggedWord) -> String? {
+        let changed = KnownWords.changedWords(original: word.original, corrected: word.corrected)
+        guard changed.count == 1, let w = changed.first, w.count > 1,
+              w.lowercased() != word.corrected.lowercased() else { return nil }
+        // A casing-only fix (i → I) isn't about an unknown word.
+        let fixedTokens = word.corrected.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" })
+        return fixedTokens.contains(Substring(w.lowercased())) ? nil : w
+    }
+
+    /// Teach the dictionary a word, then re-check so its squiggles go away.
+    private func learnWord(_ word: String) {
+        guard KnownWords.add(word) else { return }
+        Log.info(.action, "word added to dictionary", ["chars": word.count])
+        recheckAfterDictionaryChange()
+    }
+
+    private func recheckAfterDictionaryChange() {
+        dismissed.removeAll()
+        lastSignature = ""
+        checkedValueHash = 0
+        tick()
+        pushSettingsState()
+    }
+
+    /// The server backing `task` if it's already running — never starts one.
+    /// Hovering a squiggle must not load a multi-gigabyte model.
+    private func runningServer(for task: LLMTask) -> LLMServer? {
+        if let path = taskModelPath(for: task) { return taskServers[path] }
+        return llmServer.status == .ready ? llmServer : nil
     }
 
     private func showCard(for word: FlaggedWord) {
@@ -1341,28 +1433,37 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Accept replaces the whole sentence.
         rewriteTarget = RewriteTarget(original: word.original, appName: activeBrowserAppName,
                                       element: activeElement, range: word.range)
-        let routing = cardRouting()
+        // The "why" explanations come from the compose model — but only if it's
+        // already up. (LanguageTool mode runs no model until a rewrite card
+        // asks for one.)
+        let compose = runningServer(for: .compose).flatMap { $0.status == .ready ? $0 : nil }
         let payload: [String: Any] = [
             "mode": "grammar",
             "original": word.original,
             "result": word.corrected,
             "styles": [],
-            // The card fetches a friendly "why" explanation for the fix — from
-            // the compose model (a grammar-only fine-tune can't explain).
-            "llmUrl": chatURL(for: .compose).absoluteString,
-            "llmUrls": routing.urls,
-            "llmModels": routing.models,
-            "capabilities": routing.caps,
-            "ready": composeAvailable(),
+            "llmUrl": compose?.chatURL.absoluteString ?? "",
+            "llmUrls": compose.map { ["compose": $0.chatURL.absoluteString] } ?? [:],
+            "llmModels": ["compose": taskModelFile(for: .compose)],
+            "capabilities": ["compose": taskSupported(.compose)],
+            "ready": compose != nil,
             "targetLanguage": targetLanguage,
             "explainFixes": explainFixes,
+            // One changed word = likely a name/term the engine doesn't know:
+            // offer to add it to the dictionary.
+            "addableWord": addableWord(in: word) as Any,
         ]
+        Log.debug(.ui, "grammar card from squiggle hover", [
+            "word": NSStringFromRect(word.rect), "explain": compose != nil,
+        ])
         // Same unified surface as the rephrase card — one card at a time by
-        // construction, and no second window whose orderOut can hitch a close.
+        // construction. It grows out of the hovered word.
         cardAvoidRect = word.rect
-        morphPanel.showCard(payload, at: cardScreenRect(height: lastCardHeight,
-                                                        avoiding: word.rect),
-                            takeKey: false)
+        openCardWidth = grammarCardWidth
+        morphPanel.showCard(payload,
+                            at: cardScreenRect(height: lastCardHeight, avoiding: word.rect,
+                                               width: grammarCardWidth),
+                            takeKey: false, origin: word.rect)
     }
 
     private func scheduleHidePopover() {
@@ -1377,7 +1478,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                 // on the re-entry it causes, is what reads as flicker.
                 let mouse = NSEvent.mouseLocation
                 if (self.morphPanel.cardScreenRect?.insetBy(dx: -6, dy: -6).contains(mouse) ?? false)
-                    || (self.pillRect?.insetBy(dx: -6, dy: -6).contains(mouse) ?? false) {
+                    || (self.pillRect?.insetBy(dx: -6, dy: -6).contains(mouse) ?? false)
+                    || (self.activeWord.map { word in
+                        self.flagged.contains { $0.id == word.id && $0.rect.insetBy(dx: -1, dy: -2).contains(mouse) }
+                    } ?? false) {
                     return
                 }
                 self.closePopover()
@@ -2086,6 +2190,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Anchor priority: the live pill; else where the pill last was (so a
         // ⌘`-reopen lands exactly where a hover-open would); else the selection.
         cardAvoidRect = pillRect ?? lastPillAnchor ?? focusClickRect ?? .zero
+        openCardWidth = cardWidth
         let rect = cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect,
                                   fieldBox: rephraseFieldBox)
         morphPanel.showCard(payload, at: rect, takeKey: takeKey)
@@ -2113,7 +2218,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 if morphPanel.cardScreenRect != nil {
                     morphPanel.updateCardRect(
                         cardScreenRect(height: lastCardHeight, avoiding: cardAvoidRect,
-                                       fieldBox: popoverMode == .rephrase ? rephraseFieldBox : nil))
+                                       fieldBox: popoverMode == .rephrase ? rephraseFieldBox : nil,
+                                       width: openCardWidth))
                 }
             }
             return
@@ -2211,7 +2317,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             "selInFlight": selReadInFlight,
         ])
         if popoverMode == .rephrase { hidePill(); return }   // already open → close
-        guard enabled, popoverMode == .none else { return }  // don't fight the grammar card
+        // A squiggle's hover card is incidental; the shortcut is explicit — swap.
+        if popoverMode == .grammar { closePopover() }
+        guard enabled, popoverMode == .none else { return }
 
         // Onboarding sandbox: open the real card over our own textarea (⌘` or the
         // pill both route here).
@@ -2542,6 +2650,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         popoverPanel.level = .statusBar   // undo any sandbox level bump
         popoverMode = .none
         rewriteTarget = nil
+        activeWord = nil
         hidePill()
         lastSignature = ""       // the text changed — re-evaluate next tick
         checkedValueHash = 0
@@ -2568,6 +2677,11 @@ final class AppController: NSObject, NSApplicationDelegate {
             if let text = body["text"] as? String, !text.isEmpty {
                 Log.info(.action, "typing through, closing the card", ["key": text])
                 typeThrough(text)
+            }
+        case "addWord":
+            if let w = body["word"] as? String {
+                finishRephrase()
+                learnWord(w)
             }
         case "dismiss":
             // For grammar, suppress the sentence so it stops being flagged.
@@ -3492,7 +3606,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   downloadedModels: downloadedModelIDs(),
                                   customModels: customModelFiles(),
                                   version: appVersion,
-                                  taskModels: taskModels)
+                                  taskModels: taskModels,
+                                  knownWords: KnownWords.all())
     }
 
     private func handleSettingsMessage(_ body: [String: Any]) {
@@ -3535,6 +3650,15 @@ final class AppController: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(explainFixes, forKey: "explainFixes")
         case "listApps":
             sendInstalledApps()
+        case "addKnownWord":
+            if let w = body["word"] as? String { learnWord(w) }
+            pushSettingsState()   // echo even when it was a duplicate
+        case "removeKnownWord":
+            if let w = body["word"] as? String {
+                Log.info(.action, "word removed from dictionary", ["chars": w.count])
+                KnownWords.remove(w)
+                recheckAfterDictionaryChange()
+            }
         case "setAppBlocked":
             if let id = body["id"] as? String, let blocked = body["blocked"] as? NSNumber {
                 if blocked.boolValue {

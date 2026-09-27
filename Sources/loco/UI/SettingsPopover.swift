@@ -182,7 +182,8 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
                   model: String, targetLanguage: String, onboardingCompleted: Bool,
                   explainFixes: Bool, blockedApps: [[String: String]],
                   currentApp: [String: String]?, hotkey: String, downloadedModels: [String],
-                  customModels: [String], version: String, taskModels: [String: String]) {
+                  customModels: [String], version: String, taskModels: [String: String],
+                  knownWords: [String]) {
         let payload: [String: Any] = [
             "enabled": enabled,
             "accessibilityTrusted": accessibilityTrusted,
@@ -198,6 +199,7 @@ final class SettingsPopover: NSObject, WKScriptMessageHandler, WKNavigationDeleg
             "customModels": customModels,
             "version": version,
             "taskModels": taskModels,
+            "knownWords": knownWords,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }

@@ -108,8 +108,8 @@ export function AppBlocklist({
             />
           </div>
         )}
-        <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" />
+        <div className="group/field flex items-center gap-2 rounded-md border border-border px-2 py-1.5 transition-[border-color,background-color] duration-150 hover:not-focus-within:border-hairline-strong focus-within:border-white/25 focus-within:bg-black/20">
+          <Search className="size-3.5 shrink-0 text-muted-foreground transition-colors duration-150 group-focus-within/field:text-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}

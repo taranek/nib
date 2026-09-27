@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, Check, Lightbulb, Loader2, Sparkle } from "lucide-react";
+import { ArrowUp, BookPlus, Check, Lightbulb, Loader2, Sparkle } from "lucide-react";
 import { type CardData, send } from "@/bridge";
 import {
   type ChatMsg,
@@ -174,17 +174,29 @@ function GrammarBody({ card }: { card: CardData }) {
           <FixExplanations fixes={fixes} llmUrl={card.llmUrl} />
         )}
       </div>
+      {/* Opened by hovering a squiggle, so it never holds the keyboard — no
+          TAB hint; one click applies, Ignore stops flagging this sentence. */}
       <div className="flex items-center justify-end gap-2 p-2">
-        <ModelBadge card={card} task="grammar" className="mr-auto flex-row-reverse" />
+        {card.addableWord && (
+          <button
+            type="button"
+            onClick={() => send({ type: "addWord", word: card.addableWord ?? "" })}
+            className="mr-auto flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
+            title="Never flag this word again"
+          >
+            <BookPlus className="size-3.5 shrink-0" />
+            <span className="truncate">Add to dictionary</span>
+          </button>
+        )}
+        <Button variant="default" onClick={() => send({ type: "dismiss" })}>
+          Ignore
+        </Button>
         <Button
           variant="brand"
           disabled={!canAccept}
           onClick={() => send({ type: "applyRewrite", text: card.result })}
         >
           Accept
-          <Kbd variant="outline" className={TAB_KBD}>
-            TAB
-          </Kbd>
         </Button>
       </div>
     </>
