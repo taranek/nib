@@ -178,15 +178,15 @@ function GrammarBody({ card }: { card: CardData }) {
           TAB hint; one click applies, Ignore stops flagging this sentence. */}
       <div className="flex items-center justify-end gap-2 p-2">
         {card.addableWord && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={() => send({ type: "addWord", word: card.addableWord ?? "" })}
-            className="mr-auto flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
+            className="mr-auto min-w-0"
             title="Never flag this word again"
           >
-            <BookPlus className="size-3.5 shrink-0" />
+            <BookPlus className="size-3.5" />
             <span className="truncate">Add to dictionary</span>
-          </button>
+          </Button>
         )}
         <Button variant="default" onClick={() => send({ type: "dismiss" })}>
           Ignore

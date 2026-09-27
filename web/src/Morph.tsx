@@ -79,6 +79,31 @@ export function Morph() {
   const measureRef = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
 
+  // Hover in a window that's never key: WebKit won't track it, so Swift
+  // sends the pointer and we mark what's under it (styles.css maps `hover:`).
+  useEffect(() => {
+    let marked: Element[] = [];
+    const pointer = (x: number | null, y: number | null) => {
+      const chain: Element[] = [];
+      if (x !== null && y !== null) {
+        for (
+          let e = document.elementFromPoint(x, y);
+          e && e !== document.body && e !== document.documentElement;
+          e = e.parentElement
+        )
+          chain.push(e);
+      }
+      const next = new Set(chain);
+      for (const e of marked) if (!next.has(e)) e.removeAttribute("data-hover");
+      for (const e of chain) if (!e.hasAttribute("data-hover")) e.setAttribute("data-hover", "");
+      marked = chain;
+    };
+    window.loco = { ...window.loco, pointer };
+    // Only in the real host: a plain browser (dev) has working :hover.
+    if (window.webkit?.messageHandlers)
+      document.documentElement.setAttribute("data-js-hover", "");
+  }, []);
+
   useEffect(() => {
     onSetMorph(setMorph);
     // Plain-browser dev (no Swift host): seed a pill + open card so the surface

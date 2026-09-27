@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-type ButtonVariant = "default" | "brand" | "outline" | "danger";
+type ButtonVariant = "default" | "brand" | "outline" | "danger" | "ghost";
 type ButtonSize = "sm" | "md";
 
 const VARIANTS: Record<ButtonVariant, string> = {
@@ -21,6 +21,10 @@ const VARIANTS: Record<ButtonVariant, string> = {
   // actions like Quit that belong in the UI but shouldn't draw the eye.
   danger:
     "bg-transparent text-subtle ring-1 ring-inset ring-border hover:bg-diff-del/10 hover:text-diff-del hover:ring-diff-del/40",
+  // Ghost: no surface at rest; hover brings in the accent fill and lifts the
+  // text — for secondary actions that shouldn't compete with the main ones.
+  ghost:
+    "bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
 };
 
 const SIZES: Record<ButtonSize, string> = {

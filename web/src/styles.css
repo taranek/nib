@@ -6,6 +6,21 @@
 /* enter/exit keyframe utilities (animate-in/zoom/slide) for Radix popovers */
 @import "tw-animate-css";
 
+/* `hover:` also matches [data-hover]. The overlay panel is never the key
+   window (it mustn't take the user's typing), and WebKit freezes :hover in
+   non-key windows (it latches onto whatever the pointer entered over and
+   stays there) — so the host feeds the pointer in, Morph.tsx mirrors it as
+   data-hover, and marks <html data-js-hover> so native :hover is ignored. */
+@custom-variant hover {
+  /* Native :hover everywhere except the overlay, where it's the frozen one. */
+  &:where(:root:not([data-js-hover]) *):hover {
+    @slot;
+  }
+  &[data-hover] {
+    @slot;
+  }
+}
+
 /* Default any `border` utility to the theme hairline (shadcn convention). */
 @layer base {
   * {

@@ -106,6 +106,7 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         content.webView = web
         content.pillHit = pillHit
+        content.onMouseMoved = { [weak self] _ in self?.pushPointer(NSEvent.mouseLocation) }
         panel.contentView = content
         panel.setFrame(desktop, display: false)
         panel.orderFrontRegardless()
@@ -124,7 +125,30 @@ final class MorphPanel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     /// while the cursor is over the pill/card, off everywhere else, so clicks in
     /// the empty desktop reach the app behind.
     func setInteractive(_ on: Bool) {
-        if panel.ignoresMouseEvents == on { panel.ignoresMouseEvents = !on }
+        guard panel.ignoresMouseEvents == on else { return }
+        panel.ignoresMouseEvents = !on
+        // Leaving: the window goes click-through and gets no more moves —
+        // clear the card's hover state.
+        if !on { pushPointer(nil) }
+    }
+
+    /// Hover for a panel that's never key. WebKit only updates :hover in the
+    /// key window (here: once on entry, then frozen until a click keys the
+    /// panel), so the pointer is fed to the page, which mirrors it as
+    /// `data-hover` — and the `hover:` variant matches that too (styles.css).
+    private var lastPointerJS = ""
+    fileprivate func pushPointer(_ screen: CGPoint?) {
+        let arg: String
+        if let p = screen {
+            let o = panel.frame.origin
+            arg = "\(Int(p.x - o.x)),\(Int((o.y + panel.frame.height) - p.y))"
+        } else {
+            arg = "null,null"
+        }
+        let js = "window.loco&&window.loco.pointer&&window.loco.pointer(\(arg))"
+        guard loaded, js != lastPointerJS else { return }
+        lastPointerJS = js
+        webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
     /// Re-derive click-through from the pointer against what's still shown.
@@ -389,6 +413,22 @@ private final class MorphContentView: NSView {
     var cardRect: CGRect?   // screen coords
     weak var webView: NSView?
     weak var pillHit: NSView?
+    var onMouseMoved: ((NSEvent) -> Void)?
+    private var tracking: NSTrackingArea?
+
+    /// Moves reach us even though the panel is never key (.activeAlways); they
+    /// drive the card's hover state (see MorphPanel.pushPointer).
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                  owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) { onMouseMoved?(event) }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // `point` is in window base (bottom-left) coordinates; map to screen.

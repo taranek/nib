@@ -247,6 +247,9 @@ export interface UpdateStatus {
 }
 
 interface LocoInbound {
+  /** Swift → JS: pointer position over the overlay (page coords), or nulls
+   *  when it left — drives hover in the never-key overlay panel. */
+  pointer?: (x: number | null, y: number | null) => void;
   setCard?: (data: CardData) => void;
   setSettings?: (state: SettingsState) => void;
   /** Swift → JS: a sandbox rephrase/grammar fix was applied (the accepted text). */
